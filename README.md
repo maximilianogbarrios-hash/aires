@@ -40,8 +40,12 @@ aires-solo/
 ```
 
 ## DB schema (prefijo `ab_`)
-- `ab_users` — id, email, password_hash, role(admin|socio), `totp_secret`, `totp_enabled`
+- `ab_users` — id, email, password_hash, role(admin|socio|gerente|administrativo|pedidos|personal), `totp_secret`, `totp_enabled`
 - `ab_config` — clave PK, valor jsonb
+- `ab_movimientos` — sociedad_id, banco, fecha, concepto, importe, categoria, subcategoria, local_id, codigo_banco, periodo, hash UNIQUE
+- `ab_cierres_tpv` — local_id, sociedad_id, fecha_cierre, bruto/neto/comisión, periodo, hash UNIQUE
+- `ab_cruces` — TPV vs banco por sociedad/local/periodo, estado OK/DIFERENCIA_MENOR/DIFERENCIA
+- `ab_resumen_mensual` — agregado ingresos/gastos/neto + detalle_categorias JSONB por sociedad/periodo
 - `ab_locales` — id, nombre_display, short_name, grupo(A-D), dani_only, alquiler, suministros, fac_mi_analisis, horas_sem_override
 - `ab_presupuesto` — local_id, anio, mes, fac_presupuestada, fac_real (UNIQUE local_id+anio+mes)
 - `ab_historial` — local_id, anio, mes, facturacion, fuente (UNIQUE local_id+anio+mes+fuente)
@@ -69,6 +73,17 @@ Todas requieren sesión.
 - `PUT    /api/v1/users/:id/password` — `{ password }`
 - `DELETE /api/v1/users/:id/2fa` — admin fuerza desactivar 2FA (rescate si pierde el autenticador).
 - `DELETE /api/v1/users/:id` — borrar usuario.
+
+### Bancos
+- `GET  /api/v1/bancos/meta` — sociedades + direcciones.
+- `GET  /api/v1/bancos/periodos` — períodos con datos.
+- `POST /api/v1/bancos/upload-extracto` (multipart `file` + `sociedad_id`, banco=santander)
+- `POST /api/v1/bancos/upload-cierres-tpv` (multipart `file` + opcional `local_id`)
+- `GET  /api/v1/bancos/movimientos?sociedad_id=&periodo=&categoria=&local_id=&q=&limit=&offset=`
+- `GET  /api/v1/bancos/resumen?sociedad_id=`
+- `GET  /api/v1/bancos/gastos-por-proveedor?sociedad_id=&periodo=`
+- `GET  /api/v1/bancos/cruces?sociedad_id=&periodo=`
+- `POST /api/v1/bancos/recalc` — `{ sociedad_id, periodo }` fuerza recalcular resumen + cruces.
 
 ### Aires
 - `GET /api/v1/aires/bootstrap` — todo lo que el front necesita (config + locales + historial + presupuesto + user)

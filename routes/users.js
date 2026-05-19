@@ -3,6 +3,7 @@ const {
   listUsers, createUser, updateUserPassword, deleteUser, countUsers,
   requireAuth, requireAdmin, disableTotp,
 } = require('../lib/auth');
+const { ROLES, ROLE_LABELS } = require('../lib/roles');
 
 const router = express.Router();
 const MAX_USERS = +(process.env.MAX_USERS || 10);
@@ -12,7 +13,7 @@ router.use(requireAuth, requireAdmin);
 router.get('/', async (req, res) => {
   try {
     const users = await listUsers();
-    res.json({ users, max_users: MAX_USERS });
+    res.json({ users, max_users: MAX_USERS, roles: ROLES, role_labels: ROLE_LABELS });
   } catch (e) {
     console.error('[users.list]', e);
     res.status(500).json({ error: 'internal' });

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aires Burger — Bancos</title>
+<link rel="stylesheet" href="/css/styles.css">
+<style>
+  .upload-card{border:1px dashed var(--border-2);border-radius:var(--r-md);padding:1rem;background:var(--bg-secondary)}
+  .upload-row{display:grid;grid-template-columns:1fr 160px 200px auto;gap:8px;align-items:end}
+  @media(max-width:720px){.upload-row{grid-template-columns:1fr 1fr}}
+  .pill-est{display:inline-block;font-size:10px;font-weight:500;padding:2px 7px;border-radius:999px}
+  .pill-OK{background:#EAF3DE;color:#3B6D11}
+  .pill-DIFERENCIA_MENOR{background:#FAEEDA;color:#854F0B}
+  .pill-DIFERENCIA{background:#FCEBEB;color:#A32D2D}
+  .pill-PENDIENTE{background:#E5E7EB;color:#374151}
+  .neg{color:var(--text-danger)}
+  .pos{color:var(--text-success)}
+  .stat-table td{padding:4px 8px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <p style="font-size:10px;text-transform:uppercase;letter-spacing:1.6px;color:var(--text-2)">AIRES BURGER</p>
+    <h1>Análisis bancario</h1>
+  </div>
+  <div class="actions">
+    <span class="meta" id="tb-user">—</span>
+    <a href="/dashboard">← Dashboard</a>
+    <a href="/account">Mi cuenta</a>
+    <button onclick="logout()">Salir</button>
+  </div>
+</div>
+
+<!-- FILTROS GLOBALES -->
+<div class="card" style="margin-bottom:1rem">
+  <div style="display:grid;grid-template-columns:200px 160px 1fr;gap:10px;align-items:end">
+    <div>
+      <label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Sociedad</label>
+      <select id="f-sociedad" onchange="reload()" style="width:100%;padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
+    </div>
+    <div>
+      <label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Período</label>
+      <select id="f-periodo" onchange="reload()" style="width:100%;padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
+    </div>
+    <div style="text-align:right">
+      <button onclick="toggleUpload()" style="padding:7px 14px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);cursor:pointer;font-size:12px">⬆ Subir extracto / cierres</button>
+    </div>
+  </div>
+</div>
+
+<!-- UPLOAD PANEL -->
+<div class="card" id="upload-panel" style="display:none;margin-bottom:1rem">
+  <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Subir archivo</p>
+  <p style="font-size:11px;color:var(--text-2);margin-bottom:.85rem">Aceptamos XLS/XLSX. La importación es idempotente (los mismos movimientos no se duplican gracias a un hash).</p>
+  <div class="upload-card" style="margin-bottom:.75rem">
+    <p style="font-size:12px;font-weight:500;margin-bottom:.5rem">Extracto Santander</p>
+    <div class="upload-row">
+      <input type="file" id="up-ext-file" accept=".xls,.xlsx">
+      <select id="up-ext-soc" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);font-size:13px"></select>
+      <span style="font-size:11px;color:var(--text-2)">Banco: Santander</span>
+      <button onclick="uploadExtracto()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Subir</button>
+    </div>
+    <p id="up-ext-msg" style="margin-top:.5rem;font-size:11px;min-height:1em"></p>
+  </div>
+  <div class="upload-card">
+    <p style="font-size:12px;font-weight:500;margin-bottom:.5rem">Cierres TPV (Getnet)</p>
+    <div class="upload-row">
+      <input type="file" id="up-tpv-file" accept=".xls,.xlsx">
+      <select id="up-tpv-local" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);font-size:13px"><option value="">(autodetectar)</option></select>
+      <span style="font-size:11px;color:var(--text-2)">Sociedad: auto</span>
+      <button onclick="uploadCierres()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Subir</button>
+    </div>
+    <p id="up-tpv-msg" style="margin-top:.5rem;font-size:11px;min-height:1em"></p>
+  </div>
+</div>
+
+<!-- TABS -->
+<div style="border-bottom:.5px solid var(--border-3);margin-bottom:1.25rem;display:flex;overflow-x:auto;gap:0">
+  <button class="tab on" data-tab="resumen"   onclick="showTab('resumen',this)">Resumen</button>
+  <button class="tab"    data-tab="movimientos" onclick="showTab('movimientos',this)">Movimientos</button>
+  <button class="tab"    data-tab="gastos"    onclick="showTab('gastos',this)">Análisis de gastos</button>
+  <button class="tab"    data-tab="cruce"     onclick="showTab('cruce',this)">Cruce TPV vs Banco</button>
+</div>
+
+<!-- RESUMEN -->
+<div id="sect-resumen" class="sect on">
+  <div class="g4" style="margin-bottom:1rem">
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Ingresos del mes</p><p style="font-size:19px;font-weight:500;color:#16a34a" id="r-ing">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Gastos del mes</p><p style="font-size:19px;font-weight:500;color:#dc2626" id="r-gas">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Neto del mes</p><p style="font-size:19px;font-weight:500" id="r-neto">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Neto acumulado año</p><p style="font-size:19px;font-weight:500" id="r-ac">—</p></div>
+  </div>
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Ingresos vs gastos (últimos 12 meses)</p>
+    <div style="position:relative;height:280px"><canvas id="ch-mensual"></canvas></div>
+  </div>
+  <div class="card">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Comparativa por sociedad — período actual</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr>
+        <th>Sociedad</th><th>CIF</th>
+        <th style="text-align:right">Ingresos</th>
+        <th style="text-align:right">Gastos</th>
+        <th style="text-align:right">Neto</th>
+        <th style="text-align:right">#mov</th>
+      </tr></thead>
+      <tbody id="tb-comp"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- MOVIMIENTOS -->
+<div id="sect-movimientos" class="sect">
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:grid;grid-template-columns:1fr 200px 160px 100px auto;gap:8px;align-items:end">
+      <input type="text" id="m-q" placeholder="Buscar en concepto" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
+      <select id="m-cat" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"><option value="">Todas las categorías</option></select>
+      <select id="m-local" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"><option value="">Todos los locales</option></select>
+      <input type="text" id="m-cod" placeholder="Código" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
+      <button onclick="loadMovs()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Filtrar</button>
+    </div>
+  </div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;margin-bottom:.5rem">
+      <p style="font-size:11px;color:var(--text-2)" id="m-count">—</p>
+      <button onclick="exportCsv()" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Export CSV</button>
+    </div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr>
+        <th>Fecha</th><th>Concepto</th>
+        <th style="text-align:right">Importe</th>
+        <th>Categoría</th><th>Local</th><th>Código</th>
+      </tr></thead>
+      <tbody id="tb-mov"></tbody>
+    </table></div>
+    <div style="display:flex;justify-content:center;gap:8px;margin-top:1rem">
+      <button onclick="changePage(-1)" id="pg-prev" style="padding:5px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">← Anterior</button>
+      <span id="pg-info" style="font-size:12px;color:var(--text-2);padding:5px 0">—</span>
+      <button onclick="changePage(1)" id="pg-next" style="padding:5px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Siguiente →</button>
+    </div>
+  </div>
+</div>
+
+<!-- GASTOS -->
+<div id="sect-gastos" class="sect">
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Distribución de gastos por categoría — período actual</p>
+    <div style="display:grid;grid-template-columns:280px 1fr;gap:1.5rem;align-items:center">
+      <div style="position:relative;height:260px"><canvas id="ch-gastos"></canvas></div>
+      <div id="gastos-legend" style="display:grid;grid-template-columns:1fr 1fr;gap:5px 16px"></div>
+    </div>
+  </div>
+  <div class="card">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Top 50 proveedores</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr>
+        <th>Proveedor</th><th>Categoría</th>
+        <th style="text-align:right">Total acumulado</th>
+        <th style="text-align:right">Apariciones</th>
+        <th style="text-align:right">Promedio</th>
+        <th>Desde</th><th>Hasta</th>
+      </tr></thead>
+      <tbody id="tb-prov"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- CRUCE -->
+<div id="sect-cruce" class="sect">
+  <div class="card">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Cruce TPV (Getnet) vs Banco (código 135) — por sociedad/local/período</p>
+    <p style="font-size:11px;color:var(--text-2);margin-bottom:.75rem">Semáforo: <span class="pill-est pill-OK">✓ &lt;10€</span> <span class="pill-est pill-DIFERENCIA_MENOR">⚠ 10–100€</span> <span class="pill-est pill-DIFERENCIA">✕ &gt;100€</span></p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr>
+        <th>Sociedad</th><th>Local</th><th>Período</th>
+        <th style="text-align:right">Bruto TPV</th>
+        <th style="text-align:right">Comisión Getnet</th>
+        <th style="text-align:right">Neto TPV</th>
+        <th style="text-align:right">Recibido banco</th>
+        <th style="text-align:right">Diferencia</th>
+        <th style="text-align:right">Tasa</th>
+        <th>Estado</th>
+      </tr></thead>
+      <tbody id="tb-cruce"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<div class="save-pill" id="save-pill">OK</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/bancos.js"></script>
+</body>
+</html>

@@ -12,6 +12,7 @@ const { requireAuth } = require('./lib/auth');
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
 const airesRoutes = require('./routes/aires');
+const bancosRoutes = require('./routes/bancos');
 
 const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -53,6 +54,7 @@ app.get('/health', (req, res) => {
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/users', usersRoutes);
 app.use('/api/v1/aires', airesRoutes);
+app.use('/api/v1/bancos', bancosRoutes);
 
 // ─── Static (login y assets públicos) ─────────────────────────────────
 app.use('/login', express.static(path.join(__dirname, 'public', 'login')));
@@ -76,6 +78,10 @@ app.get('/admin', requireAuth, (req, res) => {
 
 app.get('/account', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'account', 'index.html'));
+});
+
+app.get('/bancos', requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'bancos', 'index.html'));
 });
 
 // ─── 404 ──────────────────────────────────────────────────────────────

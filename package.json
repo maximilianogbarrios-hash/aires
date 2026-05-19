@@ -8,7 +8,7 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "dev": "node --watch index.js",
-    "test": "node --test test/engine.test.js"
+    "test": "node --test test/engine.test.js test/bank.test.js"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -20,9 +20,11 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
+    "multer": "^2.1.1",
     "otplib": "^12.0.1",
     "pg": "^8.13.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "xlsx": "^0.18.5"
   },
   "author": "Maximiliano Barrios",
   "license": "ISC"

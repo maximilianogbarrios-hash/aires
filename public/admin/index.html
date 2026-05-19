@@ -32,10 +32,7 @@
     </div>
     <div>
       <label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Rol</label>
-      <select id="cf-role" style="width:100%;padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
-        <option value="socio">Socio</option>
-        <option value="admin">Admin</option>
-      </select>
+      <select id="cf-role" style="width:100%;padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
     </div>
     <button type="submit" style="padding:7px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:13px">Crear</button>
   </form>
@@ -66,11 +63,19 @@ async function loadUsers() {
   const max = j.max_users || 10;
   const hdr = document.querySelector('.card:last-of-type p');
   if (hdr) hdr.textContent = `Usuarios existentes (${j.users.length} / ${max})`;
+  // Poblar dropdown de roles
+  const roleSel = document.getElementById('cf-role');
+  const roleLabels = j.role_labels || {};
+  roleSel.innerHTML = (j.roles || ['socio','admin']).map((r) => {
+    const lbl = roleLabels[r] || r;
+    const sel = r === 'socio' ? ' selected' : '';
+    return `<option value="${r}"${sel}>${lbl}</option>`;
+  }).join('');
   const tbody = document.getElementById('users-tbody');
   tbody.innerHTML = j.users.map((u) => `<tr>
     <td>${u.id}</td>
     <td style="font-weight:500">${u.email}</td>
-    <td><span class="bdg b${u.role === 'admin' ? 'A' : 'C'}">${u.role}</span></td>
+    <td><span class="bdg b${u.role === 'admin' ? 'A' : u.role === 'socio' ? 'C' : 'B'}">${roleLabels[u.role] || u.role}</span></td>
     <td>${u.totp_enabled ? '<span class="bdg bV">2FA on</span>' : '<span class="bdg bJ">sin 2FA</span>'}</td>
     <td style="font-size:11px;color:var(--text-2)">${new Date(u.created_at).toLocaleString('es-ES')}</td>
     <td style="text-align:right">

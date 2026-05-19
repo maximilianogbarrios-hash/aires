@@ -11,16 +11,17 @@ async function seedUsers() {
   ];
 
   // USER1..USER10: USERn_EMAIL / USERn_PASSWORD / USERn_ROLE
+  const { ROLES } = require('../lib/roles');
   const extras = [];
   for (let i = 1; i <= 10; i++) {
     const em = process.env[`USER${i}_EMAIL`];
     const pw = process.env[`USER${i}_PASSWORD`];
     const ro = (process.env[`USER${i}_ROLE`] || 'socio').toLowerCase();
     if (!em || !pw) continue;
-    if (!['admin','socio'].includes(ro)) {
+    if (!ROLES.includes(ro)) {
       console.log(`[seed] USER${i}_ROLE inválido (${ro}), uso 'socio'`);
     }
-    extras.push({ email: em, password: pw, role: ['admin','socio'].includes(ro) ? ro : 'socio', label: `USER${i}` });
+    extras.push({ email: em, password: pw, role: ROLES.includes(ro) ? ro : 'socio', label: `USER${i}` });
   }
 
   const users = [...base, ...extras];
