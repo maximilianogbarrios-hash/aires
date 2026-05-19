@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aires Burger — Rentabilidad</title>
+<link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar no-print">
+  <div>
+    <p style="font-size:10px;text-transform:uppercase;letter-spacing:1.6px;color:var(--text-2)">AIRES BURGER</p>
+    <h1>Análisis de rentabilidad</h1>
+  </div>
+  <div class="actions">
+    <span class="meta" id="tb-user">—</span>
+    <a href="/admin" id="tb-admin-link" style="display:none">Usuarios</a>
+    <button onclick="window.print()">Imprimir</button>
+    <button onclick="logout()">Salir</button>
+  </div>
+</div>
+
+<!-- SOCIEDAD TOGGLE -->
+<div style="padding:.5rem 0 .5rem;display:flex;align-items:center;gap:10px;flex-wrap:wrap" class="no-print">
+  <span style="font-size:12px;font-weight:500;color:var(--text-2)">Vista:</span>
+  <button class="tgl" id="tb-soc" onclick="setSoc(true)" style="font-size:13px;padding:5px 14px">SOCIEDAD</button>
+  <button class="tgl on" id="tb-com" onclick="setSoc(false)" style="font-size:13px;padding:5px 14px">COMPLETO</button>
+  <div id="soc-notice" style="display:none;padding:5px 12px;background:#FAF5FF;border:.5px solid #D8B4FE;border-radius:var(--r-md);font-size:12px;color:#7E22CE;font-weight:500">
+    Modo Sociedad · 13 locales (ELCHE excluido de cálculos)
+  </div>
+</div>
+
+<!-- HEADER -->
+<div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:1rem">
+  <div>
+    <p style="font-size:12px;color:var(--text-2);margin-top:2px" id="hdr-sub">Mi Análisis · 14 locales</p>
+  </div>
+  <div style="text-align:right">
+    <p style="font-size:11px;color:var(--text-2)">Facturación</p>
+    <p style="font-size:19px;font-weight:500" id="hdr-fac">—</p>
+    <p style="font-size:12px" id="hdr-mg">—</p>
+  </div>
+</div>
+
+<!-- KPIs -->
+<div class="g4" style="margin-bottom:1.25rem">
+  <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Facturación total</p><p style="font-size:19px;font-weight:500" id="k-fac">—</p></div>
+  <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Margen operativo</p><p style="font-size:19px;font-weight:500" id="k-mg">—</p><p style="font-size:11px;color:var(--text-2)" id="k-mgp">—</p></div>
+  <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Viables (&gt;15%)</p><p style="font-size:19px;font-weight:500" id="k-via">—</p></div>
+  <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Horas/sem totales</p><p style="font-size:19px;font-weight:500" id="k-horas">—</p><p style="font-size:11px;color:var(--text-2)" id="k-horas-s">—</p></div>
+</div>
+
+<!-- PARAMS PANEL -->
+<div class="card no-print" style="margin-bottom:1.25rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="togglePanel()">
+    <p style="font-size:14px;font-weight:500">⚙ Parámetros</p>
+    <span id="pchev" style="font-size:16px;transition:transform .2s">⌄</span>
+  </div>
+  <div id="pbody" style="display:none;margin-top:1rem">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem 2rem;margin-bottom:1rem">
+      <div>
+        <p style="font-size:11px;font-weight:500;color:var(--text-2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px">% sobre facturación</p>
+        <div class="pr"><span class="pl">Materia Prima</span><input type="range" min="30" max="50" step=".5" id="sMP" oninput="syncSlider()"><span class="pv" id="vMP">—</span></div>
+        <div class="pr"><span class="pl">Personal</span><input type="range" min="20" max="45" step=".5" id="sPers" oninput="syncSlider()"><span class="pv" id="vPers">—</span></div>
+        <div class="pr"><span class="pl">Impuestos</span><input type="range" min="0" max="5" step=".1" id="sImp" oninput="syncSlider()"><span class="pv" id="vImp">—</span></div>
+        <div class="pr"><span class="pl">Publicidad</span><input type="range" min="0" max="3" step=".1" id="sPub" oninput="syncSlider()"><span class="pv" id="vPub">—</span></div>
+        <div class="pr"><span class="pl">€/hora con SS</span><input type="range" min="8" max="20" step=".5" id="sHora" oninput="syncSlider()"><span class="pv" id="vHora">—</span></div>
+      </div>
+      <div>
+        <p style="font-size:11px;font-weight:500;color:var(--text-2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px">Pool de producción — grupos incluidos</p>
+        <p style="font-size:11px;color:var(--text-2);margin-bottom:8px">Los grupos seleccionados comparten el costo de producción</p>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:4px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="pg-A" onchange="syncPool()"> <span style="color:#639922;font-weight:500">A — Mantener</span></label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:4px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="pg-B" onchange="syncPool()"> <span style="color:#BA7517;font-weight:500">B — Analizar</span></label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:4px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="pg-C" onchange="syncPool()"> <span style="color:#185FA5;font-weight:500">C — Especial</span></label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:4px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="pg-D" onchange="syncPool()"> <span style="color:#A32D2D;font-weight:500">D — Salida</span></label>
+        </div>
+        <div style="margin-bottom:12px">
+          <p style="font-size:12px;color:var(--text-2);margin-bottom:6px">Comisión Glovo (22%×27%≈6% fac.)</p>
+          <div style="display:flex;gap:6px"><button class="tgl" id="tg-gon" onclick="togGlovo(true)">Incluir</button><button class="tgl" id="tg-goff" onclick="togGlovo(false)">Excluir</button></div>
+        </div>
+      </div>
+    </div>
+    <!-- SERVICIOS -->
+    <div style="border-top:.5px solid var(--border-3);padding-top:1rem;margin-bottom:1rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <p style="font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:.8px;color:var(--text-2)">Alquiler y servicios por local — editable</p>
+        <p style="font-size:11px;color:var(--text-2)">Ratio alquiler/fac objetivo &lt;10%</p>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>Local</th><th>Grp</th>
+            <th style="text-align:right">Alquiler €/mes</th>
+            <th style="text-align:right">Suministros €/mes</th>
+            <th style="text-align:right">Total Servicios</th>
+            <th style="text-align:right">Mi Análisis</th>
+            <th style="text-align:right">Ratio Alq/Fac</th>
+          </tr></thead>
+          <tbody id="srv-table"></tbody>
+        </table>
+      </div>
+    </div>
+    <div style="border-top:.5px solid var(--border-3);padding-top:1rem">
+      <p style="font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:.8px;color:var(--text-2);margin-bottom:8px">Facturación Mi Análisis — editable</p>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px 12px" id="fac-inputs"></div>
+    </div>
+  </div>
+</div>
+
+<!-- TABS -->
+<div style="border-bottom:.5px solid var(--border-3);margin-bottom:1.25rem;display:flex;overflow-x:auto;gap:0" class="no-print">
+  <button class="tab on" data-tab="resumen" onclick="showTab('resumen',this)">Resumen</button>
+  <button class="tab" data-tab="ranking" onclick="showTab('ranking',this)">Ranking</button>
+  <button class="tab" data-tab="costos" onclick="showTab('costos',this)">Costos</button>
+  <button class="tab" data-tab="presupuesto" onclick="showTab('presupuesto',this)">Presupuesto</button>
+  <button class="tab" data-tab="evolucion" onclick="showTab('evolucion',this)">Evolución</button>
+  <button class="tab" data-tab="traspasos" onclick="showTab('traspasos',this)">Traspasos</button>
+</div>
+
+<!-- RESUMEN -->
+<div id="sect-resumen" class="sect on">
+  <div id="res-groups" style="display:grid;gap:10px;margin-bottom:1.25rem"></div>
+  <div class="card">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Facturación vs gastos por local</p>
+    <div id="leg-res" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px"></div>
+    <div style="position:relative;height:270px"><canvas id="ch-res">—</canvas></div>
+  </div>
+  <div id="res-elche"></div>
+</div>
+
+<!-- RANKING -->
+<div id="sect-ranking" class="sect">
+  <div id="rank-grp" style="margin-bottom:1.25rem"></div>
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;flex-wrap:wrap;gap:8px">
+      <p style="font-size:13px;font-weight:500">Locales — Margen, Horas y Alquiler</p>
+      <p style="font-size:11px;color:var(--text-2)">Click en encabezado para ordenar · Horas/sem en amarillo = manual</p>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th onclick="srt('n')"># Local<span id="ar-n"> ⇕</span></th>
+          <th onclick="srt('g')">Grp<span id="ar-g"> ⇕</span></th>
+          <th onclick="srt('fac')" style="text-align:right">Fac.<span id="ar-fac"> ⇕</span></th>
+          <th onclick="srt('tG')" style="text-align:right">Gastos<span id="ar-tG"> ⇕</span></th>
+          <th onclick="srt('mg')" style="text-align:right">Margen €<span id="ar-mg"> ⇕</span></th>
+          <th onclick="srt('mgP')" style="text-align:right">Margen %<span id="ar-mgP"> ⇕</span></th>
+          <th style="text-align:right">Alq/Fac</th>
+          <th style="text-align:right">Horas/mes</th>
+          <th style="text-align:right">Horas/sem<br><span style="font-size:10px;color:var(--text-2)">(editable)</span></th>
+          <th style="text-align:center">Estado</th>
+        </tr></thead>
+        <tbody id="tb-rank"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Desglose de costos por local</p>
+    <div id="leg-rank" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px"></div>
+    <div style="position:relative;height:500px"><canvas id="ch-rank">—</canvas></div>
+  </div>
+  <div id="rank-elche"></div>
+</div>
+
+<!-- COSTOS -->
+<div id="sect-costos" class="sect">
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Seleccionar grupos a analizar</p>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;padding:5px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="cg-E" onchange="updCostos()"> <span style="color:#7E22CE;font-weight:500">ELCHE</span></label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;padding:5px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="cg-A" checked onchange="updCostos()"> <span style="color:#639922;font-weight:500">A — Mantener</span></label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;padding:5px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="cg-B" checked onchange="updCostos()"> <span style="color:#BA7517;font-weight:500">B — Analizar</span></label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;padding:5px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="cg-C" onchange="updCostos()"> <span style="color:#185FA5;font-weight:500">C</span></label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;padding:5px 10px;border:.5px solid var(--border-3);border-radius:var(--r-md)"><input type="checkbox" id="cg-D" onchange="updCostos()"> <span style="color:#A32D2D;font-weight:500">D</span></label>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Distribución de costos — selección actual</p>
+    <div style="display:grid;grid-template-columns:240px 1fr;gap:1.5rem;align-items:center">
+      <div style="position:relative;height:250px"><canvas id="ch-donut">—</canvas></div>
+      <div id="costos-legend" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px"></div>
+    </div>
+  </div>
+  <div class="card"><p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Detalle por local</p>
+    <div style="overflow-x:auto"><table><thead><tr>
+      <th>Local</th><th>G</th><th style="text-align:right">Fac.</th>
+      <th style="text-align:right;color:#639922">Mat.Prima</th>
+      <th style="text-align:right;color:#BA7517">Personal</th>
+      <th style="text-align:right;color:#A32D2D">Imp.</th>
+      <th style="text-align:right;color:#DB2777">Pub.</th>
+      <th style="text-align:right;color:#185FA5">Alquiler</th>
+      <th style="text-align:right;color:#185FA5">Suminit.</th>
+      <th style="text-align:right;color:#7C3AED">Glovo</th>
+      <th style="text-align:right;color:#0891B2">Produc.</th>
+      <th style="text-align:right;color:#0891B2">Espec.</th>
+      <th style="text-align:right;font-weight:500">Total</th>
+    </tr></thead><tbody id="tb-costos"></tbody></table></div>
+  </div>
+</div>
+
+<!-- PRESUPUESTO -->
+<div id="sect-presupuesto" class="sect">
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div>
+        <p style="font-size:13px;font-weight:500">Presupuesto mensual</p>
+        <p style="font-size:11px;color:var(--text-2)">Base: facturación real del mismo mes de 2025 · Editable por local · Columna Real para cargar resultados</p>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:12px;color:var(--text-2)">Mes:</span>
+        <select id="pres-month" onchange="onPresMonthChange()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:var(--r-md);font-size:12px;background:var(--bg-primary);color:var(--text)">
+          <option value="2026-5">Mayo 2026</option>
+          <option value="2026-6">Junio 2026</option>
+          <option value="2026-7">Julio 2026</option>
+          <option value="2026-8">Agosto 2026</option>
+          <option value="2026-9">Septiembre 2026</option>
+          <option value="2026-10">Octubre 2026</option>
+          <option value="2026-11">Noviembre 2026</option>
+          <option value="2026-12">Diciembre 2026</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="g4" style="margin-bottom:1rem">
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Fac. presupuestada</p><p style="font-size:18px;font-weight:500" id="pk-fac">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Margen presupuestado</p><p style="font-size:18px;font-weight:500" id="pk-mg">—</p><p style="font-size:11px;color:var(--text-2)" id="pk-mgp">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Fac. real ingresada</p><p style="font-size:18px;font-weight:500" id="pk-real">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Variación real/presup.</p><p style="font-size:18px;font-weight:500" id="pk-var">—</p></div>
+  </div>
+  <div class="card">
+    <div style="overflow-x:auto"><table>
+      <thead><tr>
+        <th>Local</th><th>G</th>
+        <th style="text-align:right">Fac. Pres.</th>
+        <th style="text-align:right">Mat.Prima</th>
+        <th style="text-align:right">Personal</th>
+        <th style="text-align:right">Hs/sem</th>
+        <th style="text-align:right">Alq+Srv</th>
+        <th style="text-align:right">Glovo</th>
+        <th style="text-align:right">Pub.</th>
+        <th style="text-align:right">Imp.</th>
+        <th style="text-align:right">Produc.</th>
+        <th style="text-align:right">Espec.</th>
+        <th style="text-align:right">Total Gastos</th>
+        <th style="text-align:right">Margen €</th>
+        <th style="text-align:right">Margen %</th>
+        <th style="text-align:right;color:#1B5E20">Real €</th>
+        <th style="text-align:right">Variación</th>
+      </tr></thead>
+      <tbody id="tb-pres"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- EVOLUCION -->
+<div id="sect-evolucion" class="sect">
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+      <p style="font-size:13px;font-weight:500">Facturación total mensual · Ene 2024 a Abr 2026</p>
+      <div style="display:flex;gap:10px;font-size:11px">
+        <span class="lbl"><span class="lbl-sq" style="background:#B5D4F4"></span>2024</span>
+        <span class="lbl"><span class="lbl-sq" style="background:#185FA5"></span>2025</span>
+        <span class="lbl"><span class="lbl-sq" style="background:#BA7517"></span>2026</span>
+      </div>
+    </div>
+    <div style="position:relative;height:250px"><canvas id="ch-ev-tot">—</canvas></div>
+  </div>
+  <div class="card">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.75rem">
+      <p style="font-size:13px;font-weight:500">Evolución por local — 2025</p>
+      <div style="display:flex;flex-wrap:wrap;gap:5px" id="loc-filter"></div>
+    </div>
+    <div id="leg-evloc" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px"></div>
+    <div style="position:relative;height:270px"><canvas id="ch-ev-loc">—</canvas></div>
+  </div>
+  <div class="card" style="margin-top:1.25rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:.75rem">
+      <div>
+        <p style="font-size:13px;font-weight:500">Incidencia por local — % sobre facturación total</p>
+        <p style="font-size:11px;color:var(--text-2)">Sin Chicken Thader ni Chicken Uncles · Locales activos únicamente</p>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button onclick="navMes(-1)" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:var(--r-md);cursor:pointer;background:transparent;font-size:14px">◀</button>
+        <span id="donut-mes-lbl" style="font-size:13px;font-weight:500;min-width:90px;text-align:center">—</span>
+        <button onclick="navMes(1)" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:var(--r-md);cursor:pointer;background:transparent;font-size:14px">▶</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:280px 1fr;gap:1.5rem;align-items:center">
+      <div style="position:relative;height:280px"><canvas id="ch-incid">—</canvas></div>
+      <div id="incid-legend" style="display:grid;grid-template-columns:1fr 1fr;gap:5px 16px"></div>
+    </div>
+    <div style="margin-top:.75rem;padding:.6rem .9rem;background:var(--bg-secondary);border-radius:var(--r-md)">
+      <p style="font-size:11px;color:var(--text-2)" id="incid-total-lbl">—</p>
+    </div>
+  </div>
+</div>
+
+<!-- TRASPASOS -->
+<div id="sect-traspasos" class="sect">
+  <p style="font-size:12px;color:var(--text-2);margin-bottom:1rem">Locales Grupo D — Salida.</p>
+  <div id="trsp-cards"></div>
+</div>
+
+<div class="save-pill" id="save-pill">Guardado</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="/js/data.js"></script>
+<script src="/js/engine.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/main.js"></script>
+</body>
+</html>

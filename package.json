@@ -1,0 +1,27 @@
+{
+  "name": "aires-solo",
+  "version": "1.0.0",
+  "description": "Aires Burger Bar — Análisis de rentabilidad. App independiente.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js",
+    "dev": "node --watch index.js",
+    "test": "node --test test/engine.test.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "connect-pg-simple": "^9.0.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "pg": "^8.13.0"
+  },
+  "author": "Maximiliano Barrios",
+  "license": "ISC"
+}

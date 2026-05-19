@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aires Burger — Acceso</title>
+<link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+<div class="login-box">
+  <p style="font-size:11px;text-transform:uppercase;letter-spacing:1.8px;color:var(--text-2);margin-bottom:4px">AIRES BURGER</p>
+  <h1>Análisis de rentabilidad</h1>
+  <form id="loginForm">
+    <label for="email">Email</label>
+    <input id="email" type="email" required autocomplete="username">
+    <label for="password">Contraseña</label>
+    <input id="password" type="password" required autocomplete="current-password">
+    <div class="err" id="err"></div>
+    <button type="submit" id="btn">Entrar</button>
+  </form>
+</div>
+<script>
+const form=document.getElementById('loginForm'),btn=document.getElementById('btn'),err=document.getElementById('err');
+form.addEventListener('submit',async (ev)=>{
+  ev.preventDefault();
+  err.textContent='';btn.disabled=true;btn.textContent='Entrando...';
+  try{
+    const r=await fetch('/api/v1/auth/login',{
+      method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({email:document.getElementById('email').value,password:document.getElementById('password').value})
+    });
+    const j=await r.json();
+    if(!r.ok){err.textContent=j.error||'Error';btn.disabled=false;btn.textContent='Entrar';return;}
+    location.href='/dashboard';
+  }catch(e){err.textContent='Error de red';btn.disabled=false;btn.textContent='Entrar';}
+});
+</script>
+</body>
+</html>
