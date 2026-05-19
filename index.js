@@ -74,6 +74,10 @@ app.get('/admin', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin', 'index.html'));
 });
 
+app.get('/account', requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'account', 'index.html'));
+});
+
 // ─── 404 ──────────────────────────────────────────────────────────────
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'not found' });

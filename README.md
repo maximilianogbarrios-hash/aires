@@ -40,7 +40,7 @@ aires-solo/
 ```
 
 ## DB schema (prefijo `ab_`)
-- `ab_users` — id, email, password_hash, role(admin|socio)
+- `ab_users` — id, email, password_hash, role(admin|socio), `totp_secret`, `totp_enabled`
 - `ab_config` — clave PK, valor jsonb
 - `ab_locales` — id, nombre_display, short_name, grupo(A-D), dani_only, alquiler, suministros, fac_mi_analisis, horas_sem_override
 - `ab_presupuesto` — local_id, anio, mes, fac_presupuestada, fac_real (UNIQUE local_id+anio+mes)
@@ -52,15 +52,23 @@ aires-solo/
 Todas requieren sesión.
 
 ### Auth
-- `POST /api/v1/auth/login` — `{ email, password }` → sesión 7 días
+- `POST /api/v1/auth/login` — `{ email, password }` → si el usuario tiene 2FA, responde `{ needs2fa: true }` y abre sesión parcial (5 min); si no, abre sesión completa (7 días).
+- `POST /api/v1/auth/login/2fa` — `{ code }` completa el login si hay sesión parcial.
 - `POST /api/v1/auth/logout`
 - `GET  /api/v1/auth/me`
 
+### 2FA (TOTP — Google Authenticator / Authy / 1Password)
+- `GET  /api/v1/auth/2fa/status` — `{ enabled }`
+- `POST /api/v1/auth/2fa/setup` — genera secret + URL otpauth + QR data URL.
+- `POST /api/v1/auth/2fa/confirm` — `{ code }` activa el 2FA tras verificar el primer código.
+- `POST /api/v1/auth/2fa/disable` — `{ password, code }` desactiva 2FA (requiere ambos).
+
 ### Users (solo admin)
-- `GET    /api/v1/users`
-- `POST   /api/v1/users` — `{ email, password, role }` (máx 5 usuarios)
+- `GET    /api/v1/users` — devuelve también `max_users` y `totp_enabled` por usuario.
+- `POST   /api/v1/users` — `{ email, password, role }` (límite `MAX_USERS`, default 10)
 - `PUT    /api/v1/users/:id/password` — `{ password }`
-- `DELETE /api/v1/users/:id`
+- `DELETE /api/v1/users/:id/2fa` — admin fuerza desactivar 2FA (rescate si pierde el autenticador).
+- `DELETE /api/v1/users/:id` — borrar usuario.
 
 ### Aires
 - `GET /api/v1/aires/bootstrap` — todo lo que el front necesita (config + locales + historial + presupuesto + user)
@@ -91,6 +99,9 @@ npm start
    - `NODE_ENV=production`
    - `ADMIN_EMAIL` y `ADMIN_PASSWORD`
    - `SOCIO_EMAIL` y `SOCIO_PASSWORD`
+   - (Opcional) `USER1_EMAIL`/`USER1_PASSWORD`/`USER1_ROLE` … `USER10_*` para seedear más usuarios al primer arranque.
+   - (Opcional) `MAX_USERS=10` — límite duro de usuarios.
+   - (Opcional) `TOTP_ISSUER=AiresBurger` — nombre que aparece en la app autenticadora.
 5. Railway corre `npm run migrate && npm run seed && npm start` automáticamente (ver `Procfile` / `railway.json`)
 6. El healthcheck es `GET /health`
 

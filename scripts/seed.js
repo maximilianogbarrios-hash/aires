@@ -4,18 +4,34 @@ const { pool, query, one } = require('../lib/db');
 const { LOCALES, H25, HTOT_MENSUAL, DEFAULT_CONFIG } = require('../lib/seed-data');
 
 async function seedUsers() {
-  const users = [
-    { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD, role: 'admin' },
-    { email: process.env.SOCIO_EMAIL, password: process.env.SOCIO_PASSWORD, role: 'socio' },
+  // ADMIN y SOCIO clásicos (compat con versión anterior)
+  const base = [
+    { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD, role: 'admin', label: 'ADMIN' },
+    { email: process.env.SOCIO_EMAIL, password: process.env.SOCIO_PASSWORD, role: 'socio', label: 'SOCIO' },
   ];
+
+  // USER1..USER10: USERn_EMAIL / USERn_PASSWORD / USERn_ROLE
+  const extras = [];
+  for (let i = 1; i <= 10; i++) {
+    const em = process.env[`USER${i}_EMAIL`];
+    const pw = process.env[`USER${i}_PASSWORD`];
+    const ro = (process.env[`USER${i}_ROLE`] || 'socio').toLowerCase();
+    if (!em || !pw) continue;
+    if (!['admin','socio'].includes(ro)) {
+      console.log(`[seed] USER${i}_ROLE inválido (${ro}), uso 'socio'`);
+    }
+    extras.push({ email: em, password: pw, role: ['admin','socio'].includes(ro) ? ro : 'socio', label: `USER${i}` });
+  }
+
+  const users = [...base, ...extras];
   for (const u of users) {
     if (!u.email || !u.password) {
-      console.log(`[seed] skip ${u.role}: faltan env (${u.role === 'admin' ? 'ADMIN' : 'SOCIO'}_EMAIL/PASSWORD)`);
+      console.log(`[seed] skip ${u.label}: faltan vars ${u.label}_EMAIL/PASSWORD`);
       continue;
     }
     const exists = await one('SELECT id FROM ab_users WHERE email=$1', [u.email.toLowerCase()]);
     if (exists) {
-      console.log(`[seed] user ${u.email} exists`);
+      console.log(`[seed] user ${u.email} ya existe`);
       continue;
     }
     const hash = bcrypt.hashSync(u.password, 10);
@@ -23,7 +39,7 @@ async function seedUsers() {
       'INSERT INTO ab_users (email, password_hash, role) VALUES ($1,$2,$3)',
       [u.email.toLowerCase(), hash, u.role]
     );
-    console.log(`[seed] user ${u.email} (${u.role}) created`);
+    console.log(`[seed] user ${u.email} (${u.role}) creado`);
   }
 }
 

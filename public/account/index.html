@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aires Burger — Mi cuenta</title>
+<link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <p style="font-size:10px;text-transform:uppercase;letter-spacing:1.6px;color:var(--text-2)">AIRES BURGER</p>
+    <h1>Mi cuenta</h1>
+  </div>
+  <div class="actions">
+    <a href="/dashboard">← Dashboard</a>
+    <button onclick="logout()">Salir</button>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:1rem;max-width:680px">
+  <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Autenticación en dos factores (2FA)</p>
+  <p style="font-size:12px;color:var(--text-2);margin-bottom:1rem">
+    Suma una capa de seguridad: además de la contraseña, vas a necesitar un código de 6 dígitos generado por una app
+    (Google Authenticator, Authy, 1Password, Microsoft Authenticator, etc.).
+  </p>
+  <div id="status-box"></div>
+</div>
+
+<!-- SETUP MODAL/SECTION -->
+<div class="card" id="setup-card" style="display:none;max-width:680px;margin-bottom:1rem">
+  <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Activar 2FA — paso 1: escaneá el QR</p>
+  <ol style="font-size:12px;color:var(--text-2);margin-left:1.25rem;margin-bottom:1rem;line-height:1.6">
+    <li>Abrí tu app autenticadora (Google Authenticator, Authy, 1Password…).</li>
+    <li>Escaneá el código QR de abajo (o pegá manualmente el secret).</li>
+    <li>Ingresá el código de 6 dígitos que aparece en la app.</li>
+  </ol>
+  <div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start;margin-bottom:1rem">
+    <img id="qr-img" alt="Código QR para 2FA" style="border:.5px solid var(--border-3);border-radius:8px;background:#fff;padding:8px">
+    <div>
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Secret manual</p>
+      <code id="secret-text" style="display:block;font-family:ui-monospace,monospace;font-size:13px;padding:6px 10px;background:var(--bg-secondary);border-radius:6px;word-break:break-all;margin-bottom:8px"></code>
+      <p style="font-size:11px;color:var(--text-2)">Si tu app pide más datos: tipo TOTP, dígitos 6, período 30s, algoritmo SHA1.</p>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:.5rem">
+    <input id="confirm-code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456" style="font-size:18px;letter-spacing:4px;padding:8px 12px;width:140px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);text-align:center">
+    <button onclick="confirm2fa()" style="padding:9px 18px;border:none;border-radius:6px;background:#16a34a;color:#fff;cursor:pointer;font-weight:500">Confirmar y activar</button>
+    <button onclick="cancelSetup()" style="padding:9px 14px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer">Cancelar</button>
+  </div>
+  <p id="confirm-msg" style="font-size:12px;min-height:1em"></p>
+</div>
+
+<!-- DISABLE SECTION -->
+<div class="card" id="disable-card" style="display:none;max-width:680px;margin-bottom:1rem">
+  <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Desactivar 2FA</p>
+  <p style="font-size:12px;color:var(--text-2);margin-bottom:1rem">
+    Para desactivarlo necesitás tu contraseña actual <strong>y</strong> un código válido de la app.
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 160px auto auto;gap:8px;align-items:end">
+    <div>
+      <label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Contraseña</label>
+      <input id="dis-pw" type="password" style="width:100%;padding:7px 9px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
+    </div>
+    <div>
+      <label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Código 2FA</label>
+      <input id="dis-code" type="text" inputmode="numeric" maxlength="6" style="width:100%;padding:7px 9px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:15px;letter-spacing:3px;text-align:center">
+    </div>
+    <button onclick="disable2fa()" style="padding:8px 14px;border:none;border-radius:6px;background:#dc2626;color:#fff;cursor:pointer;font-weight:500">Desactivar</button>
+    <button onclick="hideDisable()" style="padding:8px 14px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer">Cancelar</button>
+  </div>
+  <p id="dis-msg" style="font-size:12px;margin-top:.6rem;min-height:1em"></p>
+</div>
+
+<div class="save-pill" id="save-pill">Guardado</div>
+
+<script>
+async function api(url, opts = {}) {
+  const r = await fetch(url, {
+    ...opts,
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json', ...(opts.headers || {}) },
+  });
+  if (r.status === 401) return location.href = '/login';
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+function pill(t, err) {
+  const el = document.getElementById('save-pill');
+  el.textContent = t;
+  el.classList.toggle('error', !!err);
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 1400);
+}
+
+async function load() {
+  const j = await api('/api/v1/auth/2fa/status');
+  const box = document.getElementById('status-box');
+  if (j.enabled) {
+    box.innerHTML = `
+      <div style="padding:.85rem 1rem;background:#EAF3DE;border:.5px solid #BEDB9B;border-radius:8px;margin-bottom:.5rem">
+        <p style="font-size:13px;font-weight:500;color:#3B6D11;margin-bottom:2px">2FA activo</p>
+        <p style="font-size:11px;color:#3B6D11">Cada login va a pedirte el código de 6 dígitos de tu app autenticadora.</p>
+      </div>
+      <button onclick="showDisable()" style="margin-top:.5rem;padding:7px 14px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:#dc2626;cursor:pointer;font-size:12px">Desactivar 2FA</button>
+    `;
+  } else {
+    box.innerHTML = `
+      <div style="padding:.85rem 1rem;background:#FAEEDA;border:.5px solid #F2D9A8;border-radius:8px;margin-bottom:.5rem">
+        <p style="font-size:13px;font-weight:500;color:#854F0B;margin-bottom:2px">2FA desactivado</p>
+        <p style="font-size:11px;color:#854F0B">Tu cuenta sólo está protegida por contraseña. Activá 2FA para sumarle un segundo factor.</p>
+      </div>
+      <button onclick="setup()" style="margin-top:.5rem;padding:8px 16px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:13px">Activar 2FA</button>
+    `;
+  }
+}
+
+async function setup() {
+  try {
+    const j = await api('/api/v1/auth/2fa/setup', { method: 'POST' });
+    document.getElementById('qr-img').src = j.qr_data_url;
+    document.getElementById('secret-text').textContent = j.secret;
+    document.getElementById('setup-card').style.display = '';
+    document.getElementById('confirm-msg').textContent = '';
+    document.getElementById('confirm-code').value = '';
+    document.getElementById('confirm-code').focus();
+  } catch (e) {
+    pill(e.message, true);
+  }
+}
+
+async function confirm2fa() {
+  const code = document.getElementById('confirm-code').value.trim();
+  const msg = document.getElementById('confirm-msg');
+  msg.textContent = '';
+  if (!/^\d{6}$/.test(code)) { msg.textContent = 'Ingresá 6 dígitos'; msg.style.color = '#dc2626'; return; }
+  try {
+    await api('/api/v1/auth/2fa/confirm', { method: 'POST', body: JSON.stringify({ code }) });
+    document.getElementById('setup-card').style.display = 'none';
+    pill('2FA activado');
+    load();
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.style.color = '#dc2626';
+  }
+}
+
+function cancelSetup() {
+  document.getElementById('setup-card').style.display = 'none';
+}
+
+function showDisable() {
+  document.getElementById('disable-card').style.display = '';
+  document.getElementById('dis-pw').focus();
+}
+function hideDisable() {
+  document.getElementById('disable-card').style.display = 'none';
+  document.getElementById('dis-msg').textContent = '';
+}
+
+async function disable2fa() {
+  const password = document.getElementById('dis-pw').value;
+  const code = document.getElementById('dis-code').value.trim();
+  const msg = document.getElementById('dis-msg');
+  msg.textContent = '';
+  if (!password || !/^\d{6}$/.test(code)) { msg.textContent = 'Contraseña + 6 dígitos requeridos'; msg.style.color = '#dc2626'; return; }
+  try {
+    await api('/api/v1/auth/2fa/disable', { method: 'POST', body: JSON.stringify({ password, code }) });
+    hideDisable();
+    pill('2FA desactivado');
+    document.getElementById('dis-pw').value = '';
+    document.getElementById('dis-code').value = '';
+    load();
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.style.color = '#dc2626';
+  }
+}
+
+async function logout() {
+  await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  location.href = '/login';
+}
+
+load();
+</script>
+</body>
+</html>

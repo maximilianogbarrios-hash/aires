@@ -1,17 +1,18 @@
 const express = require('express');
 const {
   listUsers, createUser, updateUserPassword, deleteUser, countUsers,
-  requireAuth, requireAdmin,
+  requireAuth, requireAdmin, disableTotp,
 } = require('../lib/auth');
 
 const router = express.Router();
+const MAX_USERS = +(process.env.MAX_USERS || 10);
 
 router.use(requireAuth, requireAdmin);
 
 router.get('/', async (req, res) => {
   try {
     const users = await listUsers();
-    res.json({ users });
+    res.json({ users, max_users: MAX_USERS });
   } catch (e) {
     console.error('[users.list]', e);
     res.status(500).json({ error: 'internal' });
@@ -23,12 +24,23 @@ router.post('/', async (req, res) => {
     const { email, password, role } = req.body || {};
     if (!email || !password || !role) return res.status(400).json({ error: 'email/password/role requeridos' });
     const c = await countUsers();
-    if (c >= 5) return res.status(400).json({ error: 'máximo 5 usuarios' });
+    if (c >= MAX_USERS) return res.status(400).json({ error: `máximo ${MAX_USERS} usuarios` });
     const u = await createUser({ email, password, role });
     res.json({ ok: true, user: u });
   } catch (e) {
     if (e.code === '23505') return res.status(400).json({ error: 'email ya existe' });
     console.error('[users.create]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Admin puede forzar desactivar 2FA si un usuario perdió su autenticador.
+router.delete('/:id/2fa', async (req, res) => {
+  try {
+    await disableTotp(+req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[users.disable2fa]', e);
     res.status(500).json({ error: 'internal' });
   }
 });

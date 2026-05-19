@@ -47,7 +47,7 @@
   <div style="overflow-x:auto">
     <table>
       <thead><tr>
-        <th>ID</th><th>Email</th><th>Rol</th><th>Creado</th><th style="text-align:right">Acciones</th>
+        <th>ID</th><th>Email</th><th>Rol</th><th>2FA</th><th>Creado</th><th style="text-align:right">Acciones</th>
       </tr></thead>
       <tbody id="users-tbody"></tbody>
     </table>
@@ -63,17 +63,29 @@ async function loadUsers() {
   if (r.status === 401) return location.href = '/login';
   if (r.status === 403) { document.body.innerHTML = '<p style="padding:2rem">No tenés permisos para acceder a esta página.</p>'; return; }
   const j = await r.json();
+  const max = j.max_users || 10;
+  const hdr = document.querySelector('.card:last-of-type p');
+  if (hdr) hdr.textContent = `Usuarios existentes (${j.users.length} / ${max})`;
   const tbody = document.getElementById('users-tbody');
   tbody.innerHTML = j.users.map((u) => `<tr>
     <td>${u.id}</td>
     <td style="font-weight:500">${u.email}</td>
     <td><span class="bdg b${u.role === 'admin' ? 'A' : 'C'}">${u.role}</span></td>
+    <td>${u.totp_enabled ? '<span class="bdg bV">2FA on</span>' : '<span class="bdg bJ">sin 2FA</span>'}</td>
     <td style="font-size:11px;color:var(--text-2)">${new Date(u.created_at).toLocaleString('es-ES')}</td>
     <td style="text-align:right">
       <button onclick="changePass(${u.id})" style="padding:3px 8px;font-size:11px;border:.5px solid var(--border-2);border-radius:4px;background:transparent;cursor:pointer">Cambiar pass</button>
+      ${u.totp_enabled ? `<button onclick="resetTotp(${u.id})" style="padding:3px 8px;font-size:11px;border:.5px solid var(--border-2);border-radius:4px;background:transparent;cursor:pointer;color:#BA7517">Reset 2FA</button>` : ''}
       <button onclick="delUser(${u.id})" style="padding:3px 8px;font-size:11px;border:.5px solid var(--border-2);border-radius:4px;background:transparent;cursor:pointer;color:#dc2626">Borrar</button>
     </td>
   </tr>`).join('');
+}
+
+async function resetTotp(id) {
+  if (!confirm('¿Desactivar 2FA de este usuario? Va a tener que reactivarlo desde /account.')) return;
+  const r = await fetch(`/api/v1/users/${id}/2fa`, { method: 'DELETE', credentials: 'same-origin' });
+  if (!r.ok) alert((await r.json()).error || 'Error');
+  else { Api.pill('2FA reseteado'); loadUsers(); }
 }
 
 document.getElementById('create-form').addEventListener('submit', async (ev) => {
