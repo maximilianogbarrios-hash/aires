@@ -141,7 +141,11 @@ router.get('/movimientos', async (req, res) => {
     if (search)      { where.push(`concepto ILIKE $${vals.length+1}`); vals.push(`%${search}%`); }
     const W = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-    const totalRow = await one(`SELECT COUNT(*)::int AS c FROM ab_movimientos ${W}`, vals);
+    const totalRow = await one(
+      `SELECT COUNT(*)::int AS c, COALESCE(SUM(importe), 0)::float8 AS total_importe
+         FROM ab_movimientos ${W}`,
+      vals
+    );
     const rows = await many(
       `SELECT id, sociedad_id, banco, fecha, concepto, importe::float8 AS importe,
               categoria, subcategoria, local_id, codigo_banco, num_documento, periodo
@@ -150,7 +154,7 @@ router.get('/movimientos', async (req, res) => {
        LIMIT $${vals.length+1} OFFSET $${vals.length+2}`,
       [...vals, limit, offset]
     );
-    res.json({ total: totalRow.c, limit, offset, rows });
+    res.json({ total: totalRow.c, total_importe: totalRow.total_importe, limit, offset, rows });
   } catch (e) {
     console.error('[bancos.movimientos]', e);
     res.status(500).json({ error: 'internal' });

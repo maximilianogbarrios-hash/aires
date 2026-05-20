@@ -124,15 +124,18 @@
     </div>
   </div>
   <div class="card">
-    <div style="display:flex;justify-content:space-between;margin-bottom:.5rem">
-      <p style="font-size:11px;color:var(--text-2)" id="m-count">—</p>
-      <button onclick="exportCsv()" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Export CSV</button>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.5rem;gap:1rem">
+      <div>
+        <p style="font-size:11px;color:var(--text-2)" id="m-count">—</p>
+        <p style="font-size:12px;font-weight:500;margin-top:2px" id="m-total">Total filtrado: —</p>
+      </div>
+      <button onclick="exportCsv()" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px;flex-shrink:0">Export CSV</button>
     </div>
     <div style="overflow-x:auto"><table>
       <thead><tr>
         <th>Fecha</th><th>Concepto</th>
         <th style="text-align:right">Importe</th>
-        <th>Categoría</th><th>Local</th><th>Código</th>
+        <th>Categoría</th><th>Sociedad</th><th>Local</th><th>Código</th>
       </tr></thead>
       <tbody id="tb-mov"></tbody>
     </table></div>

@@ -20,6 +20,14 @@ const PERIOD_LABELS = (p) => {
   return `${meses[m-1]} ${y}`;
 };
 
+const SOCIEDAD_ABBR = {
+  hostelero: 'GHA',
+  alicante:  'AAL',
+  smart:     'SMA',
+  murcia:    'MUR',
+  benidorm:  'BEN',
+};
+
 const COLORS_CAT = [
   '#185FA5','#639922','#BA7517','#A32D2D','#7C3AED','#DB2777','#0891B2','#D97706',
   '#059669','#DC2626','#0F766E','#9333EA','#B45309','#1E40AF','#15803D','#9F1239',
@@ -267,14 +275,23 @@ async function loadMovs() {
   const j = await api('/api/v1/bancos/movimientos?' + params.toString());
   state.movs = j;
   $('m-count').textContent = `${j.total.toLocaleString('es-ES')} movimientos · mostrando ${j.rows.length}`;
-  $('tb-mov').innerHTML = j.rows.map((m) => `<tr>
-    <td style="font-size:11px">${m.fecha}</td>
-    <td style="font-size:12px">${m.concepto}</td>
-    <td style="text-align:right;font-weight:500;color:${m.importe >= 0 ? '#16a34a' : '#dc2626'}">${eur2(m.importe)}</td>
-    <td style="font-size:11px">${m.categoria || ''}</td>
-    <td style="font-size:11px">${m.local_id || ''}</td>
-    <td style="font-size:11px">${m.codigo_banco || ''}</td>
-  </tr>`).join('');
+  const totalImp = +j.total_importe || 0;
+  const totalEl = $('m-total');
+  totalEl.textContent = `Total filtrado: ${eur2(totalImp)}`;
+  totalEl.style.color = totalImp >= 0 ? '#16a34a' : '#dc2626';
+  $('tb-mov').innerHTML = j.rows.map((m) => {
+    const socAbbr = SOCIEDAD_ABBR[m.sociedad_id] || (m.sociedad_id || '').slice(0,3).toUpperCase();
+    const socName = state.sociedades.find((s) => s.id === m.sociedad_id)?.nombre || m.sociedad_id || '';
+    return `<tr>
+      <td style="font-size:11px">${m.fecha}</td>
+      <td style="font-size:12px">${m.concepto}</td>
+      <td style="text-align:right;font-weight:500;color:${m.importe >= 0 ? '#16a34a' : '#dc2626'}">${eur2(m.importe)}</td>
+      <td style="font-size:11px">${m.categoria || ''}</td>
+      <td style="font-size:11px" title="${socName}">${socAbbr}</td>
+      <td style="font-size:11px">${m.local_id || ''}</td>
+      <td style="font-size:11px">${m.codigo_banco || ''}</td>
+    </tr>`;
+  }).join('');
   $('pg-info').textContent = `Página ${Math.floor(j.offset / j.limit) + 1} / ${Math.ceil(j.total / j.limit) || 1}`;
   $('pg-prev').disabled = j.offset === 0;
   $('pg-next').disabled = j.offset + j.rows.length >= j.total;
