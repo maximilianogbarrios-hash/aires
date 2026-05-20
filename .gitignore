@@ -6,3 +6,4 @@ node_modules/
 data/
 .idea/
 .vscode/
+scripts/banco_data_*.json
