@@ -20,19 +20,19 @@ router.use(requireAuth);
 // libremente como tag; aquí sólo se valida que pertenezca al set.
 const CATEGORIAS_MP = ['Carnes', 'Lácteos', 'Verduras', 'Bebidas', 'Packaging', 'Limpieza', 'Otros MP'];
 
-// Mapeo desde categorías de bancos (categorizer.js) a categoría MP.
-// Sirve para sugerencias en "Importar desde bancos".
+// Mapeo desde categorías nuevas (taxonomía v2 en categorizer.js) a la
+// categoría MP del módulo Pedidos.
 const CAT_BANCO_TO_MP = {
-  GASTO_CARNICAS:             'Carnes',
-  GASTO_HANGUS:               'Carnes',
-  GASTO_COCA_COLA:            'Bebidas',
-  GASTO_ENTREPINARES:         'Lácteos',
-  GASTO_KAUAPACK:             'Packaging',
-  GASTO_EUROFRITS:            'Otros MP',
-  GASTO_ACEITES:              'Otros MP',
-  GASTO_ELAN_FOODS:           'Otros MP',
-  GASTO_MAKRO:                'Otros MP',
-  GASTO_DISTRIBUCIONES_BATOY: 'Otros MP',
+  PROVEEDOR_CARNES:    'Carnes',
+  PROVEEDOR_PANADERIA: 'Otros MP',
+  PROVEEDOR_FRITAS:    'Otros MP',
+  PROVEEDOR_LACTEOS:   'Lácteos',
+  PROVEEDOR_ACEITES:   'Otros MP',
+  PROVEEDOR_BEBIDAS:   'Bebidas',
+  PROVEEDOR_MAKRO:     'Otros MP',
+  PROVEEDOR_LIMPIEZA:  'Limpieza',
+  PROVEEDOR_PACKAGING: 'Packaging',
+  PROVEEDOR_OTROS:     'Otros MP',
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────

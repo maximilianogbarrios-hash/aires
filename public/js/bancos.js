@@ -11,7 +11,8 @@ const state = {
   current_sociedad: null, current_periodo: null,
   resumen: [], cruces: [], proveedores: [],
   movs: { total: 0, rows: [] }, mov_offset: 0, mov_limit: 50,
-  prov: { rows: [], total: 0, intra: 0, n_intra: 0, loaded: false },
+  prov: { rows: [], total: 0, intra: 0, n_intra: 0, loaded: false, vista: null },
+  user: null,
 };
 
 const PERIOD_LABELS = (p) => {
@@ -51,7 +52,10 @@ async function api(url, opts = {}) {
 async function boot() {
   try {
     const me = await api('/api/v1/auth/me');
+    state.user = me.user;
     $('tb-user').textContent = `${me.user.email} (${me.user.role})`;
+    // Vista dual: admin/socio ven "Todos los gastos"; resto ven "Proveedores operativos".
+    aplicarVistaSegunRol();
   } catch {}
   const meta = await api('/api/v1/bancos/meta');
   state.sociedades = meta.sociedades || [];
@@ -92,14 +96,15 @@ function buildSelectors() {
     }
   });
 
-  // Categorías
+  // Categorías (taxonomía v2)
   const cats = [
     'INGRESO_GLOVO','INGRESO_JUST_EAT','INGRESO_BIZUM','INGRESO_STRIPE','INGRESO_TRANSFERENCIA','INGRESO_OTROS',
-    'GASTO_CARNICAS','GASTO_MAKRO','GASTO_DISTRIBUCIONES_BATOY','GASTO_COCA_COLA','GASTO_HANGUS',
-    'GASTO_EUROFRITS','GASTO_ACEITES','GASTO_ELAN_FOODS','GASTO_KAUAPACK','GASTO_ENTREPINARES',
-    'GASTO_LUZ','GASTO_AGUA','GASTO_INTERNET','GASTO_ALQUILER',
-    'GASTO_SS_TGSS','GASTO_NOMINAS','GASTO_HACIENDA','GASTO_PUBLICIDAD','GASTO_SEGUROS','GASTO_SGAE',
-    'GASTO_PRESTAMO_INTERGRUPO','GASTO_OTROS',
+    'IMPUESTOS','SS_LABORAL','NOMINAS','ALQUILER',
+    'SUMINISTROS_LUZ','SUMINISTROS_GAS','SUMINISTROS_AGUA','TELECOMUNICACIONES',
+    'PROVEEDOR_CARNES','PROVEEDOR_PANADERIA','PROVEEDOR_FRITAS','PROVEEDOR_LACTEOS',
+    'PROVEEDOR_ACEITES','PROVEEDOR_BEBIDAS','PROVEEDOR_MAKRO','PROVEEDOR_LIMPIEZA',
+    'PROVEEDOR_PACKAGING','PROVEEDOR_OTROS',
+    'MANTENIMIENTO','SEGUROS','FINANCIERO','INTRAGRUPO','OTROS',
   ];
   const sel = $('m-cat');
   for (const c of cats) {
@@ -292,6 +297,21 @@ function initProvFiltros() {
   }
 }
 
+function rolEsAdmin() {
+  return state.user && ['admin', 'socio'].includes(state.user.role);
+}
+
+function aplicarVistaSegunRol() {
+  // Etiqueta visible que indica qué vista está activa (sin selector editable).
+  const badge = $('prov-vista-badge');
+  if (badge) {
+    const txt = rolEsAdmin() ? 'Vista: Todos los gastos' : 'Vista: Proveedores operativos';
+    badge.textContent = txt;
+    badge.style.background = rolEsAdmin() ? '#F3E8FF' : '#EAF3DE';
+    badge.style.color      = rolEsAdmin() ? '#7E22CE' : '#3B6D11';
+  }
+}
+
 async function loadProvRanking() {
   const params = new URLSearchParams();
   const soc = $('prov-sociedad').value;
@@ -304,6 +324,7 @@ async function loadProvRanking() {
     if (desde) params.set('periodo_desde', desde);
     if (hasta) params.set('periodo_hasta', hasta);
   }
+  // El backend filtra por rol; el front no envía vista (la deja en backend).
   const j = await api('/api/v1/bancos/proveedores?' + params.toString());
   state.prov = {
     rows: j.proveedores || [],
@@ -311,7 +332,9 @@ async function loadProvRanking() {
     intra: j.total_excluido_intra_grupo || 0,
     n_intra: j.n_excluido_intra_grupo || 0,
     loaded: true,
+    vista: j.vista_efectiva || (rolEsAdmin() ? 'admin' : 'operativo'),
   };
+  aplicarVistaSegunRol();
   renderProvKpis();
   renderProvDonut();
   renderProvTabla();
@@ -366,14 +389,42 @@ function renderProvDonut() {
 
 function renderProvTabla() {
   const rows = state.prov.rows;
-  $('tb-proveedores').innerHTML = rows.map((p, i) => `<tr>
-    <td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
-    <td style="font-weight:500;font-size:12px">${p.proveedor}</td>
-    <td style="font-size:11px;color:var(--text-2)">${p.categoria || ''}</td>
-    <td style="text-align:right;color:#dc2626">${eur2(p.total_importe)}</td>
-    <td style="text-align:right">${(p.porcentaje * 100).toFixed(2)}%</td>
-    <td style="text-align:right">${p.num_transacciones}</td>
-  </tr>`).join('');
+  const operativo = state.prov.vista === 'operativo';
+  // Header dinámico — añadir columnas extra en vista operativa.
+  const head = document.querySelector('#sect-proveedores table thead tr');
+  if (head) {
+    head.innerHTML = operativo
+      ? `<th>#</th><th>Proveedor</th><th>Categoría</th>
+         <th style="text-align:right">Total €</th>
+         <th style="text-align:right">% gasto MP</th>
+         <th style="text-align:right">Nº pedidos</th>
+         <th>Último pedido</th>`
+      : `<th>#</th><th>Proveedor</th><th>Categoría</th>
+         <th style="text-align:right">Total €</th>
+         <th style="text-align:right">% gasto</th>
+         <th style="text-align:right">Nº transacciones</th>`;
+  }
+  $('tb-proveedores').innerHTML = rows.map((p, i) => {
+    if (operativo) {
+      return `<tr>
+        <td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
+        <td style="font-weight:500;font-size:12px">${p.proveedor}</td>
+        <td style="font-size:11px;color:var(--text-2)">${(p.categoria || '').replace('PROVEEDOR_', '')}</td>
+        <td style="text-align:right;color:#dc2626">${eur2(p.total_importe)}</td>
+        <td style="text-align:right">${(p.porcentaje * 100).toFixed(2)}%</td>
+        <td style="text-align:right">${p.num_pedidos || 0}</td>
+        <td style="font-size:11px;color:var(--text-2)">${(p.ultimo_pedido || '').slice(0, 10) || '—'}</td>
+      </tr>`;
+    }
+    return `<tr>
+      <td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
+      <td style="font-weight:500;font-size:12px">${p.proveedor}</td>
+      <td style="font-size:11px;color:var(--text-2)">${p.categoria || ''}</td>
+      <td style="text-align:right;color:#dc2626">${eur2(p.total_importe)}</td>
+      <td style="text-align:right">${(p.porcentaje * 100).toFixed(2)}%</td>
+      <td style="text-align:right">${p.num_transacciones}</td>
+    </tr>`;
+  }).join('');
 }
 
 function exportProveedoresCsv() {

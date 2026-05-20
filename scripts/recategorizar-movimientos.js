@@ -1,0 +1,178 @@
+// scripts/recategorizar-movimientos.js — recategorización masiva de
+// ab_movimientos según la nueva taxonomía v2 (lib/bank/categorizer.js).
+//
+// Uso:
+//   node scripts/recategorizar-movimientos.js            → dry-run + log
+//   node scripts/recategorizar-movimientos.js --apply    → UPDATE real
+//   node scripts/recategorizar-movimientos.js --apply --no-recalc-resumen
+//
+// Sólo procesa movimientos con importe < 0 (gastos). Ingresos no se tocan.
+// Documenta en scripts/utils/recategorizacion-log.md las decisiones tomadas
+// y un resumen post-ejecución por categoría.
+
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const { pool, many, query, tx } = require('../lib/db');
+const { categorizar } = require('../lib/bank/categorizer');
+const { recalcResumenMensual } = require('../lib/bank/db');
+
+const APPLY = process.argv.includes('--apply');
+const SKIP_RECALC = process.argv.includes('--no-recalc-resumen');
+
+const LOG_PATH = path.join(__dirname, 'utils', 'recategorizacion-log.md');
+
+function fmtEUR(v) {
+  return new Intl.NumberFormat('es-ES', { maximumFractionDigits: 0 }).format(Math.round(v)) + ' €';
+}
+
+async function main() {
+  console.log('[recat] modo:', APPLY ? 'APPLY (UPDATE real)' : 'DRY-RUN (sin escribir)');
+  console.log('[recat] cargando movimientos importe<0…');
+
+  const rows = await many(
+    `SELECT id, concepto, importe::float8 AS importe, categoria AS cat_old,
+            sociedad_id, periodo
+       FROM ab_movimientos
+      WHERE importe < 0
+      ORDER BY id`
+  );
+  console.log(`[recat] ${rows.length} movimientos`);
+
+  // Recalcular categoría
+  let cambios = 0, iguales = 0;
+  const porNueva = new Map();     // newCat -> {n, total, ids[], cambios:Map<oldCat,n>}
+  const transiciones = new Map(); // 'old -> new' -> {n, total}
+  const muestraPorTransicion = new Map(); // misma key -> [conceptos]
+
+  for (const r of rows) {
+    const nueva = categorizar(r.concepto, +r.importe);
+    const old = r.cat_old || 'GASTO_OTROS';
+    const cur = porNueva.get(nueva) || { n: 0, total: 0, ids: [], cambios: new Map() };
+    cur.n++;
+    cur.total += Math.abs(+r.importe);
+    cur.ids.push(r.id);
+    if (nueva !== old) {
+      cambios++;
+      cur.cambios.set(old, (cur.cambios.get(old) || 0) + 1);
+      const k = `${old} → ${nueva}`;
+      const t = transiciones.get(k) || { n: 0, total: 0 };
+      t.n++; t.total += Math.abs(+r.importe);
+      transiciones.set(k, t);
+      const ms = muestraPorTransicion.get(k) || [];
+      if (ms.length < 5) ms.push(r.concepto.slice(0, 80));
+      muestraPorTransicion.set(k, ms);
+    } else {
+      iguales++;
+    }
+    porNueva.set(nueva, cur);
+  }
+
+  console.log(`[recat] resumen: cambios=${cambios}  iguales=${iguales}`);
+  console.log('--- distribución NUEVA ---');
+  const porNuevaSorted = [...porNueva.entries()].sort((a, b) => b[1].total - a[1].total);
+  for (const [cat, info] of porNuevaSorted) {
+    console.log(`  ${cat.padEnd(22)} ${String(info.n).padStart(5)} movs · ${fmtEUR(info.total).padStart(12)}`);
+  }
+
+  // Periodos afectados (para recalc resumen).
+  const periodosAfectados = new Set();
+  for (const r of rows) {
+    const old = r.cat_old || 'GASTO_OTROS';
+    const nueva = categorizar(r.concepto, +r.importe);
+    if (nueva !== old && r.sociedad_id && r.periodo) {
+      periodosAfectados.add(`${r.sociedad_id}|${r.periodo}`);
+    }
+  }
+  console.log(`[recat] sociedades×periodos a recalcular: ${periodosAfectados.size}`);
+
+  // Aplicar UPDATE masivo por categoría nueva.
+  if (APPLY && cambios > 0) {
+    console.log('[recat] aplicando UPDATEs por lotes de categoría…');
+    let updatesAcum = 0;
+    await tx(async (client) => {
+      for (const [cat, info] of porNueva.entries()) {
+        // Sólo updateamos los IDs que efectivamente cambian.
+        const idsAUpdate = [];
+        for (const id of info.ids) {
+          const r = rows.find((x) => x.id === id);
+          if ((r.cat_old || 'GASTO_OTROS') !== cat) idsAUpdate.push(id);
+        }
+        if (!idsAUpdate.length) continue;
+        // Lotes de 1000 para no exceder parámetros.
+        for (let i = 0; i < idsAUpdate.length; i += 1000) {
+          const slice = idsAUpdate.slice(i, i + 1000);
+          const r = await client.query(
+            'UPDATE ab_movimientos SET categoria=$1 WHERE id = ANY($2::int[])',
+            [cat, slice]
+          );
+          updatesAcum += r.rowCount;
+        }
+      }
+    });
+    console.log(`[recat] UPDATE total filas: ${updatesAcum}`);
+  } else if (!APPLY) {
+    console.log('[recat] DRY-RUN — no se modificó la DB. Pasá --apply para aplicar.');
+  } else {
+    console.log('[recat] sin cambios necesarios.');
+  }
+
+  // Recalcular ab_resumen_mensual.
+  if (APPLY && !SKIP_RECALC && periodosAfectados.size > 0) {
+    console.log('[recat] recalculando ab_resumen_mensual…');
+    let i = 0;
+    for (const k of periodosAfectados) {
+      const [soc, per] = k.split('|');
+      await recalcResumenMensual(soc, per);
+      i++;
+      if (i % 10 === 0) console.log(`  ${i}/${periodosAfectados.size}`);
+    }
+    console.log(`[recat] resúmenes mensuales recalculados: ${i}`);
+  }
+
+  // Escribir el log markdown.
+  const ts = new Date().toISOString();
+  let md = '';
+  md += `# Log de recategorización de \`ab_movimientos\`\n\n`;
+  md += `Última ejecución: **${ts}** — modo: **${APPLY ? 'APPLY' : 'DRY-RUN'}**\n\n`;
+  md += `Total movimientos procesados (importe<0): **${rows.length}**\n`;
+  md += `- Cambios de categoría: **${cambios}**\n`;
+  md += `- Sin cambios: **${iguales}**\n`;
+  md += `- Sociedades×periodos a recalcular: **${periodosAfectados.size}**\n\n`;
+
+  md += `## Distribución final por categoría (nueva taxonomía)\n\n`;
+  md += `| Categoría | Nº movs | Total € |\n|---|---:|---:|\n`;
+  for (const [cat, info] of porNuevaSorted) {
+    md += `| \`${cat}\` | ${info.n} | ${fmtEUR(info.total)} |\n`;
+  }
+  md += `\n`;
+
+  md += `## Transiciones (categoría vieja → categoría nueva)\n\n`;
+  md += `| Transición | Nº | Total € | Ejemplos |\n|---|---:|---:|---|\n`;
+  const transSorted = [...transiciones.entries()].sort((a, b) => b[1].total - a[1].total);
+  for (const [k, info] of transSorted) {
+    const ejs = (muestraPorTransicion.get(k) || []).map((s) => `\`${s.replace(/\|/g, '/')}\``).join('<br>');
+    md += `| \`${k}\` | ${info.n} | ${fmtEUR(info.total)} | ${ejs} |\n`;
+  }
+  md += `\n`;
+
+  md += `## Decisiones tomadas\n\n`;
+  md += `- **INTRAGRUPO** se aplica antes que cualquier otra regla: cualquier transferencia con "Aires Burger Bar Murcia", "Aires Burger Bar Benidorm", "Aires Alicante", "Smart Aires", "Grupo Hostelero Aires", "Aires Murcia" o "Aires Benidorm" en el concepto queda como INTRAGRUPO.\n`;
+  md += `- **Naturgy** → SUMINISTROS_GAS por convención (la empresa comercializa ambos; el usuario listó Naturgy en GAS).\n`;
+  md += `- **Campoluz** y **Acesur** → PROVEEDOR_LACTEOS por instrucción explícita del usuario, aunque Campoluz comercializa también energía.\n`;
+  md += `- **Entrepinares** → PROVEEDOR_CARNES por instrucción explícita del usuario, aunque su core es queso.\n`;
+  md += `- **NOMINAS** se infiere sólo cuando el concepto matchea \`^TRANSFERENCIA [INMEDIATA]? A {Nombre Apellido…}\` con 2-5 tokens estilo nombre, sin sufijos legales (SL, SA, SLU, GMBH, etc.) y sin keywords como "Factura", "Alquiler", "Fianza", "Recibo".\n`;
+  md += `- **GASTO_PRESTAMO_INTERGRUPO** (categoría vieja) se reclasifica como **INTRAGRUPO** si el destinatario es del grupo, o **FINANCIERO** si es préstamo bancario externo.\n`;
+  md += `- **Leroy Merlin / Bricomart / Conduce Revel / Muebles Rosillo / Sklum / GGM Gastro / Bolsemack** → MANTENIMIENTO (compras de obra/equipamiento/reparaciones).\n`;
+  md += `- **Restaurant Consulting Group, Yalt Business, Europreven, Distribuciones Batoy, Elan Foods, Gardoy, OCIOBAR** → PROVEEDOR_OTROS (proveedores reales sin encaje en categoría de MP específica).\n`;
+  md += `- **Silicius, Concepción Orive, Overlease, Dialque** → ALQUILER (real estate / SOCIMI / arrendamientos).\n`;
+  md += `- Fallback: si un concepto matchea patrón de "operación comercial" (Transferencia, Recibo, Compra) pero ninguna regla específica, va a **PROVEEDOR_OTROS**. Si no parece operación comercial (devoluciones, regularizaciones, traspasos internos sin destinatario claro), va a **OTROS**.\n\n`;
+
+  fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+  fs.writeFileSync(LOG_PATH, md, 'utf8');
+  console.log(`[recat] log escrito: ${LOG_PATH}`);
+}
+
+main()
+  .then(() => pool.end())
+  .catch((e) => { console.error('[recat] error:', e); pool.end().finally(() => process.exit(1)); });

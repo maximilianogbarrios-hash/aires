@@ -8,7 +8,18 @@ const { SOCIEDADES, DIRECCIONES, findSociedad, sociedadDeLocal } = require('../l
 const { parseSantanderBuffer } = require('../lib/bank/parser-santander');
 const { parseGetnetBuffer } = require('../lib/bank/parser-getnet');
 const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
+const { CATEGORIAS_PROVEEDOR_OPERATIVO } = require('../lib/bank/categorizer');
 const bankDb = require('../lib/bank/db');
+
+// Vista efectiva según rol del usuario. Admin/socio ven todo; el resto sólo
+// proveedores operativos (PROVEEDOR_* + MANTENIMIENTO).
+function vistaEfectivaParaRol(rol, vistaQuery) {
+  const rolesAdmin = new Set(['admin', 'socio']);
+  if (rolesAdmin.has(rol)) {
+    return vistaQuery === 'operativo' ? 'operativo' : 'admin';
+  }
+  return 'operativo';
+}
 
 const router = express.Router();
 router.use(requireAuth);
@@ -251,22 +262,29 @@ router.get('/proveedores', async (req, res) => {
     const periodo_desde = req.query.periodo_desde || null;
     const periodo_hasta = req.query.periodo_hasta || null;
 
+    const vista = vistaEfectivaParaRol(req.session?.user?.role, req.query.vista);
+
     const where = ['importe < 0'];
     const vals = [];
     if (sociedad_id) { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
     if (periodo)          { where.push(`periodo=$${vals.length+1}`);  vals.push(periodo); }
     if (periodo_desde)    { where.push(`periodo>=$${vals.length+1}`); vals.push(periodo_desde); }
     if (periodo_hasta)    { where.push(`periodo<=$${vals.length+1}`); vals.push(periodo_hasta); }
+    // Vista operativa: sólo categorías de proveedor real (PROVEEDOR_* + MANTENIMIENTO).
+    if (vista === 'operativo') {
+      where.push(`categoria = ANY($${vals.length+1}::text[])`);
+      vals.push(CATEGORIAS_PROVEEDOR_OPERATIVO);
+    }
 
     const rows = await many(
-      `SELECT concepto, categoria, importe::float8 AS importe
+      `SELECT concepto, categoria, importe::float8 AS importe, fecha::text AS fecha
          FROM ab_movimientos
         WHERE ${where.join(' AND ')}`,
       vals
     );
 
     // Agrupar por proveedor normalizado, excluyendo intra-grupo.
-    const agg = new Map(); // proveedor → { total, n, categorias: Map<cat, count> }
+    const agg = new Map(); // proveedor → { total, n, categorias: Map<cat, count>, ultima_fecha }
     let totalExcluido = 0;
     let nExcluido = 0;
     for (const r of rows) {
@@ -277,11 +295,25 @@ router.get('/proveedores', async (req, res) => {
       }
       const { proveedor, categoria } = normalizarProveedor(r.concepto, r.categoria);
       const k = proveedor;
-      if (!agg.has(k)) agg.set(k, { total: 0, n: 0, cats: new Map() });
+      if (!agg.has(k)) agg.set(k, { total: 0, n: 0, cats: new Map(), ultima_fecha: null });
       const a = agg.get(k);
       a.total += Math.abs(+r.importe);
       a.n += 1;
       a.cats.set(categoria, (a.cats.get(categoria) || 0) + 1);
+      if (!a.ultima_fecha || r.fecha > a.ultima_fecha) a.ultima_fecha = r.fecha;
+    }
+
+    // En vista operativa, anexamos métricas de pedidos cargados por el usuario
+    // (ab_pedidos_semana): nº pedidos y fecha del último pedido por proveedor.
+    let pedidosInfo = new Map();
+    if (vista === 'operativo') {
+      const pedRows = await many(
+        `SELECT proveedor, COUNT(*)::int AS n, MAX(confirmado_en)::text AS ultimo
+           FROM ab_pedidos_semana
+          WHERE estado IN ('enviado','recibido')
+          GROUP BY proveedor`
+      );
+      pedidosInfo = new Map(pedRows.map((r) => [r.proveedor, r]));
     }
 
     // Categoría más frecuente por proveedor.
@@ -289,17 +321,22 @@ router.get('/proveedores', async (req, res) => {
     const proveedores = [...agg.entries()].map(([proveedor, a]) => {
       let topCat = null, topCnt = 0;
       for (const [c, n] of a.cats.entries()) if (n > topCnt) { topCnt = n; topCat = c; }
+      const ped = pedidosInfo.get(proveedor);
       return {
         proveedor,
         total_importe: a.total,
         porcentaje: totalGasto > 0 ? a.total / totalGasto : 0,
         num_transacciones: a.n,
         categoria: topCat,
+        ultima_fecha: a.ultima_fecha,
+        num_pedidos: ped?.n || 0,
+        ultimo_pedido: ped?.ultimo || null,
       };
     }).sort((a, b) => b.total_importe - a.total_importe);
 
     res.json({
-      filtros: { sociedad_id, periodo, periodo_desde, periodo_hasta },
+      filtros: { sociedad_id, periodo, periodo_desde, periodo_hasta, vista },
+      vista_efectiva: vista,
       total_gasto: totalGasto,
       total_excluido_intra_grupo: totalExcluido,
       n_excluido_intra_grupo: nExcluido,
