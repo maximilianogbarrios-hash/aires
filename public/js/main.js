@@ -736,8 +736,8 @@ function renderWeekRow(r, c) {
   const semanas = Array.isArray(c.semanas) ? c.semanas : [];
   if (!semanas.length) return '<div style="padding:.75rem 1rem;color:var(--text-2);font-size:11px">Sin desglose semanal disponible</div>';
   const presup = r.presBase || 0;
-  let inner = `<div style="padding:.75rem 1rem"><p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Desglose semanal · ${r.n} · semanas ISO (lun-dom), estimado prorrateado por días en mes · cargá el real por semana abajo</p>`;
-  inner += '<table style="width:100%;font-size:11px"><thead><tr><th style="text-align:left;color:var(--text-2);padding:4px 6px">Semana</th><th style="text-align:left;color:var(--text-2);padding:4px 6px">Fechas</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Peso</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Estimado</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Real</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Var.</th></tr></thead><tbody>';
+  let inner = `<div style="padding:.75rem 1rem"><p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Desglose semanal · ${r.n} · semanas ISO (lun-dom), estimado prorrateado por días en mes · Enter o salir del campo guarda · semáforo: 🟢 ≤±5% · 🟡 ±5-12% · 🔴 >±12%</p>`;
+  inner += '<table style="width:100%;font-size:11px"><thead><tr><th style="text-align:left;color:var(--text-2);padding:4px 6px">Semana</th><th style="text-align:left;color:var(--text-2);padding:4px 6px">Fechas</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Peso</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Estimado</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Real</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Var.</th><th style="text-align:center;color:var(--text-2);padding:4px 6px">●</th></tr></thead><tbody>';
   let tEst = 0, tReal = 0, hasReal = false;
   semanas.forEach((s, i) => {
     const est = presup * (s.peso || 0);
@@ -746,22 +746,26 @@ function renderWeekRow(r, c) {
     if (rv != null) { tReal += rv; hasReal = true; }
     const v = (rv != null && est > 0) ? (rv - est) / est : null;
     const rango = `${fmtFechaCorta(s.fecha_lunes)}-${fmtFechaCorta(s.fecha_domingo)}`;
+    const sem = semaforoVar(v);
     inner += `<tr>
       <td style="padding:4px 6px"><strong>S${i + 1}</strong> <span style="color:var(--text-2);font-size:10px">W${s.semana_iso}</span></td>
       <td style="padding:4px 6px;color:var(--text-2)">${rango}${s.dias_en_mes < 7 ? ` <span style="font-size:9px;color:#92400e">(${s.dias_en_mes}d en mes)</span>` : ''}</td>
       <td style="text-align:right;padding:4px 6px">${pct(s.peso || 0)}</td>
       <td style="text-align:right;padding:4px 6px">${eur(est)}</td>
-      <td style="text-align:right;padding:4px 6px"><input type="number" class="num-inp" style="width:80px;text-align:right" min="0" step="100" value="${rv != null ? rv : ''}" placeholder="—" onchange="updFacSemanal('${r.id}', ${s.semana_iso}, '${s.fecha_lunes}', '${s.fecha_domingo}', this.value)"></td>
+      <td style="text-align:right;padding:4px 6px"><input type="number" class="num-inp" style="width:80px;text-align:right" min="0" step="100" value="${rv != null ? rv : ''}" placeholder="—" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" onchange="updFacSemanal('${r.id}', ${s.semana_iso}, '${s.fecha_lunes}', '${s.fecha_domingo}', this.value)"></td>
       <td style="text-align:right;padding:4px 6px;color:${v != null ? clrG(v) : ''}">${v != null ? pctSigned(v) : '—'}</td>
+      <td style="text-align:center;padding:4px 6px"><span title="${sem.tooltip}" style="color:${sem.color};font-size:14px">${sem.label}</span></td>
     </tr>`;
   });
   const vTot = (hasReal && tEst > 0) ? (tReal - tEst) / tEst : null;
+  const semTot = semaforoVar(vTot);
   inner += `<tr style="border-top:.5px solid var(--border-3);font-weight:500">
     <td style="padding:4px 6px" colspan="2">Total acumulado</td>
     <td style="text-align:right;padding:4px 6px">100%</td>
     <td style="text-align:right;padding:4px 6px">${eur(tEst)}</td>
     <td style="text-align:right;padding:4px 6px">${hasReal ? eur(tReal) : '—'}</td>
     <td style="text-align:right;padding:4px 6px;color:${vTot != null ? clrG(vTot) : ''}">${vTot != null ? pctSigned(vTot) : '—'}</td>
+    <td style="text-align:center;padding:4px 6px"><span title="${semTot.tooltip}" style="color:${semTot.color};font-size:14px">${semTot.label}</span></td>
   </tr>`;
   inner += '</tbody></table></div>';
   return inner;
