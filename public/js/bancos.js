@@ -11,6 +11,7 @@ const state = {
   current_sociedad: null, current_periodo: null,
   resumen: [], cruces: [], proveedores: [],
   movs: { total: 0, rows: [] }, mov_offset: 0, mov_limit: 50,
+  prov: { rows: [], total: 0, intra: 0, n_intra: 0, loaded: false },
 };
 
 const PERIOD_LABELS = (p) => {
@@ -33,7 +34,7 @@ const COLORS_CAT = [
   '#059669','#DC2626','#0F766E','#9333EA','#B45309','#1E40AF','#15803D','#9F1239',
 ];
 
-let chMensual = null, chGastos = null;
+let chMensual = null, chGastos = null, chProvDonut = null;
 
 async function api(url, opts = {}) {
   const r = await fetch(url, {
@@ -262,6 +263,146 @@ async function loadProveedores() {
   }).join('');
 }
 
+// ─── Proveedores (sub-tab dedicado) ───────────────────────────────────
+function initProvFiltros() {
+  const sSel = $('prov-sociedad');
+  if (sSel.options.length <= 1) {
+    for (const s of state.sociedades) {
+      const o = document.createElement('option');
+      o.value = s.id; o.textContent = `${s.nombre} (${SOCIEDAD_ABBR[s.id] || s.id})`;
+      sSel.appendChild(o);
+    }
+  }
+  for (const id of ['prov-periodo-desde', 'prov-periodo-hasta']) {
+    const sel = $(id);
+    if (sel.options.length === 0) {
+      for (const p of state.periodos) {
+        const o = document.createElement('option');
+        o.value = p; o.textContent = PERIOD_LABELS(p);
+        sel.appendChild(o);
+      }
+    }
+  }
+  // Default: mes más reciente (=hasta) y 2 meses antes (=desde).
+  if (state.periodos.length > 0) {
+    const last = state.periodos[state.periodos.length - 1];
+    const first = state.periodos.length >= 3 ? state.periodos[state.periodos.length - 3] : state.periodos[0];
+    if (!$('prov-periodo-desde').value) $('prov-periodo-desde').value = first;
+    if (!$('prov-periodo-hasta').value) $('prov-periodo-hasta').value = last;
+  }
+}
+
+async function loadProvRanking() {
+  const params = new URLSearchParams();
+  const soc = $('prov-sociedad').value;
+  const desde = $('prov-periodo-desde').value;
+  const hasta = $('prov-periodo-hasta').value;
+  if (soc) params.set('sociedad_id', soc);
+  if (desde && hasta && desde === hasta) {
+    params.set('periodo', desde);
+  } else {
+    if (desde) params.set('periodo_desde', desde);
+    if (hasta) params.set('periodo_hasta', hasta);
+  }
+  const j = await api('/api/v1/bancos/proveedores?' + params.toString());
+  state.prov = {
+    rows: j.proveedores || [],
+    total: j.total_gasto || 0,
+    intra: j.total_excluido_intra_grupo || 0,
+    n_intra: j.n_excluido_intra_grupo || 0,
+    loaded: true,
+  };
+  renderProvKpis();
+  renderProvDonut();
+  renderProvTabla();
+}
+
+// Exposición pública del nombre que usa el HTML.
+function loadProveedoresTab() { return loadProvRanking(); }
+
+function renderProvKpis() {
+  $('prov-kpi-total').textContent = eur2(state.prov.total);
+  $('prov-kpi-n').textContent = state.prov.rows.length;
+  const top = state.prov.rows[0];
+  $('prov-kpi-top').textContent = top ? `${top.proveedor} · ${eur2(top.total_importe)}` : '—';
+  $('prov-kpi-intra').textContent = state.prov.n_intra > 0
+    ? `${eur2(state.prov.intra)} en ${state.prov.n_intra} tx`
+    : 'ninguna en este filtro';
+}
+
+function renderProvDonut() {
+  if (!chProvDonut) return;
+  const rows = state.prov.rows;
+  const top = rows.slice(0, 15);
+  const rest = rows.slice(15);
+  const restTotal = rest.reduce((s, r) => s + r.total_importe, 0);
+  const restCount = rest.reduce((s, r) => s + r.num_transacciones, 0);
+  const labels = top.map((r) => r.proveedor);
+  const values = top.map((r) => r.total_importe);
+  const counts = top.map((r) => r.num_transacciones);
+  if (rest.length > 0) {
+    labels.push(`Otros (${rest.length})`);
+    values.push(restTotal);
+    counts.push(restCount);
+  }
+  const colors = labels.map((_, i) => COLORS_CAT[i % COLORS_CAT.length]);
+  chProvDonut.data.labels = labels;
+  chProvDonut.data.datasets[0].data = values;
+  chProvDonut.data.datasets[0].backgroundColor = colors;
+  chProvDonut._ntx = counts;
+  chProvDonut.update();
+  const tot = state.prov.total;
+  $('prov-legend').innerHTML = labels.map((lab, i) => {
+    const v = values[i];
+    const p = tot > 0 ? (v / tot * 100).toFixed(1) : '0';
+    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0">
+      <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
+      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${lab}">${lab}</span>
+      <span style="font-size:11px;font-weight:500">${eur(v)}</span>
+      <span style="font-size:11px;color:var(--text-2);min-width:40px;text-align:right">${p}%</span>
+    </div>`;
+  }).join('');
+}
+
+function renderProvTabla() {
+  const rows = state.prov.rows;
+  $('tb-proveedores').innerHTML = rows.map((p, i) => `<tr>
+    <td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
+    <td style="font-weight:500;font-size:12px">${p.proveedor}</td>
+    <td style="font-size:11px;color:var(--text-2)">${p.categoria || ''}</td>
+    <td style="text-align:right;color:#dc2626">${eur2(p.total_importe)}</td>
+    <td style="text-align:right">${(p.porcentaje * 100).toFixed(2)}%</td>
+    <td style="text-align:right">${p.num_transacciones}</td>
+  </tr>`).join('');
+}
+
+function exportProveedoresCsv() {
+  const rows = state.prov.rows;
+  if (!rows.length) return;
+  const header = ['#', 'Proveedor', 'Categoria', 'Total_EUR', 'Porcentaje', 'Num_transacciones'];
+  const csvRows = [header.join(',')];
+  rows.forEach((p, i) => {
+    csvRows.push([
+      i + 1,
+      `"${(p.proveedor || '').replace(/"/g, '""')}"`,
+      p.categoria || '',
+      p.total_importe.toFixed(2),
+      (p.porcentaje * 100).toFixed(2) + '%',
+      p.num_transacciones,
+    ].join(','));
+  });
+  const csv = '﻿' + csvRows.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const soc = $('prov-sociedad').value || 'todas';
+  const desde = $('prov-periodo-desde').value || '';
+  const hasta = $('prov-periodo-hasta').value || '';
+  const rango = desde === hasta ? desde : `${desde}_a_${hasta}`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `proveedores_${soc}_${rango}.csv`;
+  a.click();
+}
+
 async function loadMovs() {
   const params = new URLSearchParams();
   if (state.current_sociedad) params.set('sociedad_id', state.current_sociedad);
@@ -349,6 +490,23 @@ function initCharts() {
       } } } },
     },
   });
+  chProvDonut = new Chart($('prov-donut'), {
+    type: 'doughnut',
+    data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderWidth: 2, borderColor: 'var(--bg-primary)' }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => {
+          const tot = ctx.dataset.data.reduce((s, v) => s + v, 0);
+          const pctV = tot > 0 ? (ctx.raw / tot * 100).toFixed(1) : '0';
+          const ntx = (chProvDonut._ntx || [])[ctx.dataIndex];
+          const txStr = ntx != null ? ` · ${ntx} tx` : '';
+          return ` ${ctx.label}: ${eur2(ctx.raw)} (${pctV}%)${txStr}`;
+        } } },
+      },
+    },
+  });
 }
 
 // ─── Tabs ──────────────────────────────────────────────────────────────
@@ -357,6 +515,10 @@ function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.remove('on'));
   $(`sect-${name}`).classList.add('on');
   if (btn) btn.classList.add('on');
+  if (name === 'proveedores') {
+    initProvFiltros();
+    if (!state.prov.loaded) loadProvRanking();
+  }
 }
 
 function toggleUpload() {
@@ -414,5 +576,5 @@ async function logout() {
   location.href = '/login';
 }
 
-Object.assign(window, { reload, showTab, toggleUpload, uploadExtracto, uploadCierres, loadMovs, changePage, exportCsv, logout });
+Object.assign(window, { reload, showTab, toggleUpload, uploadExtracto, uploadCierres, loadMovs, changePage, exportCsv, logout, loadProvRanking, exportProveedoresCsv });
 boot();

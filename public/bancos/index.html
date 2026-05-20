@@ -82,6 +82,7 @@
   <button class="tab on" data-tab="resumen"   onclick="showTab('resumen',this)">Resumen</button>
   <button class="tab"    data-tab="movimientos" onclick="showTab('movimientos',this)">Movimientos</button>
   <button class="tab"    data-tab="gastos"    onclick="showTab('gastos',this)">Análisis de gastos</button>
+  <button class="tab"    data-tab="proveedores" onclick="showTab('proveedores',this)">Proveedores</button>
   <button class="tab"    data-tab="cruce"     onclick="showTab('cruce',this)">Cruce TPV vs Banco</button>
 </div>
 
@@ -167,6 +168,50 @@
         <th>Desde</th><th>Hasta</th>
       </tr></thead>
       <tbody id="tb-prov"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- PROVEEDORES -->
+<div id="sect-proveedores" class="sect">
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:grid;grid-template-columns:200px 160px 160px auto auto;gap:8px;align-items:end">
+      <select id="prov-sociedad" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"><option value="">Todas las sociedades</option></select>
+      <select id="prov-periodo-desde" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
+      <select id="prov-periodo-hasta" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
+      <button onclick="loadProvRanking()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Aplicar</button>
+      <button onclick="exportProveedoresCsv()" style="padding:6px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Export CSV</button>
+    </div>
+    <p style="font-size:10px;color:var(--text-2);margin-top:.5rem">Selector "Desde" igual a "Hasta" → análisis de un solo mes. Rangos completos suman los meses elegidos.</p>
+  </div>
+
+  <div class="g4" style="margin-bottom:1rem">
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Gasto total filtrado</p><p style="font-size:19px;font-weight:500;color:#dc2626" id="prov-kpi-total">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Proveedores únicos</p><p style="font-size:19px;font-weight:500" id="prov-kpi-n">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Top proveedor</p><p style="font-size:14px;font-weight:500" id="prov-kpi-top">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Transferencias intra-grupo (excluidas)</p><p style="font-size:14px;font-weight:500;color:var(--text-2)" id="prov-kpi-intra">—</p></div>
+  </div>
+
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Distribución de gasto (top 15 + Otros)</p>
+    <div style="display:grid;grid-template-columns:320px 1fr;gap:1.5rem;align-items:center">
+      <div style="position:relative;height:300px"><canvas id="prov-donut"></canvas></div>
+      <div id="prov-legend" style="display:grid;grid-template-columns:1fr;gap:4px;max-height:300px;overflow-y:auto"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Ranking completo</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr>
+        <th>#</th>
+        <th>Proveedor</th>
+        <th>Categoría</th>
+        <th style="text-align:right">Total €</th>
+        <th style="text-align:right">% gasto</th>
+        <th style="text-align:right">Nº transacciones</th>
+      </tr></thead>
+      <tbody id="tb-proveedores"></tbody>
     </table></div>
   </div>
 </div>

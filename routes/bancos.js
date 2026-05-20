@@ -7,6 +7,7 @@ const { query, one, many } = require('../lib/db');
 const { SOCIEDADES, DIRECCIONES, findSociedad, sociedadDeLocal } = require('../lib/bank/sociedades');
 const { parseSantanderBuffer } = require('../lib/bank/parser-santander');
 const { parseGetnetBuffer } = require('../lib/bank/parser-getnet');
+const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
 const bankDb = require('../lib/bank/db');
 
 const router = express.Router();
@@ -236,6 +237,76 @@ router.get('/cruces', async (req, res) => {
     res.json({ cruces: rows });
   } catch (e) {
     console.error('[bancos.cruces]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Ranking de proveedores normalizado: agrupa por concepto canónico
+// excluyendo transferencias intra-grupo. Soporta sociedad (todas o
+// individual) y periodo (mes único o rango periodo_desde..periodo_hasta).
+router.get('/proveedores', async (req, res) => {
+  try {
+    const sociedad_id = req.query.sociedad_id || null;
+    const periodo = req.query.periodo || null;
+    const periodo_desde = req.query.periodo_desde || null;
+    const periodo_hasta = req.query.periodo_hasta || null;
+
+    const where = ['importe < 0'];
+    const vals = [];
+    if (sociedad_id) { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
+    if (periodo)          { where.push(`periodo=$${vals.length+1}`);  vals.push(periodo); }
+    if (periodo_desde)    { where.push(`periodo>=$${vals.length+1}`); vals.push(periodo_desde); }
+    if (periodo_hasta)    { where.push(`periodo<=$${vals.length+1}`); vals.push(periodo_hasta); }
+
+    const rows = await many(
+      `SELECT concepto, categoria, importe::float8 AS importe
+         FROM ab_movimientos
+        WHERE ${where.join(' AND ')}`,
+      vals
+    );
+
+    // Agrupar por proveedor normalizado, excluyendo intra-grupo.
+    const agg = new Map(); // proveedor → { total, n, categorias: Map<cat, count> }
+    let totalExcluido = 0;
+    let nExcluido = 0;
+    for (const r of rows) {
+      if (esIntraGrupo(r.concepto)) {
+        totalExcluido += Math.abs(+r.importe);
+        nExcluido++;
+        continue;
+      }
+      const { proveedor, categoria } = normalizarProveedor(r.concepto, r.categoria);
+      const k = proveedor;
+      if (!agg.has(k)) agg.set(k, { total: 0, n: 0, cats: new Map() });
+      const a = agg.get(k);
+      a.total += Math.abs(+r.importe);
+      a.n += 1;
+      a.cats.set(categoria, (a.cats.get(categoria) || 0) + 1);
+    }
+
+    // Categoría más frecuente por proveedor.
+    const totalGasto = [...agg.values()].reduce((s, v) => s + v.total, 0);
+    const proveedores = [...agg.entries()].map(([proveedor, a]) => {
+      let topCat = null, topCnt = 0;
+      for (const [c, n] of a.cats.entries()) if (n > topCnt) { topCnt = n; topCat = c; }
+      return {
+        proveedor,
+        total_importe: a.total,
+        porcentaje: totalGasto > 0 ? a.total / totalGasto : 0,
+        num_transacciones: a.n,
+        categoria: topCat,
+      };
+    }).sort((a, b) => b.total_importe - a.total_importe);
+
+    res.json({
+      filtros: { sociedad_id, periodo, periodo_desde, periodo_hasta },
+      total_gasto: totalGasto,
+      total_excluido_intra_grupo: totalExcluido,
+      n_excluido_intra_grupo: nExcluido,
+      proveedores,
+    });
+  } catch (e) {
+    console.error('[bancos.proveedores]', e);
     res.status(500).json({ error: 'internal' });
   }
 });
