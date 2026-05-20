@@ -74,9 +74,58 @@ window.Api = (function () {
 
   const logout = () => jsonFetch('/api/v1/auth/logout', { method: 'POST' });
 
+  // ─── Módulo Pedidos ───────────────────────────────────────────────────
+  const pedidosBootstrap = (q = {}) => {
+    const qs = new URLSearchParams(q).toString();
+    return jsonFetch('/api/v1/pedidos/bootstrap' + (qs ? '?' + qs : ''));
+  };
+  const pedidosMP = (q = {}) => {
+    const qs = new URLSearchParams(q).toString();
+    return jsonFetch('/api/v1/pedidos/materia-prima' + (qs ? '?' + qs : ''));
+  };
+  const pedidosPersonal = (q = {}) => {
+    const qs = new URLSearchParams(q).toString();
+    return jsonFetch('/api/v1/pedidos/personal' + (qs ? '?' + qs : ''));
+  };
+  const pedidosMix = (q = {}) => {
+    const qs = new URLSearchParams(q).toString();
+    return jsonFetch('/api/v1/pedidos/proveedores-mix' + (qs ? '?' + qs : ''));
+  };
+  const pedidosMixSave = (rows) => jsonFetch('/api/v1/pedidos/proveedores-mix', {
+    method: 'PUT', body: JSON.stringify({ rows }),
+  });
+  const pedidosMixCopy = (payload) => jsonFetch('/api/v1/pedidos/proveedores-mix/copiar', {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+  const pedidosMixImport = (payload) => jsonFetch('/api/v1/pedidos/proveedores-mix/importar-bancos', {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+  const pedidosSavePedido = (payload) => jsonFetch('/api/v1/pedidos/pedido', {
+    method: 'PUT', body: JSON.stringify(payload),
+  });
+  const pedidosConfirmar = (payload) => jsonFetch('/api/v1/pedidos/confirmar-semana', {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+  const pedidosCmpBancos = (q = {}) => {
+    const qs = new URLSearchParams(q).toString();
+    return jsonFetch('/api/v1/pedidos/comparativa-bancos' + (qs ? '?' + qs : ''));
+  };
+  const pedidosHistorial = (q = {}) => {
+    const qs = new URLSearchParams(q).toString();
+    return jsonFetch('/api/v1/pedidos/historial' + (qs ? '?' + qs : ''));
+  };
+  const pedidosRanking = (q = {}) => {
+    const qs = new URLSearchParams(q).toString();
+    return jsonFetch('/api/v1/pedidos/ranking-eficiencia' + (qs ? '?' + qs : ''));
+  };
+
   return {
     bootstrap, saveConfig, saveLocal, savePresupuesto, presupuestoContexto,
     saveFacturacionSemanal, getFacturacionSemanal,
+    pedidosBootstrap, pedidosMP, pedidosPersonal,
+    pedidosMix, pedidosMixSave, pedidosMixCopy, pedidosMixImport,
+    pedidosSavePedido, pedidosConfirmar, pedidosCmpBancos,
+    pedidosHistorial, pedidosRanking,
     logout, debouncedSave, pill,
   };
 })();

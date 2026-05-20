@@ -119,6 +119,7 @@
   <button class="tab" data-tab="costos" onclick="showTab('costos',this)">Costos</button>
   <button class="tab" data-tab="presupuesto" onclick="showTab('presupuesto',this)">Presupuesto</button>
   <button class="tab" data-tab="seguimiento" onclick="showTab('seguimiento',this)">Seguimiento</button>
+  <button class="tab" data-tab="pedidos" onclick="showTab('pedidos',this)" id="tab-pedidos">Pedidos</button>
   <button class="tab" data-tab="evolucion" onclick="showTab('evolucion',this)">Evolución</button>
   <button class="tab" data-tab="traspasos" onclick="showTab('traspasos',this)">Traspasos</button>
 </div>
@@ -356,6 +357,110 @@
   </div>
 </div>
 
+<!-- PEDIDOS -->
+<div id="sect-pedidos" class="sect">
+  <!-- Sub-tabs -->
+  <div class="card no-print" style="margin-bottom:1rem;padding:.6rem .9rem">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <button class="sub-tab on" data-sub="mp"       onclick="showPedidosSub('mp',this)">Materia Prima</button>
+        <button class="sub-tab"    data-sub="personal" onclick="showPedidosSub('personal',this)">Personal</button>
+        <button class="sub-tab"    data-sub="mix"      onclick="showPedidosSub('mix',this)" id="sub-tab-mix">% Proveedores</button>
+        <button class="sub-tab"    data-sub="cmp"      onclick="showPedidosSub('cmp',this)">Comparativa Bancos</button>
+        <button class="sub-tab"    data-sub="hist"     onclick="showPedidosSub('hist',this)">Historial</button>
+        <button class="sub-tab"    data-sub="rk"       onclick="showPedidosSub('rk',this)">Ranking eficiencia</button>
+      </div>
+      <div id="ped-sub-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
+    </div>
+  </div>
+
+  <!-- ALERTA PEDIDO TARDIO -->
+  <div id="ped-alerta" style="display:none;padding:.6rem .9rem;background:#fef2f2;border:.5px solid #fecaca;border-left:3px solid #dc2626;border-radius:var(--r-md);margin-bottom:.75rem">
+    <p style="font-size:12px;font-weight:500;color:#991B1B" id="ped-alerta-txt">—</p>
+  </div>
+
+  <!-- MATERIA PRIMA -->
+  <div id="pedsub-mp" class="ped-sub on">
+    <div class="g4" style="margin-bottom:.75rem">
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Budget MP semana</p><p style="font-size:18px;font-weight:500" id="ped-k-budget">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Pedidos confirmados</p><p style="font-size:18px;font-weight:500" id="ped-k-conf">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Pendientes</p><p style="font-size:18px;font-weight:500" id="ped-k-pend">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">% ejecutado</p><p style="font-size:18px;font-weight:500" id="ped-k-exec">—</p><p style="font-size:11px;color:var(--text-2)" id="ped-k-exec-eur">—</p></div>
+    </div>
+    <div class="card">
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Semáforo proveedor: 🟢 ≤±10% · 🟡 ±10-20% · 🔴 >±20% · Click en celda para editar importe real</p>
+      <div id="ped-mp-table" style="overflow-x:auto">—</div>
+    </div>
+  </div>
+
+  <!-- PERSONAL -->
+  <div id="pedsub-personal" class="ped-sub">
+    <div class="g4" style="margin-bottom:.75rem">
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Horas disponibles red</p><p style="font-size:18px;font-weight:500" id="ped-pk-disp">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Horas cargadas</p><p style="font-size:18px;font-weight:500" id="ped-pk-carg">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">% utilización</p><p style="font-size:18px;font-weight:500" id="ped-pk-util">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Locales en rojo</p><p style="font-size:18px;font-weight:500" id="ped-pk-rojo">—</p></div>
+    </div>
+    <div class="card">
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Semáforo: 🟢 ≤±5% · 🟡 ±5-12% · 🔴 >±12% · Editá las horas cargadas por semana (no se persisten todavía)</p>
+      <div id="ped-personal-table" style="overflow-x:auto">—</div>
+    </div>
+  </div>
+
+  <!-- MIX PROVEEDORES -->
+  <div id="pedsub-mix" class="ped-sub">
+    <div class="card" style="margin-bottom:.75rem">
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
+        <div>
+          <p style="font-size:13px;font-weight:500">% Proveedores por local</p>
+          <p style="font-size:11px;color:var(--text-2)">Suma por local debería dar 100% · Botones para clonar mix o importar desde bancos</p>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap" id="ped-mix-actions">
+          <button class="tgl" onclick="openMixAddRow()">+ Proveedor</button>
+          <button class="tgl" onclick="openImportBancos()">Importar desde bancos</button>
+          <button class="tgl" onclick="openCopyMix()">Aplicar a todos</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div id="ped-mix-grid" style="overflow-x:auto">—</div>
+    </div>
+    <div id="ped-mix-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:50;align-items:center;justify-content:center" onclick="if(event.target===this)closeMixModal()">
+      <div style="background:var(--bg-primary);padding:1.25rem;border-radius:var(--r-lg);max-width:520px;width:92%;max-height:80vh;overflow:auto">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+          <p style="font-size:14px;font-weight:500" id="ped-mix-modal-title">—</p>
+          <button onclick="closeMixModal()" style="border:none;background:transparent;cursor:pointer;font-size:18px">✕</button>
+        </div>
+        <div id="ped-mix-modal-body">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COMPARATIVA BANCOS -->
+  <div id="pedsub-cmp" class="ped-sub">
+    <div class="card">
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Cruza lo pedido en <b>ab_pedidos_semana</b> con los pagos del mismo proveedor en <b>ab_movimientos</b>. Estado: 🟢 ok ±5% · 🟠 pago_pendiente · 🔵 sobrepago · ⚪ sin_pedido / sin_pago</p>
+      <div id="ped-cmp-table" style="overflow-x:auto">—</div>
+    </div>
+  </div>
+
+  <!-- HISTORIAL -->
+  <div id="pedsub-hist" class="ped-sub">
+    <div class="card">
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Últimas 8 semanas de pedidos por local — totales, variación vs sugerido</p>
+      <div id="ped-hist-table" style="overflow-x:auto">—</div>
+    </div>
+  </div>
+
+  <!-- RANKING -->
+  <div id="pedsub-rk" class="ped-sub">
+    <div class="card">
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Ranking de eficiencia — gasto MP real vs budget del mes (menor ratio = mejor)</p>
+      <div id="ped-rk-table" style="overflow-x:auto">—</div>
+    </div>
+  </div>
+</div>
+
 <!-- TRASPASOS -->
 <div id="sect-traspasos" class="sect">
   <p style="font-size:12px;color:var(--text-2);margin-bottom:1rem">Locales Grupo D — Salida.</p>
@@ -369,5 +474,6 @@
 <script src="/js/engine.js"></script>
 <script src="/js/api.js"></script>
 <script src="/js/main.js"></script>
+<script src="/js/pedidos.js"></script>
 </body>
 </html>

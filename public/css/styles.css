@@ -57,6 +57,24 @@ input[type=range]{flex:1;accent-color:#185FA5}
 input[type=number].hrs-inp{width:65px;text-align:right;font-size:11px;padding:2px 4px;border:.5px solid var(--border-2);border-radius:4px;background:#FFF9C4;color:#7F4700}
 input[type=number].hrs-inp.auto{background:var(--bg-secondary);color:var(--text-2)}
 input[type=number].real-inp{width:80px;text-align:right;font-size:12px;padding:3px 5px;border:.5px solid var(--border-2);border-radius:4px;background:#E8F5E9;color:#1B5E20}
+/* Pedidos — sub-tabs y semáforos */
+.sub-tab{cursor:pointer;padding:5px 10px;font-size:12px;font-weight:500;border:.5px solid var(--border-3);background:transparent;color:var(--text-2);border-radius:var(--r-md)}
+.sub-tab.on{background:#185FA5;color:#fff;border-color:#185FA5}
+.ped-sub{display:none}.ped-sub.on{display:block}
+.sem{display:inline-block;width:10px;height:10px;border-radius:50%}
+.sem-v{background:#22c55e}.sem-a{background:#eab308}.sem-r{background:#dc2626}.sem-x{background:#94a3b8}
+.sem-cell-v{background:rgba(34,197,94,.10)}.sem-cell-a{background:rgba(234,179,8,.12)}.sem-cell-r{background:rgba(220,38,38,.10)}
+.ped-estado{display:inline-block;font-size:10px;font-weight:500;padding:1px 6px;border-radius:8px}
+.ped-estado.pendiente{background:#FCEBEB;color:#A32D2D}
+.ped-estado.parcial{background:#FAEEDA;color:#854F0B}
+.ped-estado.enviado{background:#EAF3DE;color:#3B6D11}
+.ped-estado.recibido{background:#E6F1FB;color:#185FA5}
+.ped-estado.sin_mix{background:var(--bg-secondary);color:var(--text-2)}
+.ped-cell-inp{width:78px;text-align:right;font-size:11px;padding:2px 4px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-secondary);color:var(--text)}
+.ped-cell-inp:focus{background:#E8F5E9;color:#1B5E20;outline:1px solid #16a34a}
+.mix-grid-cell{padding:3px 4px;border-bottom:.5px solid var(--border-4)}
+.mix-sum-ok{color:#16a34a;font-weight:500}
+.mix-sum-bad{color:#dc2626;font-weight:500}
 .save-pill{position:fixed;bottom:14px;right:14px;padding:6px 12px;font-size:12px;border-radius:999px;background:#16a34a;color:#fff;opacity:0;transition:opacity .25s;pointer-events:none}
 .save-pill.show{opacity:1}
 .save-pill.error{background:#dc2626}
