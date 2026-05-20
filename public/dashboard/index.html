@@ -209,7 +209,7 @@
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
       <div>
         <p style="font-size:13px;font-weight:500">Presupuesto mensual</p>
-        <p style="font-size:11px;color:var(--text-2)">Base: facturación real del mismo mes de 2025 · Editable por local · Columna Real para cargar resultados</p>
+        <p style="font-size:11px;color:var(--text-2)">Base sugerida: facturación real del mismo mes año anterior · Tendencia 3M y semáforo desde histórico · Desglose semanal con pesos históricos</p>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:12px;color:var(--text-2)">Mes:</span>
@@ -226,31 +226,39 @@
       </div>
     </div>
   </div>
-  <div class="g4" style="margin-bottom:1rem">
-    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Fac. presupuestada</p><p style="font-size:18px;font-weight:500" id="pk-fac">—</p></div>
+
+  <!-- KPIs globales -->
+  <div class="g4" style="margin-bottom:.5rem">
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Fac. presupuestada total</p><p style="font-size:18px;font-weight:500" id="pk-fac">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Fac. real total</p><p style="font-size:18px;font-weight:500" id="pk-real">—</p><p style="font-size:11px;color:var(--text-2)" id="pk-real-cobertura">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Variación real/presup.</p><p style="font-size:18px;font-weight:500" id="pk-var">—</p><p style="font-size:11px;color:var(--text-2)" id="pk-var-eur">—</p></div>
     <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Margen presupuestado</p><p style="font-size:18px;font-weight:500" id="pk-mg">—</p><p style="font-size:11px;color:var(--text-2)" id="pk-mgp">—</p></div>
-    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Fac. real ingresada</p><p style="font-size:18px;font-weight:500" id="pk-real">—</p></div>
-    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Variación real/presup.</p><p style="font-size:18px;font-weight:500" id="pk-var">—</p></div>
   </div>
+  <div class="surf" style="margin-bottom:1rem;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <p style="font-size:11px;color:var(--text-2)">Semáforo (tendencia 3M)</p>
+    <div style="display:flex;gap:14px;font-size:12px">
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:#22c55e"></span><span id="pk-sem-v">0</span> verdes</span>
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:#eab308"></span><span id="pk-sem-a">0</span> amarillos</span>
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:#dc2626"></span><span id="pk-sem-r">0</span> rojos</span>
+      <span style="display:flex;align-items:center;gap:5px;color:var(--text-2)"><span style="width:10px;height:10px;border-radius:50%;background:#94a3b8"></span><span id="pk-sem-x">0</span> sin datos</span>
+    </div>
+  </div>
+
   <div class="card">
     <div style="overflow-x:auto"><table>
       <thead><tr>
-        <th>Local</th><th>G</th>
-        <th style="text-align:right">Fac. Pres.</th>
-        <th style="text-align:right">Mat.Prima</th>
-        <th style="text-align:right">Personal</th>
-        <th style="text-align:right">Hs/sem</th>
-        <th style="text-align:right">Alq+Srv</th>
-        <th style="text-align:right">Glovo</th>
-        <th style="text-align:right">Pub.</th>
-        <th style="text-align:right">Imp.</th>
-        <th style="text-align:right">Produc.</th>
-        <th style="text-align:right">Espec.</th>
-        <th style="text-align:right">Total Gastos</th>
-        <th style="text-align:right">Margen €</th>
+        <th>Local</th>
+        <th>G</th>
+        <th style="text-align:right">Fac. año ant.</th>
+        <th style="text-align:right" title="Promedio 3M previos este año vs los mismos 3M del año anterior">Tend. 3M</th>
+        <th style="text-align:right" title="Mes anterior vs mismo mes del año anterior">Var. último mes</th>
+        <th style="text-align:right">Fac. presup.</th>
+        <th style="text-align:right;color:#1B5E20">Fac. real</th>
+        <th style="text-align:right">Var. real/presup.</th>
+        <th style="text-align:right" title="% de crecimiento sobre fac. año anterior para alcanzar margen > 15%">Crec. necesario</th>
         <th style="text-align:right">Margen %</th>
-        <th style="text-align:right;color:#1B5E20">Real €</th>
-        <th style="text-align:right">Variación</th>
+        <th style="text-align:center" title="Verde >+3% · Amarillo entre -3 y +3 · Rojo <-3%">●</th>
+        <th style="text-align:center" title="Expandir desglose semanal"></th>
       </tr></thead>
       <tbody id="tb-pres"></tbody>
     </table></div>

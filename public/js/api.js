@@ -60,7 +60,10 @@ window.Api = (function () {
     method: 'PUT', body: JSON.stringify(payload),
   });
 
+  const presupuestoContexto = (periodo) =>
+    jsonFetch(`/api/v1/aires/presupuesto/contexto?periodo=${encodeURIComponent(periodo)}`);
+
   const logout = () => jsonFetch('/api/v1/auth/logout', { method: 'POST' });
 
-  return { bootstrap, saveConfig, saveLocal, savePresupuesto, logout, debouncedSave, pill };
+  return { bootstrap, saveConfig, saveLocal, savePresupuesto, presupuestoContexto, logout, debouncedSave, pill };
 })();

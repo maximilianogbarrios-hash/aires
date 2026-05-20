@@ -201,6 +201,187 @@ router.post('/historial', async (req, res) => {
   }
 });
 
+// ─── PRESUPUESTO · CONTEXTO (tendencias + pesos semanales) ────────────
+// GET /presupuesto/contexto?periodo=YYYY-MM
+// Devuelve por local: facturación del mismo mes año anterior, los 3 meses
+// previos (este año y el anterior), el mes anterior comparado año contra
+// año, pesos semanales históricos (S1..S5) y real semanal del mes pedido.
+//
+// Fuentes:
+//   - ab_historial (mensual, fuente LIKE '%_real') → KPIs anuales.
+//   - ab_cierres_tpv (diario, importe_neto) → pesos semanales + real
+//     parcial del mes consultado.
+//
+// Cache: pesos semanales por local con TTL 1h. Los datos diarios no
+// cambian seguido, así que evitamos recalcular en cada request.
+const presWeeklyCache = { ts: 0, byLocal: null };
+const PRES_WEEKLY_TTL_MS = 60 * 60 * 1000;
+
+function weekIdxOfDay(day) {
+  if (day <= 7) return 0;
+  if (day <= 14) return 1;
+  if (day <= 21) return 2;
+  if (day <= 28) return 3;
+  return 4;
+}
+
+async function computeWeeklyWeights() {
+  // Promedio simple: para cada (local, mes histórico) calculamos el peso
+  // de cada semana sobre el total del mes, y luego promediamos esos pesos
+  // entre todos los meses disponibles. Excluimos meses con total ≤ 0.
+  const rows = await many(
+    `SELECT local_id,
+            DATE_TRUNC('month', fecha_cierre)::date AS mes,
+            EXTRACT(DAY FROM fecha_cierre)::int    AS dia,
+            SUM(importe_neto)::float8              AS neto
+       FROM ab_cierres_tpv
+      WHERE importe_neto IS NOT NULL
+      GROUP BY local_id, mes, dia`
+  );
+  // bucket[localId][mesKey] = [s1..s5]
+  const bucket = new Map();
+  for (const r of rows) {
+    if (!r.local_id) continue;
+    const mesKey = r.mes instanceof Date ? r.mes.toISOString().slice(0, 7) : String(r.mes).slice(0, 7);
+    const wIdx = weekIdxOfDay(+r.dia);
+    if (!bucket.has(r.local_id)) bucket.set(r.local_id, new Map());
+    const perMes = bucket.get(r.local_id);
+    if (!perMes.has(mesKey)) perMes.set(mesKey, [0, 0, 0, 0, 0]);
+    perMes.get(mesKey)[wIdx] += +r.neto || 0;
+  }
+  const byLocal = {};
+  for (const [localId, perMes] of bucket.entries()) {
+    const acc = [0, 0, 0, 0, 0];
+    let n = 0;
+    for (const arr of perMes.values()) {
+      const tot = arr.reduce((s, v) => s + v, 0);
+      if (tot <= 0) continue;
+      for (let i = 0; i < 5; i++) acc[i] += arr[i] / tot;
+      n += 1;
+    }
+    if (n > 0) {
+      byLocal[localId] = acc.map((v) => v / n);
+    }
+  }
+  return byLocal;
+}
+
+async function getWeeklyWeights() {
+  const now = Date.now();
+  if (presWeeklyCache.byLocal && now - presWeeklyCache.ts < PRES_WEEKLY_TTL_MS) {
+    return presWeeklyCache.byLocal;
+  }
+  const byLocal = await computeWeeklyWeights();
+  presWeeklyCache.byLocal = byLocal;
+  presWeeklyCache.ts = now;
+  return byLocal;
+}
+
+router.get('/presupuesto/contexto', async (req, res) => {
+  try {
+    const periodo = String(req.query.periodo || '').trim();
+    const m = /^(\d{4})-(\d{1,2})$/.exec(periodo);
+    if (!m) return res.status(400).json({ error: 'periodo inválido (formato YYYY-MM)' });
+    const anio = +m[1];
+    const mes = +m[2];
+    if (mes < 1 || mes > 12) return res.status(400).json({ error: 'mes fuera de rango' });
+
+    // Meses necesarios (este año + anterior). Manejamos cross-year en los 3M.
+    const targets = []; // [{anio, mes, tag}]
+    const push = (a, mm, tag) => targets.push({ anio: a, mes: mm, tag });
+    // mismo mes año anterior
+    push(anio - 1, mes, 'mismo_mes_prev_year');
+    // último mes (m-1) — cruzar año si mes=1
+    const ultMesAnio = mes === 1 ? anio - 1 : anio;
+    const ultMes = mes === 1 ? 12 : mes - 1;
+    push(ultMesAnio, ultMes, 'ult_mes_este_anio');
+    push(ultMesAnio - 1, ultMes, 'ult_mes_prev_year');
+    // 3M previos (m-3, m-2, m-1)
+    for (let k = 3; k >= 1; k--) {
+      let mm = mes - k;
+      let aa = anio;
+      if (mm <= 0) { mm += 12; aa -= 1; }
+      push(aa, mm, `3m_este_${4 - k}`);
+      push(aa - 1, mm, `3m_prev_${4 - k}`);
+    }
+
+    // Una sola query: traemos todas las celdas (local, anio, mes) que necesitamos.
+    const pairs = [...new Set(targets.map((t) => `${t.anio}-${t.mes}`))].map((s) => s.split('-').map(Number));
+    const histRows = await many(
+      `SELECT local_id, anio, mes, facturacion::float8 AS facturacion
+         FROM ab_historial
+        WHERE fuente LIKE '%_real'
+          AND (anio, mes) IN (${pairs.map((_, i) => `($${i*2+1}, $${i*2+2})`).join(',')})`,
+      pairs.flat()
+    );
+    // hist[localId]['2025-5'] = number
+    const hist = {};
+    for (const r of histRows) {
+      if (!hist[r.local_id]) hist[r.local_id] = {};
+      hist[r.local_id][`${r.anio}-${r.mes}`] = +r.facturacion;
+    }
+
+    // Real semanal del mes consultado (desde ab_cierres_tpv). Si no hay
+    // datos, el array vendrá null y el front pinta "—".
+    const tpvRows = await many(
+      `SELECT local_id,
+              EXTRACT(DAY FROM fecha_cierre)::int AS dia,
+              SUM(importe_neto)::float8           AS neto
+         FROM ab_cierres_tpv
+        WHERE EXTRACT(YEAR  FROM fecha_cierre) = $1
+          AND EXTRACT(MONTH FROM fecha_cierre) = $2
+          AND importe_neto IS NOT NULL
+        GROUP BY local_id, dia`,
+      [anio, mes]
+    );
+    const realSemMes = {};
+    for (const r of tpvRows) {
+      if (!r.local_id) continue;
+      if (!realSemMes[r.local_id]) realSemMes[r.local_id] = [0, 0, 0, 0, 0];
+      realSemMes[r.local_id][weekIdxOfDay(+r.dia)] += +r.neto || 0;
+    }
+
+    const pesos = await getWeeklyWeights();
+
+    // Construir respuesta por local. Para evitar payloads gigantes
+    // devolvemos solo locales con algún dato.
+    const ids = new Set([
+      ...Object.keys(hist),
+      ...Object.keys(realSemMes),
+      ...Object.keys(pesos),
+    ]);
+    const get = (id, a, mm) => hist[id]?.[`${a}-${mm}`] ?? null;
+    const porLocal = {};
+    for (const id of ids) {
+      const k3 = [3, 2, 1].map((kk) => {
+        let mm = mes - kk;
+        let aa = anio;
+        if (mm <= 0) { mm += 12; aa -= 1; }
+        return { aa, mm };
+      });
+      porLocal[id] = {
+        fac_mismo_mes_anio_anterior: get(id, anio - 1, mes),
+        fac_3meses_este_anio:        k3.map((p) => get(id, p.aa, p.mm)),
+        fac_3meses_anio_anterior:    k3.map((p) => get(id, p.aa - 1, p.mm)),
+        fac_ultimo_mes_este_anio:    get(id, ultMesAnio, ultMes),
+        fac_ultimo_mes_anio_anterior: get(id, ultMesAnio - 1, ultMes),
+        pesos_semanales:              pesos[id] || null,
+        real_semanal_mes_actual:      realSemMes[id] || null,
+      };
+    }
+
+    res.json({
+      periodo: { anio, mes },
+      ult_mes: { anio: ultMesAnio, mes: ultMes },
+      por_local: porLocal,
+      meta: { weekly_cache_ts: presWeeklyCache.ts },
+    });
+  } catch (e) {
+    console.error('[aires.pres.contexto]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // ─── BOOTSTRAP: todo lo que necesita el front en un solo request ──────
 router.get('/bootstrap', async (req, res) => {
   try {

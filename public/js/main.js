@@ -11,6 +11,8 @@ const ctx = {
   h25: {},            // { localId: [12 valores 2025] }
   presupuestoMap: {}, // { localId: { fac_presupuestada, fac_real } } para mes activo
   presupuestoAll: [], // raw filas para reconstruir map al cambiar de mes
+  presContext: {},    // { localId: { fac_mismo_mes_anio_anterior, fac_3meses_*, pesos_semanales, real_semanal_mes_actual, ... } }
+  presContextMeta: null,
   user: null,
 };
 
@@ -21,6 +23,7 @@ const uiState = {
   mesNavIdx: 12, // 0-11 = meses 2025, 12 = "Mi Análisis"
   presYear: 2026,
   presMonth: 5,
+  presExpand: {},      // { localId: true } filas con desglose semanal abierto
 };
 
 // ─── Charts ────────────────────────────────────────────────────────────
@@ -520,74 +523,224 @@ function updCostos() {
 }
 
 // ─── Presupuesto ───────────────────────────────────────────────────────
+//
+// Modelo nuevo:
+//   - Tabla con columnas: año anterior · tendencia 3M · var. último mes ·
+//     presup. (editable) · real (editable) · var. real/presup. · crec.
+//     necesario para margen >15% · margen % · semáforo · expandir.
+//   - KPIs arriba (totales + contadores semáforo).
+//   - Expansión por local: pesos semanales históricos × presup → estimado
+//     semanal vs real semanal del mes (del backend, ab_cierres_tpv).
+
 function onPresMonthChange() {
   const v = $('pres-month').value;
   const [y, m] = v.split('-').map(Number);
   uiState.presYear = y;
   uiState.presMonth = m;
   rebuildPresMap();
-  updPresupuesto();
+  fetchPresContexto().then(() => updPresupuesto()).catch(() => updPresupuesto());
+}
+
+async function fetchPresContexto() {
+  const periodo = `${uiState.presYear}-${String(uiState.presMonth).padStart(2,'0')}`;
+  try {
+    const res = await Api.presupuestoContexto(periodo);
+    ctx.presContext = res.por_local || {};
+    ctx.presContextMeta = { periodo, ult_mes: res.ult_mes };
+  } catch (e) {
+    console.error('[pres.contexto]', e);
+    ctx.presContext = {};
+    ctx.presContextMeta = { periodo, ult_mes: null };
+  }
+}
+
+// Encuentra el mínimo crecimiento sobre `facBase` que lleva el margen del
+// local >15% usando el engine real. Devuelve null si no se puede o falta
+// la base.
+function crecNecesarioPctMg15(local, facBase) {
+  if (!facBase || facBase <= 0) return null;
+  // Probar fac creciente. Si ya con la base se llega, devolvemos 0.
+  const testFac = (fac) => {
+    const fakeLoc = { ...local, fac_mi_analisis: fac };
+    const fakeCtx = {
+      ...ctx,
+      locales: ctx.locales.map((l) => l.id === local.id ? fakeLoc : l),
+    };
+    const R = E.calcAll(fakeCtx);
+    const r = R.find((x) => x.id === local.id);
+    return r ? r.mgP : -1;
+  };
+  if (testFac(facBase) >= 0.15) return 0;
+  // Bisección en [facBase, facBase × 5]. Si a 5× no llega, devolvemos null.
+  let lo = facBase;
+  let hi = facBase * 5;
+  if (testFac(hi) < 0.15) return null;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (testFac(mid) >= 0.15) hi = mid; else lo = mid;
+    if (hi - lo < 50) break;
+  }
+  return (hi - facBase) / facBase;
+}
+
+function semaforoColor(tend3m) {
+  if (tend3m == null) return null;
+  if (tend3m >  0.03) return '#22c55e';
+  if (tend3m < -0.03) return '#dc2626';
+  return '#eab308';
+}
+
+function pctSigned(v) {
+  if (v == null) return '—';
+  const s = (v * 100).toFixed(1).replace('.', ',');
+  return `${v > 0 ? '+' : ''}${s}%`;
+}
+
+function arrowFor(v) {
+  if (v == null) return '';
+  if (v >  0.01) return '↑';
+  if (v < -0.01) return '↓';
+  return '→';
 }
 
 function updPresupuesto() {
   const monthIdx = uiState.presMonth - 1;
   const R = E.calcBudget(ctx, monthIdx);
+  const RbyId = Object.fromEntries(R.map((r) => [r.id, r]));
+  const ctxPres = ctx.presContext || {};
+
+  // KPIs globales
   const totalPF = R.reduce((s, r) => s + r.fac, 0);
   const totalMg = R.reduce((s, r) => s + r.mg, 0);
   const totalReal = R.reduce((s, r) => r.real != null ? s + r.real : s, 0);
+  const realPresupOnlyPF = R.reduce((s, r) => r.real != null ? s + r.fac : s, 0);
   const hasReal = R.some((r) => r.real != null);
-  const varEur = hasReal ? totalReal - totalPF : null;
+  const realCount = R.filter((r) => r.real != null).length;
+  const varEur = hasReal ? totalReal - realPresupOnlyPF : null;
+  const varPctG = hasReal && realPresupOnlyPF > 0 ? varEur / realPresupOnlyPF : null;
   $('pk-fac').textContent = eur(totalPF);
-  $('pk-mg').textContent = eur(totalMg); $('pk-mg').style.color = clrG(totalMg);
-  $('pk-mgp').textContent = pct(totalPF > 0 ? totalMg / totalPF : 0);
   $('pk-real').textContent = hasReal ? eur(totalReal) : '—';
-  $('pk-var').textContent = varEur != null ? `${varEur > 0 ? '+' : ''}${eur(varEur)}` : '—';
-  $('pk-var').style.color = varEur != null ? clrG(varEur) : '';
+  $('pk-real-cobertura').textContent = hasReal ? `${realCount} de ${R.length} locales` : '';
+  $('pk-var').textContent = varPctG != null ? pctSigned(varPctG) : '—';
+  $('pk-var').style.color = varPctG != null ? clrG(varPctG) : '';
+  $('pk-var-eur').textContent = varEur != null ? `${varEur >= 0 ? '+' : ''}${eur(varEur)}` : '';
+  $('pk-mg').textContent = eur(totalMg);
+  $('pk-mg').style.color = clrG(totalMg);
+  $('pk-mgp').textContent = pct(totalPF > 0 ? totalMg / totalPF : 0);
 
+  // Contadores semáforo
+  const sem = { v: 0, a: 0, r: 0, x: 0 };
+  R.forEach((row) => {
+    const c = ctxPres[row.id] || {};
+    const este = c.fac_3meses_este_anio;
+    const prev = c.fac_3meses_anio_anterior;
+    const tend3m = trend3mPct(este, prev);
+    if (tend3m == null) sem.x++;
+    else if (tend3m >  0.03) sem.v++;
+    else if (tend3m < -0.03) sem.r++;
+    else sem.a++;
+  });
+  $('pk-sem-v').textContent = sem.v;
+  $('pk-sem-a').textContent = sem.a;
+  $('pk-sem-r').textContent = sem.r;
+  $('pk-sem-x').textContent = sem.x;
+
+  // Tabla
   const grpColors = { A:'#639922', B:'#BA7517', C:'#185FA5', D:'#A32D2D' };
   const SR = [...R].sort((a, b) => a.g.localeCompare(b.g) || a.n.localeCompare(b.n));
   let html = ''; let curGrp = '';
   SR.forEach((r) => {
     if (r.g !== curGrp) {
       curGrp = r.g;
-      html += `<tr><td colspan="17" style="background:${grpColors[r.g]}18;font-weight:500;color:${grpColors[r.g]};padding:5px 8px;font-size:11px">${r.g} — ${r.g === 'A' ? 'Mantener' : r.g === 'B' ? 'Analizar' : r.g === 'C' ? 'Especial' : 'Salida'}</td></tr>`;
+      html += `<tr><td colspan="12" style="background:${grpColors[r.g]}18;font-weight:500;color:${grpColors[r.g]};padding:5px 8px;font-size:11px">${r.g} — ${r.g === 'A' ? 'Mantener' : r.g === 'B' ? 'Analizar' : r.g === 'C' ? 'Especial' : 'Salida'}</td></tr>`;
     }
+    const c = ctxPres[r.id] || {};
+    const facAnt = c.fac_mismo_mes_anio_anterior;
+    const tend3m = trend3mPct(c.fac_3meses_este_anio, c.fac_3meses_anio_anterior);
+    const varUlt = pairPct(c.fac_ultimo_mes_este_anio, c.fac_ultimo_mes_anio_anterior);
     const presVal = r.presBase;
     const realVal = r.real;
-    const varRow = realVal != null ? realVal - presVal : null;
-    const varPct = varRow != null && presVal > 0 ? varRow / presVal : null;
-    html += `<tr>
+    const varRow = realVal != null && presVal > 0 ? (realVal - presVal) / presVal : null;
+    const local = locById(r.id);
+    const crec = local ? crecNecesarioPctMg15(local, facAnt) : null;
+    const semColor = semaforoColor(tend3m);
+    const expanded = !!(uiState.presExpand && uiState.presExpand[r.id]);
+
+    html += `<tr data-pres-row="${r.id}">
       <td style="font-weight:500">${r.n}</td>
       <td><span class="bdg b${r.g}">${r.g}</span></td>
-      <td style="text-align:right"><input class="num-inp" style="width:80px" type="number" value="${presVal}" min="0" step="500" onchange="updPresFac('${r.id}',this.value)"></td>
-      <td style="text-align:right">${eur(r.mp)}</td>
-      <td style="text-align:right">${eur(r.pers)}</td>
-      <td style="text-align:right;font-weight:500">${r.hS.toFixed(1)} h</td>
-      <td style="text-align:right">${eur(r.srvTotal)}</td>
-      <td style="text-align:right">${eur(r.glv)}</td>
-      <td style="text-align:right">${eur(r.pub)}</td>
-      <td style="text-align:right">${eur(r.imp)}</td>
-      <td style="text-align:right">${eur(r.prod)}</td>
-      <td style="text-align:right">${eur(r.esp)}</td>
-      <td style="text-align:right;font-weight:500">${eur(r.tG)}</td>
-      <td style="text-align:right;font-weight:500;color:${clrG(r.mg)}">${eur(r.mg)}</td>
+      <td style="text-align:right">${facAnt != null ? eur(facAnt) : '—'}</td>
+      <td style="text-align:right;color:${tend3m != null ? clrG(tend3m) : ''}">${tend3m != null ? `${arrowFor(tend3m)} ${pctSigned(tend3m)}` : '—'}</td>
+      <td style="text-align:right;color:${varUlt != null ? clrG(varUlt) : ''}">${varUlt != null ? pctSigned(varUlt) : '—'}</td>
+      <td style="text-align:right"><input class="num-inp" style="width:90px" type="number" value="${presVal}" min="0" step="500" onchange="updPresFac('${r.id}',this.value)"></td>
+      <td style="text-align:right"><input type="number" class="real-inp" style="width:90px" value="${realVal != null ? realVal : ''}" placeholder="—" min="0" step="500" onchange="updPresReal('${r.id}',this.value)"></td>
+      <td style="text-align:right;font-weight:500;color:${varRow != null ? clrG(varRow) : ''}">${varRow != null ? pctSigned(varRow) : '—'}</td>
+      <td style="text-align:right">${crec != null ? pctSigned(crec) : '—'}</td>
       <td style="text-align:right">${pct(r.mgP)}</td>
-      <td style="text-align:right"><input type="number" class="real-inp" value="${realVal != null ? realVal : ''}" placeholder="—" min="0" step="500" onchange="updPresReal('${r.id}',this.value)"></td>
-      <td style="text-align:right;font-weight:500;color:${varRow != null ? clrG(varRow) : ''}">${varRow != null ? (varRow > 0 ? '+' : '') + eur(varRow) + (varPct != null ? ' ('+pct(varPct)+')' : '') : '—'}</td>
+      <td style="text-align:center">${semColor ? `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${semColor}"></span>` : '<span style="color:var(--text-2)">—</span>'}</td>
+      <td style="text-align:center"><button type="button" onclick="togglePresWeek('${r.id}')" style="background:transparent;border:none;cursor:pointer;font-size:14px;color:var(--text-2)">${expanded ? '▾' : '▸'}</button></td>
     </tr>`;
+    if (expanded) {
+      html += `<tr data-pres-week="${r.id}"><td colspan="12" style="padding:0;background:var(--bg-secondary)">${renderWeekRow(r, c)}</td></tr>`;
+    }
   });
+
+  // Subtotales por grupo
   ['A','B','C','D'].forEach((g) => {
     const sub = R.filter((r) => r.g === g); if (!sub.length) return;
     const sf = sub.reduce((s, r) => s + r.fac, 0);
-    const stG = sub.reduce((s, r) => s + r.tG, 0);
-    const smg = sub.reduce((s, r) => s + r.mg, 0);
     const sReal = sub.reduce((s, r) => r.real != null ? s + r.real : s, 0);
     const hasR = sub.some((r) => r.real != null);
-    html += `<tr class="tr-sub" style="color:${grpColors[g]}"><td colspan="2">Subtotal ${g}</td><td style="text-align:right">${eur(sf)}</td><td colspan="9"></td><td style="text-align:right">${eur(stG)}</td><td style="text-align:right;color:${clrG(smg)}">${eur(smg)}</td><td style="text-align:right">${pct(sf > 0 ? smg/sf : 0)}</td><td style="text-align:right">${hasR ? eur(sReal) : '—'}</td><td></td></tr>`;
+    html += `<tr class="tr-sub" style="color:${grpColors[g]}"><td colspan="5">Subtotal ${g}</td><td style="text-align:right">${eur(sf)}</td><td style="text-align:right">${hasR ? eur(sReal) : '—'}</td><td colspan="5"></td></tr>`;
   });
-  const totalTG = R.reduce((s, r) => s + r.tG, 0);
-  html += `<tr class="tr-tot"><td colspan="2">TOTAL</td><td style="text-align:right">${eur(totalPF)}</td><td colspan="9"></td><td style="text-align:right">${eur(totalTG)}</td><td style="text-align:right;color:${clrG(totalMg)}">${eur(totalMg)}</td><td style="text-align:right">${pct(totalPF > 0 ? totalMg/totalPF : 0)}</td><td style="text-align:right;color:#1B5E20">${hasReal ? eur(totalReal) : '—'}</td><td style="text-align:right;color:${varEur != null ? clrG(varEur) : ''}">${varEur != null ? (varEur > 0 ? '+' : '') + eur(varEur) : '—'}</td></tr>`;
+  html += `<tr class="tr-tot"><td colspan="5">TOTAL</td><td style="text-align:right">${eur(totalPF)}</td><td style="text-align:right;color:#1B5E20">${hasReal ? eur(totalReal) : '—'}</td><td style="text-align:right;color:${varPctG != null ? clrG(varPctG) : ''}">${varPctG != null ? pctSigned(varPctG) : '—'}</td><td colspan="4"></td></tr>`;
   $('tb-pres').innerHTML = html;
+}
+
+function trend3mPct(este, prev) {
+  if (!Array.isArray(este) || !Array.isArray(prev)) return null;
+  let sE = 0, sP = 0, n = 0;
+  for (let i = 0; i < este.length; i++) {
+    if (este[i] != null && prev[i] != null) {
+      sE += este[i]; sP += prev[i]; n++;
+    }
+  }
+  if (n === 0 || sP <= 0) return null;
+  return (sE - sP) / sP;
+}
+
+function pairPct(actual, prev) {
+  if (actual == null || prev == null || prev <= 0) return null;
+  return (actual - prev) / prev;
+}
+
+function togglePresWeek(id) {
+  if (!uiState.presExpand) uiState.presExpand = {};
+  uiState.presExpand[id] = !uiState.presExpand[id];
+  updPresupuesto();
+}
+
+function renderWeekRow(r, c) {
+  const pesos = Array.isArray(c.pesos_semanales) ? c.pesos_semanales : null;
+  const real  = Array.isArray(c.real_semanal_mes_actual) ? c.real_semanal_mes_actual : null;
+  const presup = r.presBase || 0;
+  const labels = ['S1 (1-7)','S2 (8-14)','S3 (15-21)','S4 (22-28)','S5 (29-fin)'];
+  let inner = `<div style="padding:.75rem 1rem"><p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Desglose semanal · ${r.n} · ${pesos ? 'pesos históricos calculados desde cierres TPV' : 'sin histórico diario disponible (mostrando reparto uniforme)'}</p>`;
+  inner += '<table style="width:100%;font-size:11px"><thead><tr><th style="text-align:left;color:var(--text-2);padding:4px 6px">Semana</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Peso hist.</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Estimado</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Real</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Var.</th></tr></thead><tbody>';
+  let tEst = 0, tReal = 0, hasReal = false;
+  for (let i = 0; i < 5; i++) {
+    const w = pesos ? pesos[i] : 0.2;
+    const est = presup * w;
+    const rv  = real ? real[i] : null;
+    tEst += est;
+    if (rv != null) { tReal += rv; if (rv > 0) hasReal = true; }
+    const v = (rv != null && est > 0) ? (rv - est) / est : null;
+    inner += `<tr><td style="padding:4px 6px">${labels[i]}</td><td style="text-align:right;padding:4px 6px">${pesos ? pct(w) : '<span style="color:var(--text-2)">—</span>'}</td><td style="text-align:right;padding:4px 6px">${eur(est)}</td><td style="text-align:right;padding:4px 6px">${rv != null && rv > 0 ? eur(rv) : '<span style="color:var(--text-2)">—</span>'}</td><td style="text-align:right;padding:4px 6px;color:${v != null ? clrG(v) : ''}">${v != null ? pctSigned(v) : '—'}</td></tr>`;
+  }
+  const vTot = (hasReal && tEst > 0) ? (tReal - tEst) / tEst : null;
+  inner += `<tr style="border-top:.5px solid var(--border-3);font-weight:500"><td style="padding:4px 6px">Total acumulado</td><td style="text-align:right;padding:4px 6px">${pesos ? '100%' : '—'}</td><td style="text-align:right;padding:4px 6px">${eur(tEst)}</td><td style="text-align:right;padding:4px 6px">${hasReal ? eur(tReal) : '—'}</td><td style="text-align:right;padding:4px 6px;color:${vTot != null ? clrG(vTot) : ''}">${vTot != null ? pctSigned(vTot) : '—'}</td></tr>`;
+  inner += '</tbody></table></div>';
+  return inner;
 }
 
 function updPresFac(id, val) {
@@ -699,7 +852,9 @@ function showTab(name, btn) {
   $(`sect-${name}`).classList.add('on');
   if (btn) btn.classList.add('on');
   if (name === 'evolucion') { updLocChart(); updIncid(); }
-  if (name === 'presupuesto') updPresupuesto();
+  if (name === 'presupuesto') {
+    fetchPresContexto().then(() => updPresupuesto()).catch(() => updPresupuesto());
+  }
 }
 
 function togglePanel() {
@@ -713,7 +868,7 @@ function togglePanel() {
 Object.assign(window, {
   setSoc, togGlovo, syncSlider, syncPool, togglePanel,
   updLocalField, updHoras, togLoc,
-  updPresFac, updPresReal, onPresMonthChange,
+  updPresFac, updPresReal, onPresMonthChange, togglePresWeek,
   navMes, srt, showTab, logout,
 });
 
