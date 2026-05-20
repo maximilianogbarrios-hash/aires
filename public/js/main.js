@@ -658,6 +658,9 @@ function updPresupuesto() {
     const facAnt = c.fac_mismo_mes_anio_anterior;
     const tend3m = trend3mPct(c.fac_3meses_este_anio, c.fac_3meses_anio_anterior);
     const varUlt = pairPct(c.fac_ultimo_mes_este_anio, c.fac_ultimo_mes_anio_anterior);
+    const tend3mFromPres = Array.isArray(c.fuente_3meses_este_anio) && c.fuente_3meses_este_anio.some((s) => s === 'presupuesto');
+    const varUltFromPres = c.fuente_ultimo_mes_este_anio === 'presupuesto';
+    const presBadge = '<span style="font-size:9px;background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;margin-left:4px;font-weight:500" title="basado en presupuesto">P</span>';
     const presVal = r.presBase;
     const realVal = r.real;
     const varRow = realVal != null && presVal > 0 ? (realVal - presVal) / presVal : null;
@@ -670,8 +673,8 @@ function updPresupuesto() {
       <td style="font-weight:500">${r.n}</td>
       <td><span class="bdg b${r.g}">${r.g}</span></td>
       <td style="text-align:right">${facAnt != null ? eur(facAnt) : '—'}</td>
-      <td style="text-align:right;color:${tend3m != null ? clrG(tend3m) : ''}">${tend3m != null ? `${arrowFor(tend3m)} ${pctSigned(tend3m)}` : '—'}</td>
-      <td style="text-align:right;color:${varUlt != null ? clrG(varUlt) : ''}">${varUlt != null ? pctSigned(varUlt) : '—'}</td>
+      <td style="text-align:right;color:${tend3m != null ? clrG(tend3m) : ''}">${tend3m != null ? `${arrowFor(tend3m)} ${pctSigned(tend3m)}${tend3mFromPres ? presBadge : ''}` : '—'}</td>
+      <td style="text-align:right;color:${varUlt != null ? clrG(varUlt) : ''}">${varUlt != null ? `${pctSigned(varUlt)}${varUltFromPres ? presBadge : ''}` : '—'}</td>
       <td style="text-align:right"><input class="num-inp" style="width:90px" type="number" value="${presVal}" min="0" step="500" onchange="updPresFac('${r.id}',this.value)"></td>
       <td style="text-align:right"><input type="number" class="real-inp" style="width:90px" value="${realVal != null ? realVal : ''}" placeholder="—" min="0" step="500" onchange="updPresReal('${r.id}',this.value)"></td>
       <td style="text-align:right;font-weight:500;color:${varRow != null ? clrG(varRow) : ''}">${varRow != null ? pctSigned(varRow) : '—'}</td>
@@ -721,24 +724,28 @@ function togglePresWeek(id) {
 }
 
 function renderWeekRow(r, c) {
-  const pesos = Array.isArray(c.pesos_semanales) ? c.pesos_semanales : null;
+  const pesos = Array.isArray(c.pesos_semanales) ? c.pesos_semanales : [0.20, 0.22, 0.23, 0.22, 0.13];
   const real  = Array.isArray(c.real_semanal_mes_actual) ? c.real_semanal_mes_actual : null;
+  const fuentePesos = c.fuente_pesos_semanales || 'default';
+  const labelFuente = fuentePesos === 'tpv'
+    ? 'pesos históricos calculados desde cierres TPV'
+    : 'distribución típica de hostelería (S1=20% · S2=22% · S3=23% · S4=22% · S5=13%)';
   const presup = r.presBase || 0;
   const labels = ['S1 (1-7)','S2 (8-14)','S3 (15-21)','S4 (22-28)','S5 (29-fin)'];
-  let inner = `<div style="padding:.75rem 1rem"><p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Desglose semanal · ${r.n} · ${pesos ? 'pesos históricos calculados desde cierres TPV' : 'sin histórico diario disponible (mostrando reparto uniforme)'}</p>`;
+  let inner = `<div style="padding:.75rem 1rem"><p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Desglose semanal · ${r.n} · ${labelFuente}</p>`;
   inner += '<table style="width:100%;font-size:11px"><thead><tr><th style="text-align:left;color:var(--text-2);padding:4px 6px">Semana</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Peso hist.</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Estimado</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Real</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Var.</th></tr></thead><tbody>';
   let tEst = 0, tReal = 0, hasReal = false;
   for (let i = 0; i < 5; i++) {
-    const w = pesos ? pesos[i] : 0.2;
+    const w = pesos[i];
     const est = presup * w;
     const rv  = real ? real[i] : null;
     tEst += est;
     if (rv != null) { tReal += rv; if (rv > 0) hasReal = true; }
     const v = (rv != null && est > 0) ? (rv - est) / est : null;
-    inner += `<tr><td style="padding:4px 6px">${labels[i]}</td><td style="text-align:right;padding:4px 6px">${pesos ? pct(w) : '<span style="color:var(--text-2)">—</span>'}</td><td style="text-align:right;padding:4px 6px">${eur(est)}</td><td style="text-align:right;padding:4px 6px">${rv != null && rv > 0 ? eur(rv) : '<span style="color:var(--text-2)">—</span>'}</td><td style="text-align:right;padding:4px 6px;color:${v != null ? clrG(v) : ''}">${v != null ? pctSigned(v) : '—'}</td></tr>`;
+    inner += `<tr><td style="padding:4px 6px">${labels[i]}</td><td style="text-align:right;padding:4px 6px">${pct(w)}</td><td style="text-align:right;padding:4px 6px">${eur(est)}</td><td style="text-align:right;padding:4px 6px">${rv != null && rv > 0 ? eur(rv) : '<span style="color:var(--text-2)">—</span>'}</td><td style="text-align:right;padding:4px 6px;color:${v != null ? clrG(v) : ''}">${v != null ? pctSigned(v) : '—'}</td></tr>`;
   }
   const vTot = (hasReal && tEst > 0) ? (tReal - tEst) / tEst : null;
-  inner += `<tr style="border-top:.5px solid var(--border-3);font-weight:500"><td style="padding:4px 6px">Total acumulado</td><td style="text-align:right;padding:4px 6px">${pesos ? '100%' : '—'}</td><td style="text-align:right;padding:4px 6px">${eur(tEst)}</td><td style="text-align:right;padding:4px 6px">${hasReal ? eur(tReal) : '—'}</td><td style="text-align:right;padding:4px 6px;color:${vTot != null ? clrG(vTot) : ''}">${vTot != null ? pctSigned(vTot) : '—'}</td></tr>`;
+  inner += `<tr style="border-top:.5px solid var(--border-3);font-weight:500"><td style="padding:4px 6px">Total acumulado</td><td style="text-align:right;padding:4px 6px">100%</td><td style="text-align:right;padding:4px 6px">${eur(tEst)}</td><td style="text-align:right;padding:4px 6px">${hasReal ? eur(tReal) : '—'}</td><td style="text-align:right;padding:4px 6px;color:${vTot != null ? clrG(vTot) : ''}">${vTot != null ? pctSigned(vTot) : '—'}</td></tr>`;
   inner += '</tbody></table></div>';
   return inner;
 }

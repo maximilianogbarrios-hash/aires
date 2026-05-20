@@ -203,19 +203,20 @@ router.post('/historial', async (req, res) => {
 
 // ─── PRESUPUESTO · CONTEXTO (tendencias + pesos semanales) ────────────
 // GET /presupuesto/contexto?periodo=YYYY-MM
-// Devuelve por local: facturación del mismo mes año anterior, los 3 meses
-// previos (este año y el anterior), el mes anterior comparado año contra
-// año, pesos semanales históricos (S1..S5) y real semanal del mes pedido.
 //
-// Fuentes:
-//   - ab_historial (mensual, fuente LIKE '%_real') → KPIs anuales.
-//   - ab_cierres_tpv (diario, importe_neto) → pesos semanales + real
-//     parcial del mes consultado.
+// Fuentes (en orden de preferencia por celda):
+//   - ab_historial (mensual, fuente LIKE '%_real') → real auditado.
+//   - ab_presupuesto.fac_presupuestada → fallback para meses sin real
+//     cargado (típicamente el año en curso). Se devuelve flag
+//     fuente='presupuesto' para que el front lo etiquete como (P).
+//   - ab_cierres_tpv (diario, importe_neto) → pesos semanales reales.
+//     Cuando no hay datos por local, se devuelve la distribución
+//     típica de hostelería (S1..S5 = 20/22/23/22/13).
 //
-// Cache: pesos semanales por local con TTL 1h. Los datos diarios no
-// cambian seguido, así que evitamos recalcular en cada request.
+// Cache: pesos semanales por local con TTL 1h.
 const presWeeklyCache = { ts: 0, byLocal: null };
 const PRES_WEEKLY_TTL_MS = 60 * 60 * 1000;
+const DEFAULT_PESOS_SEMANALES = [0.20, 0.22, 0.23, 0.22, 0.13];
 
 function weekIdxOfDay(day) {
   if (day <= 7) return 0;
@@ -305,24 +306,38 @@ router.get('/presupuesto/contexto', async (req, res) => {
       push(aa - 1, mm, `3m_prev_${4 - k}`);
     }
 
-    // Una sola query: traemos todas las celdas (local, anio, mes) que necesitamos.
+    // Traemos en paralelo: historial (real auditado) y presupuesto
+    // (fallback) para todos los (anio, mes) que necesitamos.
     const pairs = [...new Set(targets.map((t) => `${t.anio}-${t.mes}`))].map((s) => s.split('-').map(Number));
-    const histRows = await many(
-      `SELECT local_id, anio, mes, facturacion::float8 AS facturacion
-         FROM ab_historial
-        WHERE fuente LIKE '%_real'
-          AND (anio, mes) IN (${pairs.map((_, i) => `($${i*2+1}, $${i*2+2})`).join(',')})`,
-      pairs.flat()
-    );
-    // hist[localId]['2025-5'] = number
+    const placeholders = pairs.map((_, i) => `($${i*2+1}, $${i*2+2})`).join(',');
+    const [histRows, presRows] = await Promise.all([
+      many(
+        `SELECT local_id, anio, mes, facturacion::float8 AS facturacion
+           FROM ab_historial
+          WHERE fuente LIKE '%_real'
+            AND (anio, mes) IN (${placeholders})`,
+        pairs.flat()
+      ),
+      many(
+        `SELECT local_id, anio, mes, fac_presupuestada::float8 AS fac
+           FROM ab_presupuesto
+          WHERE fac_presupuestada IS NOT NULL
+            AND (anio, mes) IN (${placeholders})`,
+        pairs.flat()
+      ),
+    ]);
     const hist = {};
     for (const r of histRows) {
       if (!hist[r.local_id]) hist[r.local_id] = {};
       hist[r.local_id][`${r.anio}-${r.mes}`] = +r.facturacion;
     }
+    const pres = {};
+    for (const r of presRows) {
+      if (!pres[r.local_id]) pres[r.local_id] = {};
+      pres[r.local_id][`${r.anio}-${r.mes}`] = +r.fac;
+    }
 
-    // Real semanal del mes consultado (desde ab_cierres_tpv). Si no hay
-    // datos, el array vendrá null y el front pinta "—".
+    // Real semanal del mes consultado (desde ab_cierres_tpv).
     const tpvRows = await many(
       `SELECT local_id,
               EXTRACT(DAY FROM fecha_cierre)::int AS dia,
@@ -343,14 +358,21 @@ router.get('/presupuesto/contexto', async (req, res) => {
 
     const pesos = await getWeeklyWeights();
 
-    // Construir respuesta por local. Para evitar payloads gigantes
-    // devolvemos solo locales con algún dato.
     const ids = new Set([
       ...Object.keys(hist),
+      ...Object.keys(pres),
       ...Object.keys(realSemMes),
       ...Object.keys(pesos),
     ]);
-    const get = (id, a, mm) => hist[id]?.[`${a}-${mm}`] ?? null;
+    // Devuelve { v, src } prefiriendo historial sobre presupuesto.
+    const getCell = (id, a, mm) => {
+      const k = `${a}-${mm}`;
+      const h = hist[id]?.[k];
+      if (h != null) return { v: h, src: 'historial' };
+      const p = pres[id]?.[k];
+      if (p != null) return { v: p, src: 'presupuesto' };
+      return { v: null, src: null };
+    };
     const porLocal = {};
     for (const id of ids) {
       const k3 = [3, 2, 1].map((kk) => {
@@ -359,14 +381,22 @@ router.get('/presupuesto/contexto', async (req, res) => {
         if (mm <= 0) { mm += 12; aa -= 1; }
         return { aa, mm };
       });
+      const c3este  = k3.map((p) => getCell(id, p.aa, p.mm));
+      const c3prev  = k3.map((p) => getCell(id, p.aa - 1, p.mm));
+      const cMm     = getCell(id, anio - 1, mes);
+      const cUltE   = getCell(id, ultMesAnio, ultMes);
+      const cUltP   = getCell(id, ultMesAnio - 1, ultMes);
       porLocal[id] = {
-        fac_mismo_mes_anio_anterior: get(id, anio - 1, mes),
-        fac_3meses_este_anio:        k3.map((p) => get(id, p.aa, p.mm)),
-        fac_3meses_anio_anterior:    k3.map((p) => get(id, p.aa - 1, p.mm)),
-        fac_ultimo_mes_este_anio:    get(id, ultMesAnio, ultMes),
-        fac_ultimo_mes_anio_anterior: get(id, ultMesAnio - 1, ultMes),
-        pesos_semanales:              pesos[id] || null,
+        fac_mismo_mes_anio_anterior:  cMm.v,
+        fac_3meses_este_anio:         c3este.map((c) => c.v),
+        fac_3meses_anio_anterior:     c3prev.map((c) => c.v),
+        fac_ultimo_mes_este_anio:     cUltE.v,
+        fac_ultimo_mes_anio_anterior: cUltP.v,
+        pesos_semanales:              pesos[id] || DEFAULT_PESOS_SEMANALES,
         real_semanal_mes_actual:      realSemMes[id] || null,
+        fuente_3meses_este_anio:      c3este.map((c) => c.src),
+        fuente_ultimo_mes_este_anio:  cUltE.src,
+        fuente_pesos_semanales:       pesos[id] ? 'tpv' : 'default',
       };
     }
 

@@ -92,12 +92,36 @@ async function seedHistorial() {
   // Los HTOT van a una tabla aparte. Lo dejamos para v2 si hace falta — el front igual los puede sumar.
 }
 
+// Año en curso (2026 mientras no se cargue 2026_real) → ab_presupuesto se
+// completa con fac_mi_analisis para que Tend.3M / Var. del módulo Presupuesto
+// muestren algo aproximado en vez de "—". Una vez que el usuario edita un mes,
+// el ON CONFLICT DO NOTHING preserva su valor.
+async function seedPresupuestoCurrentYear() {
+  const ANIO = 2026;
+  const MESES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const locales = await query('SELECT id, fac_mi_analisis::float8 AS fac FROM ab_locales');
+  let ins = 0;
+  for (const l of locales.rows) {
+    for (const m of MESES) {
+      const r = await query(
+        `INSERT INTO ab_presupuesto (local_id, anio, mes, fac_presupuestada)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (local_id, anio, mes) DO NOTHING`,
+        [l.id, ANIO, m, l.fac]
+      );
+      if (r.rowCount > 0) ins++;
+    }
+  }
+  if (ins > 0) console.log(`[seed] presupuesto ${ANIO}: ${ins} filas creadas`);
+}
+
 (async () => {
   try {
     await seedUsers();
     await seedConfig();
     await seedLocales();
     await seedHistorial();
+    await seedPresupuestoCurrentYear();
     console.log('[seed] done');
   } catch (e) {
     console.error('[seed] failed:', e.message);
