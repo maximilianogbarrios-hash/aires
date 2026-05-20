@@ -118,6 +118,7 @@
   <button class="tab" data-tab="ranking" onclick="showTab('ranking',this)">Ranking</button>
   <button class="tab" data-tab="costos" onclick="showTab('costos',this)">Costos</button>
   <button class="tab" data-tab="presupuesto" onclick="showTab('presupuesto',this)">Presupuesto</button>
+  <button class="tab" data-tab="seguimiento" onclick="showTab('seguimiento',this)">Seguimiento</button>
   <button class="tab" data-tab="evolucion" onclick="showTab('evolucion',this)">Evolución</button>
   <button class="tab" data-tab="traspasos" onclick="showTab('traspasos',this)">Traspasos</button>
 </div>
@@ -261,6 +262,53 @@
         <th style="text-align:center" title="Expandir desglose semanal"></th>
       </tr></thead>
       <tbody id="tb-pres"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- SEGUIMIENTO -->
+<div id="sect-seguimiento" class="sect">
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap">
+      <div>
+        <p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Año</p>
+        <select id="seg-year" onchange="onSeguimientoFiltro()" style="padding:6px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
+          <option value="2025">2025</option>
+          <option value="2026" selected>2026</option>
+        </select>
+      </div>
+      <div>
+        <p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Mes</p>
+        <select id="seg-month" onchange="onSeguimientoFiltro()" style="padding:6px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
+          <option value="1">Enero</option><option value="2">Febrero</option><option value="3">Marzo</option><option value="4">Abril</option>
+          <option value="5" selected>Mayo</option><option value="6">Junio</option><option value="7">Julio</option><option value="8">Agosto</option>
+          <option value="9">Septiembre</option><option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+        </select>
+      </div>
+      <p style="font-size:11px;color:var(--text-2);margin-left:auto" id="seg-status">—</p>
+    </div>
+  </div>
+
+  <div class="g4" style="margin-bottom:1rem">
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Semanas OK (±5%)</p><p style="font-size:19px;font-weight:500;color:#22c55e" id="seg-kpi-v">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Alerta (±5-12%)</p><p style="font-size:19px;font-weight:500;color:#eab308" id="seg-kpi-a">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Crítico (>±12%)</p><p style="font-size:19px;font-weight:500;color:#dc2626" id="seg-kpi-r">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Sin real cargado</p><p style="font-size:19px;font-weight:500;color:var(--text-2)" id="seg-kpi-x">—</p></div>
+  </div>
+
+  <div class="card">
+    <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Carga el real semanal desde el desglose de cada local en la pestaña Presupuesto · semáforo: 🟢 ≤±5% · 🟡 ±5-12% · 🔴 >±12%</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr>
+        <th>Local</th>
+        <th>Semana</th>
+        <th>Fechas</th>
+        <th style="text-align:right">Presup. semana</th>
+        <th style="text-align:right">Real cargado</th>
+        <th style="text-align:right">Var. %</th>
+        <th style="text-align:center">Semáforo</th>
+      </tr></thead>
+      <tbody id="seg-tbody"></tbody>
     </table></div>
   </div>
 </div>

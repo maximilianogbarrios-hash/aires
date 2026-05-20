@@ -63,7 +63,20 @@ window.Api = (function () {
   const presupuestoContexto = (periodo) =>
     jsonFetch(`/api/v1/aires/presupuesto/contexto?periodo=${encodeURIComponent(periodo)}`);
 
+  const saveFacturacionSemanal = (payload) =>
+    jsonFetch('/api/v1/facturacion/semanal', { method: 'POST', body: JSON.stringify(payload) });
+
+  const getFacturacionSemanal = ({ anio, mes, local_id }) => {
+    const qs = new URLSearchParams({ anio, mes });
+    if (local_id) qs.set('local_id', local_id);
+    return jsonFetch(`/api/v1/facturacion/semanal?${qs}`);
+  };
+
   const logout = () => jsonFetch('/api/v1/auth/logout', { method: 'POST' });
 
-  return { bootstrap, saveConfig, saveLocal, savePresupuesto, presupuestoContexto, logout, debouncedSave, pill };
+  return {
+    bootstrap, saveConfig, saveLocal, savePresupuesto, presupuestoContexto,
+    saveFacturacionSemanal, getFacturacionSemanal,
+    logout, debouncedSave, pill,
+  };
 })();

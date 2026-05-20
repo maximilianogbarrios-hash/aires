@@ -24,6 +24,9 @@ const uiState = {
   presYear: 2026,
   presMonth: 5,
   presExpand: {},      // { localId: true } filas con desglose semanal abierto
+  segYear: 2026,
+  segMonth: 5,
+  segLoaded: false,
 };
 
 // ─── Charts ────────────────────────────────────────────────────────────
@@ -723,31 +726,132 @@ function togglePresWeek(id) {
   updPresupuesto();
 }
 
+function fmtFechaCorta(iso) {
+  if (!iso) return '';
+  const [, m, d] = /(\d{4})-(\d{2})-(\d{2})/.exec(iso) || [];
+  return `${+d}/${+m}`;
+}
+
 function renderWeekRow(r, c) {
-  const pesos = Array.isArray(c.pesos_semanales) ? c.pesos_semanales : [0.20, 0.22, 0.23, 0.22, 0.13];
-  const real  = Array.isArray(c.real_semanal_mes_actual) ? c.real_semanal_mes_actual : null;
-  const fuentePesos = c.fuente_pesos_semanales || 'default';
-  const labelFuente = fuentePesos === 'tpv'
-    ? 'pesos históricos calculados desde cierres TPV'
-    : 'distribución típica de hostelería (S1=20% · S2=22% · S3=23% · S4=22% · S5=13%)';
+  const semanas = Array.isArray(c.semanas) ? c.semanas : [];
+  if (!semanas.length) return '<div style="padding:.75rem 1rem;color:var(--text-2);font-size:11px">Sin desglose semanal disponible</div>';
   const presup = r.presBase || 0;
-  const labels = ['S1 (1-7)','S2 (8-14)','S3 (15-21)','S4 (22-28)','S5 (29-fin)'];
-  let inner = `<div style="padding:.75rem 1rem"><p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Desglose semanal · ${r.n} · ${labelFuente}</p>`;
-  inner += '<table style="width:100%;font-size:11px"><thead><tr><th style="text-align:left;color:var(--text-2);padding:4px 6px">Semana</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Peso hist.</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Estimado</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Real</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Var.</th></tr></thead><tbody>';
+  let inner = `<div style="padding:.75rem 1rem"><p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Desglose semanal · ${r.n} · semanas ISO (lun-dom), estimado prorrateado por días en mes · cargá el real por semana abajo</p>`;
+  inner += '<table style="width:100%;font-size:11px"><thead><tr><th style="text-align:left;color:var(--text-2);padding:4px 6px">Semana</th><th style="text-align:left;color:var(--text-2);padding:4px 6px">Fechas</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Peso</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Estimado</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Real</th><th style="text-align:right;color:var(--text-2);padding:4px 6px">Var.</th></tr></thead><tbody>';
   let tEst = 0, tReal = 0, hasReal = false;
-  for (let i = 0; i < 5; i++) {
-    const w = pesos[i];
-    const est = presup * w;
-    const rv  = real ? real[i] : null;
+  semanas.forEach((s, i) => {
+    const est = presup * (s.peso || 0);
+    const rv = s.real;
     tEst += est;
-    if (rv != null) { tReal += rv; if (rv > 0) hasReal = true; }
+    if (rv != null) { tReal += rv; hasReal = true; }
     const v = (rv != null && est > 0) ? (rv - est) / est : null;
-    inner += `<tr><td style="padding:4px 6px">${labels[i]}</td><td style="text-align:right;padding:4px 6px">${pct(w)}</td><td style="text-align:right;padding:4px 6px">${eur(est)}</td><td style="text-align:right;padding:4px 6px">${rv != null && rv > 0 ? eur(rv) : '<span style="color:var(--text-2)">—</span>'}</td><td style="text-align:right;padding:4px 6px;color:${v != null ? clrG(v) : ''}">${v != null ? pctSigned(v) : '—'}</td></tr>`;
-  }
+    const rango = `${fmtFechaCorta(s.fecha_lunes)}-${fmtFechaCorta(s.fecha_domingo)}`;
+    inner += `<tr>
+      <td style="padding:4px 6px"><strong>S${i + 1}</strong> <span style="color:var(--text-2);font-size:10px">W${s.semana_iso}</span></td>
+      <td style="padding:4px 6px;color:var(--text-2)">${rango}${s.dias_en_mes < 7 ? ` <span style="font-size:9px;color:#92400e">(${s.dias_en_mes}d en mes)</span>` : ''}</td>
+      <td style="text-align:right;padding:4px 6px">${pct(s.peso || 0)}</td>
+      <td style="text-align:right;padding:4px 6px">${eur(est)}</td>
+      <td style="text-align:right;padding:4px 6px"><input type="number" class="num-inp" style="width:80px;text-align:right" min="0" step="100" value="${rv != null ? rv : ''}" placeholder="—" onchange="updFacSemanal('${r.id}', ${s.semana_iso}, '${s.fecha_lunes}', '${s.fecha_domingo}', this.value)"></td>
+      <td style="text-align:right;padding:4px 6px;color:${v != null ? clrG(v) : ''}">${v != null ? pctSigned(v) : '—'}</td>
+    </tr>`;
+  });
   const vTot = (hasReal && tEst > 0) ? (tReal - tEst) / tEst : null;
-  inner += `<tr style="border-top:.5px solid var(--border-3);font-weight:500"><td style="padding:4px 6px">Total acumulado</td><td style="text-align:right;padding:4px 6px">100%</td><td style="text-align:right;padding:4px 6px">${eur(tEst)}</td><td style="text-align:right;padding:4px 6px">${hasReal ? eur(tReal) : '—'}</td><td style="text-align:right;padding:4px 6px;color:${vTot != null ? clrG(vTot) : ''}">${vTot != null ? pctSigned(vTot) : '—'}</td></tr>`;
+  inner += `<tr style="border-top:.5px solid var(--border-3);font-weight:500">
+    <td style="padding:4px 6px" colspan="2">Total acumulado</td>
+    <td style="text-align:right;padding:4px 6px">100%</td>
+    <td style="text-align:right;padding:4px 6px">${eur(tEst)}</td>
+    <td style="text-align:right;padding:4px 6px">${hasReal ? eur(tReal) : '—'}</td>
+    <td style="text-align:right;padding:4px 6px;color:${vTot != null ? clrG(vTot) : ''}">${vTot != null ? pctSigned(vTot) : '—'}</td>
+  </tr>`;
   inner += '</tbody></table></div>';
   return inner;
+}
+
+// ─── Seguimiento (todas las semanas de un mes, todos los locales) ────
+function semaforoVar(varPct) {
+  if (varPct == null) return { color: '#94a3b8', label: '—', tooltip: 'sin datos' };
+  const ab = Math.abs(varPct);
+  if (ab <= 0.05) return { color: '#22c55e', label: '●', tooltip: 'OK ≤±5%' };
+  if (ab <= 0.12) return { color: '#eab308', label: '●', tooltip: 'alerta ±5-12%' };
+  return { color: '#dc2626', label: '●', tooltip: 'crítico >±12%' };
+}
+
+async function loadSeguimiento() {
+  const anio = +uiState.segYear;
+  const mes = +uiState.segMonth;
+  if (!anio || !mes) return;
+  $('seg-status').textContent = 'Cargando…';
+  try {
+    const j = await Api.getFacturacionSemanal({ anio, mes });
+    renderSeguimientoTabla(j);
+    uiState.segLoaded = true;
+  } catch (e) {
+    $('seg-status').textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderSeguimientoTabla(j) {
+  const tb = $('seg-tbody');
+  if (!tb) return;
+  // Conteos para KPIs
+  const kpi = { v: 0, a: 0, r: 0, x: 0 };
+  const filas = [];
+  const localesOrden = ctx.locales.slice().sort((a, b) => (a.short_name || a.id).localeCompare(b.short_name || b.id));
+  for (const loc of localesOrden) {
+    const data = j.por_local[loc.id];
+    if (!data) continue;
+    for (const s of data.semanas) {
+      const sem = semaforoVar(s.var_pct);
+      if (s.real == null) kpi.x++;
+      else if (Math.abs(s.var_pct) <= 0.05) kpi.v++;
+      else if (Math.abs(s.var_pct) <= 0.12) kpi.a++;
+      else kpi.r++;
+      const rango = `${fmtFechaCorta(s.fecha_lunes)}-${fmtFechaCorta(s.fecha_domingo)}`;
+      filas.push(`<tr>
+        <td style="font-weight:500;font-size:12px">${loc.nombre_display}</td>
+        <td>S${s.semana_iso}</td>
+        <td style="color:var(--text-2)">${rango}${s.dias_en_mes < 7 ? ` <span style="font-size:9px;color:#92400e">(${s.dias_en_mes}d)</span>` : ''}</td>
+        <td style="text-align:right">${eur(s.presupuesto_estimado || 0)}</td>
+        <td style="text-align:right">${s.real != null ? eur(s.real) : '<span style="color:var(--text-2)">—</span>'}</td>
+        <td style="text-align:right;color:${s.var_pct != null ? clrG(s.var_pct) : ''}">${s.var_pct != null ? pctSigned(s.var_pct) : '—'}</td>
+        <td style="text-align:center"><span title="${sem.tooltip}" style="color:${sem.color};font-size:14px">${sem.label}</span></td>
+      </tr>`);
+    }
+  }
+  tb.innerHTML = filas.join('');
+  $('seg-kpi-v').textContent = kpi.v;
+  $('seg-kpi-a').textContent = kpi.a;
+  $('seg-kpi-r').textContent = kpi.r;
+  $('seg-kpi-x').textContent = kpi.x;
+  $('seg-status').textContent = `${filas.length} filas · presupuesto mensual total: ${eur(Object.values(j.por_local).reduce((s, d) => s + (d.presupuesto_mes || 0), 0))}`;
+}
+
+function onSeguimientoFiltro() {
+  uiState.segYear = +$('seg-year').value;
+  uiState.segMonth = +$('seg-month').value;
+  loadSeguimiento();
+}
+
+// Guarda real semanal y refresca el contexto (para que el desglose y los
+// KPIs reaccionen). El propio POST aggrega a ab_historial si todas las
+// semanas del mes ya están cargadas.
+async function updFacSemanal(localId, semanaIso, fechaLunes, fechaDomingo, valor) {
+  const importe = (valor === '' || valor == null) ? null : Math.max(0, +valor || 0);
+  const anio = +uiState.presYear;
+  if (importe == null) return;
+  try {
+    await Api.saveFacturacionSemanal({
+      local_id: localId, anio,
+      semana_iso: semanaIso,
+      fecha_lunes: fechaLunes, fecha_domingo: fechaDomingo,
+      importe,
+    });
+    Api.pill('Semana guardada');
+    await fetchPresContexto();
+    updPresupuesto();
+  } catch (e) {
+    Api.pill('Error: ' + e.message, true);
+  }
 }
 
 function updPresFac(id, val) {
@@ -862,6 +966,9 @@ function showTab(name, btn) {
   if (name === 'presupuesto') {
     fetchPresContexto().then(() => updPresupuesto()).catch(() => updPresupuesto());
   }
+  if (name === 'seguimiento') {
+    if (!uiState.segLoaded) loadSeguimiento();
+  }
 }
 
 function togglePanel() {
@@ -875,8 +982,9 @@ function togglePanel() {
 Object.assign(window, {
   setSoc, togGlovo, syncSlider, syncPool, togglePanel,
   updLocalField, updHoras, togLoc,
-  updPresFac, updPresReal, onPresMonthChange, togglePresWeek,
+  updPresFac, updPresReal, onPresMonthChange, togglePresWeek, updFacSemanal,
   navMes, srt, showTab, logout,
+  loadSeguimiento, onSeguimientoFiltro,
 });
 
 // ─── Go ────────────────────────────────────────────────────────────────

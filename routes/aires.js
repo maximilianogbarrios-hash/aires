@@ -201,22 +201,22 @@ router.post('/historial', async (req, res) => {
   }
 });
 
-// ─── PRESUPUESTO · CONTEXTO (tendencias + pesos semanales) ────────────
+// ─── PRESUPUESTO · CONTEXTO (tendencias + semanas ISO) ────────────────
 // GET /presupuesto/contexto?periodo=YYYY-MM
 //
-// Fuentes (en orden de preferencia por celda):
-//   - ab_historial (mensual, fuente LIKE '%_real') → real auditado.
-//   - ab_presupuesto.fac_presupuestada → fallback para meses sin real
-//     cargado (típicamente el año en curso). Se devuelve flag
-//     fuente='presupuesto' para que el front lo etiquete como (P).
-//   - ab_cierres_tpv (diario, importe_neto) → pesos semanales reales.
-//     Cuando no hay datos por local, se devuelve la distribución
-//     típica de hostelería (S1..S5 = 20/22/23/22/13).
+// Fuentes (en orden de preferencia por celda mensual):
+//   - ab_historial fuente LIKE '%_real' → real auditado (gana).
+//   - ab_historial fuente='manual_semanal' → agregación auto desde
+//     ab_facturacion_semanal cuando se completaron todas las semanas.
+//   - ab_presupuesto.fac_presupuestada → fallback (flag (P) en UI).
 //
-// Cache: pesos semanales por local con TTL 1h.
+// Semanas: el desglose ahora es por semana ISO (lunes-domingo) y se
+// devuelven las que tocan el mes con sus fechas, estimado prorrateado
+// por días-en-mes y real cargado desde ab_facturacion_semanal.
 const presWeeklyCache = { ts: 0, byLocal: null };
 const PRES_WEEKLY_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_PESOS_SEMANALES = [0.20, 0.22, 0.23, 0.22, 0.13];
+const { weeksInMonth: isoWeeksInMonth } = require('../lib/iso-weeks');
 
 function weekIdxOfDay(day) {
   if (day <= 7) return 0;
@@ -290,6 +290,8 @@ router.get('/presupuesto/contexto', async (req, res) => {
     // Meses necesarios (este año + anterior). Manejamos cross-year en los 3M.
     const targets = []; // [{anio, mes, tag}]
     const push = (a, mm, tag) => targets.push({ anio: a, mes: mm, tag });
+    // mes actual (necesario para el presupuesto que prorratea las semanas)
+    push(anio, mes, 'mes_actual');
     // mismo mes año anterior
     push(anio - 1, mes, 'mismo_mes_prev_year');
     // último mes (m-1) — cruzar año si mes=1
@@ -306,16 +308,22 @@ router.get('/presupuesto/contexto', async (req, res) => {
       push(aa - 1, mm, `3m_prev_${4 - k}`);
     }
 
-    // Traemos en paralelo: historial (real auditado) y presupuesto
-    // (fallback) para todos los (anio, mes) que necesitamos.
+    // Traemos en paralelo: historial (real auditado o manual_semanal) y
+    // presupuesto (fallback) para todos los (anio, mes) que necesitamos.
+    // DISTINCT ON prioriza fuente '*_real' sobre 'manual_semanal' (lo
+    // explícito del usuario gana sobre la agregación automática).
     const pairs = [...new Set(targets.map((t) => `${t.anio}-${t.mes}`))].map((s) => s.split('-').map(Number));
     const placeholders = pairs.map((_, i) => `($${i*2+1}, $${i*2+2})`).join(',');
     const [histRows, presRows] = await Promise.all([
       many(
-        `SELECT local_id, anio, mes, facturacion::float8 AS facturacion
+        `SELECT DISTINCT ON (local_id, anio, mes)
+                local_id, anio, mes, facturacion::float8 AS facturacion, fuente
            FROM ab_historial
-          WHERE fuente LIKE '%_real'
-            AND (anio, mes) IN (${placeholders})`,
+          WHERE (fuente LIKE '%_real' OR fuente = 'manual_semanal')
+            AND (anio, mes) IN (${placeholders})
+          ORDER BY local_id, anio, mes,
+                   CASE WHEN fuente LIKE '%_real' THEN 0 ELSE 1 END,
+                   created_at DESC`,
         pairs.flat()
       ),
       many(
@@ -337,31 +345,28 @@ router.get('/presupuesto/contexto', async (req, res) => {
       pres[r.local_id][`${r.anio}-${r.mes}`] = +r.fac;
     }
 
-    // Real semanal del mes consultado (desde ab_cierres_tpv).
-    const tpvRows = await many(
-      `SELECT local_id,
-              EXTRACT(DAY FROM fecha_cierre)::int AS dia,
-              SUM(importe_neto)::float8           AS neto
-         FROM ab_cierres_tpv
-        WHERE EXTRACT(YEAR  FROM fecha_cierre) = $1
-          AND EXTRACT(MONTH FROM fecha_cierre) = $2
-          AND importe_neto IS NOT NULL
-        GROUP BY local_id, dia`,
-      [anio, mes]
+    // Semanas ISO que tocan el mes consultado. Cada semana se prorratea
+    // según los días que cae en el mes (S1 puede arrancar el mes anterior).
+    const semanasIso = isoWeeksInMonth(anio, mes);
+    const diasMes = semanasIso.reduce((s, w) => s + w.dias_en_mes, 0);
+    const semanaIsoNums = semanasIso.map((s) => s.semana_iso);
+
+    // Reales semanales cargados manualmente (por todos los locales).
+    const facSemRows = await many(
+      `SELECT local_id, semana_iso, importe::float8 AS importe, fuente
+         FROM ab_facturacion_semanal
+        WHERE anio=$1 AND semana_iso = ANY($2::int[])`,
+      [anio, semanaIsoNums]
     );
-    const realSemMes = {};
-    for (const r of tpvRows) {
-      if (!r.local_id) continue;
-      if (!realSemMes[r.local_id]) realSemMes[r.local_id] = [0, 0, 0, 0, 0];
-      realSemMes[r.local_id][weekIdxOfDay(+r.dia)] += +r.neto || 0;
-    }
+    const facSemByLocalWeek = new Map();
+    for (const r of facSemRows) facSemByLocalWeek.set(`${r.local_id}|${r.semana_iso}`, r);
 
     const pesos = await getWeeklyWeights();
 
     const ids = new Set([
       ...Object.keys(hist),
       ...Object.keys(pres),
-      ...Object.keys(realSemMes),
+      ...facSemRows.map((r) => r.local_id),
       ...Object.keys(pesos),
     ]);
     // Devuelve { v, src } prefiriendo historial sobre presupuesto.
@@ -386,17 +391,38 @@ router.get('/presupuesto/contexto', async (req, res) => {
       const cMm     = getCell(id, anio - 1, mes);
       const cUltE   = getCell(id, ultMesAnio, ultMes);
       const cUltP   = getCell(id, ultMesAnio - 1, ultMes);
+      // Semanas ISO del mes: estimado prorrateado + real cargado.
+      const presMes = pres[id]?.[`${anio}-${mes}`] ?? null;
+      const semanas = semanasIso.map((w) => {
+        const peso = diasMes > 0 ? w.dias_en_mes / diasMes : 0;
+        const estim = presMes != null ? presMes * peso : null;
+        const r = facSemByLocalWeek.get(`${id}|${w.semana_iso}`);
+        const real = r ? +r.importe : null;
+        return {
+          semana_iso: w.semana_iso,
+          fecha_lunes: w.fecha_lunes,
+          fecha_domingo: w.fecha_domingo,
+          dias_en_mes: w.dias_en_mes,
+          peso,
+          estimado: estim,
+          real,
+          fuente: r ? r.fuente : null,
+        };
+      });
       porLocal[id] = {
         fac_mismo_mes_anio_anterior:  cMm.v,
         fac_3meses_este_anio:         c3este.map((c) => c.v),
         fac_3meses_anio_anterior:     c3prev.map((c) => c.v),
         fac_ultimo_mes_este_anio:     cUltE.v,
         fac_ultimo_mes_anio_anterior: cUltP.v,
-        pesos_semanales:              pesos[id] || DEFAULT_PESOS_SEMANALES,
-        real_semanal_mes_actual:      realSemMes[id] || null,
+        // Compat: el front viejo usaba pesos_semanales[5] y real_semanal[5];
+        // se mantienen derivados de las semanas ISO mientras migra el front.
+        pesos_semanales:              semanas.map((s) => s.peso),
+        real_semanal_mes_actual:      semanas.some((s) => s.real != null) ? semanas.map((s) => s.real || 0) : null,
         fuente_3meses_este_anio:      c3este.map((c) => c.src),
         fuente_ultimo_mes_este_anio:  cUltE.src,
-        fuente_pesos_semanales:       pesos[id] ? 'tpv' : 'default',
+        fuente_pesos_semanales:       'prorrata_dias_mes',
+        semanas,
       };
     }
 
