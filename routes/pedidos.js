@@ -13,6 +13,7 @@ const { query, one, many, tx } = require('../lib/db');
 const { requireAuth, requirePerm } = require('../lib/auth');
 const { weeksInMonth, mondayOfIsoWeek, isoStr, addDays } = require('../lib/iso-weeks');
 const { normalizarProveedor, esIntraGrupo } = require('../lib/bank/normalizers');
+const { sociedadDeLocal } = require('../lib/bank/sociedades');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -351,14 +352,16 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
 
     // Cruce con ab_movimientos: para los pedidos en estado 'recibido',
     // sumamos pagos del mismo proveedor en la semana ISO completa
-    // (lunes-domingo). Eso permite mostrar la verificación banco vs real.
+    // (lunes-domingo) que sean de la SOCIEDAD del local (no de todas).
+    // Antes el cruce distribuía pagos de cualquier sociedad al local,
+    // lo que atribuía a ELCHE (hostelero) pagos de smart/murcia/etc.
     const provsRecibidos = new Set(
       pedRows.filter((p) => p.estado === 'recibido').map((p) => p.proveedor)
     );
     const pagadoPorProv = new Map(); // 'local|proveedor' -> total pagado banco
     if (provsRecibidos.size > 0) {
       const movRows = await many(
-        `SELECT concepto, categoria, importe::float8 AS importe
+        `SELECT concepto, categoria, importe::float8 AS importe, sociedad_id
            FROM ab_movimientos
           WHERE importe < 0 AND fecha BETWEEN $1 AND $2`,
         [week.fecha_lunes, week.fecha_domingo]
@@ -367,14 +370,16 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
         if (esIntraGrupo(m.concepto)) continue;
         const { proveedor: prov } = normalizarProveedor(m.concepto, m.categoria);
         if (!provsRecibidos.has(prov)) continue;
-        // Sin asignación de local_id en movimientos: distribuimos el match
-        // por proveedor a TODOS los locales que lo tienen marcado recibido.
         const abs = Math.abs(+m.importe);
+        // Distribuimos el pago a los locales que lo tienen marcado
+        // recibido Y pertenecen a la sociedad que efectivamente realizó
+        // el pago bancario. ELCHE (hostelero) sólo cuenta pagos de
+        // sociedad_id='hostelero'.
         for (const ped of pedRows) {
-          if (ped.estado === 'recibido' && ped.proveedor === prov) {
-            const k = `${ped.local_id}|${ped.proveedor}`;
-            pagadoPorProv.set(k, (pagadoPorProv.get(k) || 0) + abs);
-          }
+          if (ped.estado !== 'recibido' || ped.proveedor !== prov) continue;
+          if (sociedadDeLocal(ped.local_id) !== m.sociedad_id) continue;
+          const k = `${ped.local_id}|${ped.proveedor}`;
+          pagadoPorProv.set(k, (pagadoPorProv.get(k) || 0) + abs);
         }
       }
     }
@@ -599,18 +604,24 @@ router.put('/marcar-pagado', requirePerm('pedidos_pagar_w'), async (req, res) =>
     const fila = upserted.rows[0] || {};
     const importeReal = fila.importe_real ?? fila.importe_sugerido ?? importeSugIn ?? 0;
 
-    // Cruce con ab_movimientos: rango lunes-domingo de la semana ISO.
+    // Cruce con ab_movimientos: rango lunes-domingo de la semana ISO,
+    // filtrado por la SOCIEDAD del local. Antes el cruce traía pagos de
+    // todas las sociedades — lo que atribuía a ELCHE (hostelero) pagos
+    // hechos por smart/murcia/etc.
     const monday = mondayOfIsoWeek(+anio, +semana_iso);
     const sunday = addDays(monday, 6);
     const desde = isoStr(monday);
     const hasta = isoStr(sunday);
-    const movs = await many(
-      `SELECT concepto, categoria, importe::float8 AS importe, fecha::text AS fecha
-         FROM ab_movimientos
-        WHERE importe < 0
-          AND fecha BETWEEN $1 AND $2`,
-      [desde, hasta]
-    );
+    const socId = sociedadDeLocal(local_id);
+    const movsParams = [desde, hasta];
+    let movsSql = `SELECT concepto, categoria, importe::float8 AS importe, fecha::text AS fecha
+                     FROM ab_movimientos
+                    WHERE importe < 0 AND fecha BETWEEN $1 AND $2`;
+    if (socId) {
+      movsSql += ' AND sociedad_id = $3';
+      movsParams.push(socId);
+    }
+    const movs = await many(movsSql, movsParams);
     let pagado_banco = 0;
     const matches = [];
     for (const r of movs) {
