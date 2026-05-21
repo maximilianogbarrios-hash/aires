@@ -19,6 +19,13 @@
   </div>
 </div>
 
+<!-- Banner cuando requireAuth redirigió por 2FA obligatorio. Renderizado
+     siempre y mostrado/ocultado por JS al final del archivo según ?msg= -->
+<div id="banner-2fa-required" style="display:none;max-width:680px;margin-bottom:1rem;padding:14px 18px;background:#FEF3C7;border:1px solid #FBBF24;border-left:4px solid #D97706;border-radius:8px">
+  <p style="font-size:14px;font-weight:600;color:#92400E;margin-bottom:4px">🔒 Activación de 2FA obligatoria</p>
+  <p style="font-size:13px;color:#78350F">Debes activar 2FA para continuar usando el sistema. Es obligatorio por seguridad. Seguí los pasos abajo para configurarlo con tu app autenticadora.</p>
+</div>
+
 <div class="card" style="margin-bottom:1rem;max-width:680px">
   <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Autenticación en dos factores (2FA)</p>
   <p style="font-size:12px;color:var(--text-2);margin-bottom:1rem">
@@ -183,6 +190,21 @@ async function logout() {
   await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin' });
   location.href = '/login';
 }
+
+// Si llegamos acá por requireAuth (?msg=2fa-required), mostrar el banner
+// arriba y abrir directamente el wizard de setup para que sea un click.
+(function showBannerIfRedirect() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('msg') === '2fa-required') {
+    const b = document.getElementById('banner-2fa-required');
+    if (b) b.style.display = '';
+    // Pre-abrir el setup tras cargar el estado actual.
+    setTimeout(() => {
+      const setupCard = document.getElementById('setup-card');
+      if (setupCard && setupCard.style.display === 'none') setup();
+    }, 250);
+  }
+})();
 
 load();
 </script>

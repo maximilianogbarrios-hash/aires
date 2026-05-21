@@ -26,8 +26,9 @@ router.post('/login', async (req, res) => {
     }
 
     req.session.partial = undefined;
-    req.session.user = { id: user.id, email: user.email, role: user.role };
-    res.json({ ok: true, user: req.session.user });
+    // totp_enabled queda en false para que requireAuth lo fuerce a /account.
+    req.session.user = { id: user.id, email: user.email, role: user.role, totp_enabled: !!user.totp_enabled };
+    res.json({ ok: true, user: req.session.user, needs2faSetup: !user.totp_enabled });
   } catch (e) {
     console.error('[auth.login]', e);
     res.status(500).json({ error: 'internal' });
@@ -54,7 +55,8 @@ router.post('/login/2fa', async (req, res) => {
       return res.status(401).json({ error: 'código inválido' });
     }
     req.session.partial = undefined;
-    req.session.user = { id: user.id, email: user.email, role: user.role };
+    // Pasó el TOTP → totp_enabled=true en sesión.
+    req.session.user = { id: user.id, email: user.email, role: user.role, totp_enabled: true };
     res.json({ ok: true, user: req.session.user });
   } catch (e) {
     console.error('[auth.login.2fa]', e);
@@ -98,6 +100,8 @@ router.post('/2fa/confirm', requireAuth, async (req, res) => {
     if (!user || !user.totp_secret) return res.status(400).json({ error: 'primero ejecutá /2fa/setup' });
     if (!totp.verifyCode(code, user.totp_secret)) return res.status(401).json({ error: 'código inválido' });
     await enableTotp(user.id);
+    // Refrescar flag en sesión para que requireAuth no siga redirigiendo a /account.
+    if (req.session?.user) req.session.user.totp_enabled = true;
     res.json({ ok: true });
   } catch (e) {
     console.error('[auth.2fa.confirm]', e);
@@ -116,6 +120,8 @@ router.post('/2fa/disable', requireAuth, async (req, res) => {
     if (!userFull.totp_enabled || !userFull.totp_secret) return res.status(400).json({ error: '2FA no está activo' });
     if (!totp.verifyCode(code, userFull.totp_secret)) return res.status(401).json({ error: 'código inválido' });
     await disableTotp(userFull.id);
+    // Refrescar flag en sesión — la siguiente request volverá a redirigir a /account.
+    if (req.session?.user) req.session.user.totp_enabled = false;
     res.json({ ok: true });
   } catch (e) {
     console.error('[auth.2fa.disable]', e);
