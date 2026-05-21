@@ -5,7 +5,10 @@ const UI = window.UICONST;
 const E = window.Engine;
 
 // ─── State ──────────────────────────────────────────────────────────────
-const ctx = {
+// Expuesto a window.ctx porque public/js/pedidos.js lee window.ctx?.user?.role
+// para resolver permisos (canWrite / canPagar). Sin esta exposición las celdas
+// de Materia Prima renderizaban como sólo-lectura para todos los roles.
+const ctx = window.ctx = {
   config: {},
   locales: [],
   h25: {},            // { localId: [12 valores 2025] }

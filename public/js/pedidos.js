@@ -10,9 +10,13 @@
   const pct = (v) => v == null ? '—' : `${(v).toFixed(1).replace('.', ',')}%`;
   const todayDow = () => new Date().getDay(); // 0=dom..6=sab
 
-  // Permisos (rol del user — viene en window.ctx.user después de boot()).
+  // Permisos: el rol del user viene primero de window.ctx.user (set por main.js
+  // tras boot del dashboard) y como fallback desde pState.user (set por el
+  // bootstrap propio del módulo Pedidos). Sin alguno de los dos, hasPerm
+  // devolvía false y las celdas de Materia Prima quedaban como sólo-lectura
+  // sin input ni toggle Pagado.
   function hasPerm(perm) {
-    const role = window.ctx?.user?.role;
+    const role = window.ctx?.user?.role || pState?.user?.role;
     if (!role) return false;
     const map = {
       pedidos_view:    ['admin','socio','gerente','administrativo','pedidos'],
@@ -89,6 +93,7 @@
       pState.mix = data.mix || [];
       pState.categorias_mp = data.categorias_mp || pState.categorias_mp;
       pState.week = data.week || pState.week;
+      pState.user = data.user || null;
       pState.initialized = true;
       adjustPerms();
     } catch (e) {
