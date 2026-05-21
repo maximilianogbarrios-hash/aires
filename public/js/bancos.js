@@ -71,6 +71,12 @@ async function boot() {
     $('tb-user').textContent = `${me.user.email} (${me.user.role})`;
     // Vista dual: admin/socio ven "Todos los gastos"; resto ven "Proveedores operativos".
     aplicarVistaSegunRol();
+    // Upload extractos/cierres TPV: SÓLO admin (perm bancos_upload_admin).
+    // El botón está oculto por default en el HTML; lo desbloqueamos acá si
+    // corresponde. Defense in depth: el endpoint POST también devuelve 403
+    // para no-admin (requirePerm en routes/bancos.js).
+    const btnUpload = $('btn-upload-toggle');
+    if (btnUpload) btnUpload.style.display = (me.user.role === 'admin') ? '' : 'none';
   } catch {}
   const meta = await api('/api/v1/bancos/meta');
   state.sociedades = meta.sociedades || [];

@@ -2,7 +2,7 @@
 
 const express = require('express');
 const multer = require('multer');
-const { requireAuth } = require('../lib/auth');
+const { requireAuth, requirePerm } = require('../lib/auth');
 const { query, one, many } = require('../lib/db');
 const { SOCIEDADES, DIRECCIONES, findSociedad, sociedadDeLocal } = require('../lib/bank/sociedades');
 const { parseSantanderBuffer } = require('../lib/bank/parser-santander');
@@ -85,7 +85,7 @@ router.get('/meta', (req, res) => {
 });
 
 // ─── UPLOAD EXTRACTO SANTANDER ─────────────────────────────────────────
-router.post('/upload-extracto', upload.single('file'), async (req, res) => {
+router.post('/upload-extracto', requirePerm('bancos_upload_admin'), upload.single('file'), async (req, res) => {
   try {
     const sociedad_id = req.body.sociedad_id;
     const banco = (req.body.banco || 'santander').toLowerCase();
@@ -149,7 +149,7 @@ router.post('/upload-extracto', upload.single('file'), async (req, res) => {
 });
 
 // ─── UPLOAD CIERRES TPV (Getnet) ───────────────────────────────────────
-router.post('/upload-cierres-tpv', upload.single('file'), async (req, res) => {
+router.post('/upload-cierres-tpv', requirePerm('bancos_upload_admin'), upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'archivo requerido (campo "file")' });
     const local_id_override = req.body.local_id || null;
