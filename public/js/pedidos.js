@@ -274,6 +274,25 @@
         </td>`;
     }
 
+    function renderDiferenciaLocal(it) {
+      // MEJORA — celda "Diferencia" por local: muestra el signo y % con
+      // semáforo. — si todavía no hay datos bancarios.
+      const sem = it.diferencia_local_semaforo;
+      if (sem === 'sin_dato' || it.diferencia_local == null) {
+        return '<td style="text-align:right;color:var(--text-2);vertical-align:top" title="Sin pagos bancarios detectados para los proveedores de este local en la semana">—</td>';
+      }
+      const color = sem === 'verde' ? '#16a34a' : sem === 'amarillo' ? '#BA7517' : '#dc2626';
+      const bg    = sem === 'verde' ? 'sem-cell-v' : sem === 'amarillo' ? 'sem-cell-a' : 'sem-cell-r';
+      const dif = it.diferencia_local;
+      const pct = it.diferencia_local_pct;
+      const signo = dif > 0 ? '+' : '';
+      const tip = `Banco: ${eur(it.total_banco_local)} · Confirmado/ref: ${eur(it.total_ref_local)} · ${signo}${pct?.toFixed(1).replace('.', ',')}%`;
+      return `<td class="${bg}" style="text-align:right;vertical-align:top" title="${tip}">
+        <span style="font-weight:500;color:${color}">${signo}${eur(dif)}</span>
+        <br><span style="font-size:9px;color:${color}">${signo}${pct?.toFixed(1).replace('.', ',')}%</span>
+      </td>`;
+    }
+
     const html = `
       <table>
         <thead><tr>
@@ -283,6 +302,7 @@
           <th style="text-align:right">Budget MP sem</th>
           ${provList.map((p) => `<th style="text-align:right" title="${p}">${p.length > 14 ? p.slice(0, 12) + '…' : p}</th>`).join('')}
           <th style="text-align:right">Total pedido</th>
+          <th style="text-align:right" title="Suma (pago banco − confirmado) por proveedor con dato bancario · 🟢 ≤±10% · 🟡 ±10-20% · 🔴 >±20%">Dif. banco</th>
           <th style="text-align:center">Estado</th>
           <th class="no-print">Acción</th>
         </tr></thead>
@@ -300,6 +320,7 @@
                 return renderCelda(it, p);
               }).join('')}
               <td style="text-align:right;font-weight:500;vertical-align:top">${eur(it.total_pedido)}</td>
+              ${renderDiferenciaLocal(it)}
               <td style="text-align:center;vertical-align:top"><span class="ped-estado ${it.estado_local}">${it.estado_local}</span></td>
               <td class="no-print" style="vertical-align:top">${canWrite && it.estado_local !== 'enviado' && it.proveedores.length
                 ? `<button class="tgl" onclick="pedConfirmar('${it.local_id}')">Confirmar todo</button>`
@@ -384,8 +405,22 @@
       ev.preventDefault();
       clearTimeout(_mpInpTimers.get(inp));
       pedMPFlush(inp);
-      inp.blur();
+      // MEJORA: Enter baja al MISMO proveedor en el local siguiente
+      // (data-prov igual, próximo input en DOM).
+      const prov = inp.dataset.prov;
+      const all = [...document.querySelectorAll('.ped-mp-inp')].filter((x) => x.dataset.prov === prov);
+      const idx = all.indexOf(inp);
+      if (idx >= 0 && idx + 1 < all.length) {
+        const next = all[idx + 1];
+        next.focus(); next.select();
+      } else {
+        inp.blur();
+      }
     }
+    // Tab: comportamiento nativo. Como cada fila renderiza los proveedores
+    // en orden de columnas, Tab pasa al siguiente proveedor del MISMO local
+    // — exactamente lo pedido. Sólo en la última columna salta a la
+    // siguiente fila, que es comportamiento estándar.
   };
 
   window.pedMPFlush = async function (inp) {

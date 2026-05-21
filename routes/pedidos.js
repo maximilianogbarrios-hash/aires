@@ -394,12 +394,13 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
           : Math.abs(variacion) <= 0.20 ? 'amarillo'
           : 'rojo';
         const pagado_banco = pagadoPorProv.get(`${l.id}|${m.proveedor}`) || null;
-        // Alerta de mismatch banco vs real: cuando hay dato bancario Y
-        // confirmado real, calculamos si hay >5% de diferencia
-        // (independiente de que el usuario haya marcado 'recibido'),
-        // así el frontend puede mostrar el badge informativo siempre.
-        const mismatch_banco = (real != null && pagado_banco != null)
-          ? Math.abs(pagado_banco - real) / Math.max(real, 1) > 0.05
+        // BUG 2 fix — el cruce bancario compara contra el importe CONFIRMADO
+        // (importe_real) cuando existe, o cae al sugerido si el usuario no
+        // editó nada. La diferencia es siempre "pago bancario - referencia".
+        const refImporte = real != null ? real : sugerido;
+        const diferencia_banco = (pagado_banco != null) ? (pagado_banco - refImporte) : null;
+        const mismatch_banco = (pagado_banco != null && refImporte > 0)
+          ? Math.abs(diferencia_banco) / refImporte > 0.05
           : false;
         return {
           proveedor: m.proveedor,
@@ -412,7 +413,9 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
           variacion_pct: variacion == null ? null : Math.round(variacion * 10000) / 100,
           semaforo,
           pagado_banco: pagado_banco != null ? Math.round(pagado_banco * 100) / 100 : null,
+          diferencia_banco: diferencia_banco != null ? Math.round(diferencia_banco * 100) / 100 : null,
           mismatch_banco,
+          ref_importe: Math.round(refImporte * 100) / 100, // qué se usó como referencia
           updated_at: ped?.updated_at || null,
         };
       });
@@ -424,6 +427,25 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
       const estadoLocal = !proveedores.length ? 'sin_mix'
         : allDispatched ? 'enviado'
         : someDispatched ? 'parcial' : 'pendiente';
+      // MEJORA — Diferencia por local: suma (pago banco − confirmado) de los
+      // proveedores con dato bancario. % sobre la referencia (real o sugerido).
+      // Semáforo: verde ≤±10%, amarillo ±10-20%, rojo >±20%. Sin dato → null.
+      const provsConBanco = proveedores.filter((p) => p.pagado_banco != null);
+      let diferencia_local = null;
+      let diferencia_local_pct = null;
+      let diferencia_local_semaforo = 'sin_dato';
+      let total_banco_local = null;
+      let total_ref_local = null;
+      if (provsConBanco.length > 0) {
+        total_banco_local = provsConBanco.reduce((s, p) => s + p.pagado_banco, 0);
+        total_ref_local = provsConBanco.reduce((s, p) => s + p.ref_importe, 0);
+        diferencia_local = total_banco_local - total_ref_local;
+        diferencia_local_pct = total_ref_local > 0 ? diferencia_local / total_ref_local : null;
+        if (diferencia_local_pct != null) {
+          const abs = Math.abs(diferencia_local_pct);
+          diferencia_local_semaforo = abs <= 0.10 ? 'verde' : abs <= 0.20 ? 'amarillo' : 'rojo';
+        }
+      }
       return {
         local_id: l.id, nombre: l.nombre_display, short: l.short_name,
         grupo: l.grupo, dani_only: !!l.dani_only,
@@ -432,6 +454,12 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
         budget_mp_semana: Math.round(budgetMP * 100) / 100,
         total_pedido: Math.round(totalPedido * 100) / 100,
         estado_local: estadoLocal,
+        // Resumen de diferencia banco vs confirmado (Mejora MP)
+        total_banco_local: total_banco_local != null ? Math.round(total_banco_local * 100) / 100 : null,
+        total_ref_local: total_ref_local != null ? Math.round(total_ref_local * 100) / 100 : null,
+        diferencia_local: diferencia_local != null ? Math.round(diferencia_local * 100) / 100 : null,
+        diferencia_local_pct: diferencia_local_pct != null ? Math.round(diferencia_local_pct * 10000) / 100 : null,
+        diferencia_local_semaforo,
         proveedores,
       };
     });
@@ -508,9 +536,9 @@ router.put('/pedido', requirePerm('pedidos_w'), async (req, res) => {
          (local_id, anio, semana_iso, proveedor, categoria,
           importe_sugerido, importe_real, estado, notas,
           updated_at, confirmado_en, confirmado_por)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, NOW(),
-               CASE WHEN $8 <> 'pendiente' THEN NOW() ELSE NULL END,
-               CASE WHEN $8 <> 'pendiente' THEN $10 ELSE NULL END)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::varchar(15),$9, NOW(),
+               CASE WHEN $8::varchar(15) <> 'pendiente' THEN NOW() ELSE NULL END,
+               CASE WHEN $8::varchar(15) <> 'pendiente' THEN $10::int ELSE NULL END)
        ON CONFLICT (local_id, anio, semana_iso, proveedor)
        DO UPDATE SET
          categoria        = EXCLUDED.categoria,
@@ -520,7 +548,7 @@ router.put('/pedido', requirePerm('pedidos_w'), async (req, res) => {
          notas            = EXCLUDED.notas,
          updated_at       = NOW(),
          confirmado_en    = CASE WHEN EXCLUDED.estado <> 'pendiente' AND ab_pedidos_semana.confirmado_en IS NULL THEN NOW() ELSE ab_pedidos_semana.confirmado_en END,
-         confirmado_por   = CASE WHEN EXCLUDED.estado <> 'pendiente' AND ab_pedidos_semana.confirmado_por IS NULL THEN $10 ELSE ab_pedidos_semana.confirmado_por END`,
+         confirmado_por   = CASE WHEN EXCLUDED.estado <> 'pendiente' AND ab_pedidos_semana.confirmado_por IS NULL THEN $10::int ELSE ab_pedidos_semana.confirmado_por END`,
       [local_id, +anio, +semana_iso, String(proveedor).trim(), categoria,
        importe_sugerido, importe_real, estado, notas, userId]
     );
