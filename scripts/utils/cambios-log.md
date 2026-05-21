@@ -682,3 +682,90 @@ configurar y hacer click en Aplicar para ver algo relevante.
 gerente · sin_elche · 2026-04 → 131 160 € · 21 grupos
 admin   · sin_elche · 2026-04 → 323 336 € · 37 grupos
 ```
+
+## Fix H — 2FA setup roto para usuarios sin 2FA aún (2026-05-21)
+
+**Síntoma**: Dani (`daniel.romeroarmada@gmail.com`, rol `socio`) abrió
+`/account` para activar 2FA y vio el QR como imagen rota. Admin
+(maximilianogbarrios) no tenía el problema.
+
+**Causa raíz** (`lib/auth.js#requireAuth`):
+
+`POST /api/v1/auth/2fa/setup` requiere auth pero NO requiere TOTP ya
+activado (sino sería imposible activarlo la primera vez). La whitelist
+`pathPermitidoSin2FA(path)` chequeaba `path.startsWith('/api/v1/auth/')`
+para dejar pasar esa ruta. Pero `requireAuth` se aplica DENTRO de
+`router.post('/2fa/setup', requireAuth, ...)` y el router está montado
+con `app.use('/api/v1/auth', ...)`. Dentro de un router montado,
+`req.path` es RELATIVO al mount point — `/2fa/setup`, no
+`/api/v1/auth/2fa/setup`. Resultado:
+
+- `pathPermitidoSin2FA('/2fa/setup')` → `false` (no match).
+- `req.path.startsWith('/api/')` → `false` (también relativo).
+- → `res.redirect('/account?msg=2fa-required')` (302 a HTML).
+- `fetch` del frontend sigue el 302 → recibe HTML del /account →
+  `JSON.parse` falla silenciosamente → `qr_data_url=undefined` →
+  `<img src="undefined">` → ícono de imagen rota.
+
+Admin no veía el bug porque `totp_enabled=true` corto-circuita el
+chequeo en `requireAuth` antes de llegar a la whitelist.
+
+**Fix** (`lib/auth.js`): usar `req.originalUrl` (sin query) en lugar
+de `req.path` para los dos chequeos:
+
+```js
+const fullPath = ((req.originalUrl || req.url || '').split('?')[0]) || '';
+if (!req.session?.user) {
+  if (fullPath.startsWith('/api/')) return res.status(401)...
+  return res.redirect('/login');
+}
+...
+if (u.totp_enabled === false && !pathPermitidoSin2FA(fullPath)) {
+  if (fullPath.startsWith('/api/')) return res.status(403)...
+  return res.redirect('/account?msg=2fa-required');
+}
+```
+
+**Hardening de UI** (`public/account/index.html`):
+
+- `<img id="qr-img">` gana `width="240" height="240"` +
+  `min-width/min-height:240px` y `display:block`, así el placeholder
+  reserva espacio antes de cargar y se ve correctamente incluso si la
+  fuente del QR tarda. No es la causa del bug pero evita layout-shift.
+- `setup()` valida que `qr_data_url` empiece con
+  `data:image/png;base64,` antes de asignarlo y agrega `img.onerror`
+  para no quedar en "imagen rota" sin feedback.
+
+**E2E completo** (Dani sin 2FA, sesión inyectada, código TOTP
+computado en vivo con `authenticator.generate(secret)`):
+
+```
+STEP 1 · POST /2fa/setup        → 200 JSON  · qr_data_url 4 550 chars · OK
+STEP 2 · POST /2fa/confirm code → 200 {ok:true}
+STEP 3 · GET  /2fa/status       → 200 {enabled:true}
+STEP 4 · GET  /auth/me          → totp_enabled:true en sesión
+STEP 5 · GET  /aires/locales    → 200 (protegida, ya autorizada)
+STEP 6 · rollback DB             → totp_enabled=false, totp_secret=null
+```
+
+**Regresión verificada** (Dani con `totp_enabled=false`, rutas
+no-whitelist deben rebotar):
+
+```
+/api/v1/aires/locales       → 403 · 2fa_required
+/api/v1/bancos/proveedores  → 403 · 2fa_required
+/api/v1/pedidos             → 403 · 2fa_required
+/dashboard                  → 302 · /account?msg=2fa-required
+/bancos                     → 302 · /account?msg=2fa-required
+```
+
+Whitelist (deben pasar):
+
+```
+/api/v1/auth/me           → 200 application/json
+/api/v1/auth/2fa/status   → 200 application/json
+/account                  → 200 text/html
+```
+
+`qrcode 1.5.4` y `otplib 12.0.1` ya estaban instalados — sin cambios
+de dependencias.

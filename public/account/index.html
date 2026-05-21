@@ -44,7 +44,7 @@
     <li>Ingresá el código de 6 dígitos que aparece en la app.</li>
   </ol>
   <div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start;margin-bottom:1rem">
-    <img id="qr-img" alt="Código QR para 2FA" style="border:.5px solid var(--border-3);border-radius:8px;background:#fff;padding:8px">
+    <img id="qr-img" alt="Código QR para 2FA" width="240" height="240" style="min-width:240px;min-height:240px;border:.5px solid var(--border-3);border-radius:8px;background:#fff;padding:8px;display:block">
     <div>
       <p style="font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Secret manual</p>
       <code id="secret-text" style="display:block;font-family:ui-monospace,monospace;font-size:13px;padding:6px 10px;background:var(--bg-secondary);border-radius:6px;word-break:break-all;margin-bottom:8px"></code>
@@ -127,8 +127,13 @@ async function load() {
 async function setup() {
   try {
     const j = await api('/api/v1/auth/2fa/setup', { method: 'POST' });
-    document.getElementById('qr-img').src = j.qr_data_url;
-    document.getElementById('secret-text').textContent = j.secret;
+    if (!j || typeof j.qr_data_url !== 'string' || !j.qr_data_url.startsWith('data:image/png;base64,')) {
+      throw new Error('respuesta de setup inválida (sin QR)');
+    }
+    const img = document.getElementById('qr-img');
+    img.onerror = () => { document.getElementById('confirm-msg').textContent = 'No se pudo cargar el código QR. Usá el secret manual.'; document.getElementById('confirm-msg').style.color = '#dc2626'; };
+    img.src = j.qr_data_url;
+    document.getElementById('secret-text').textContent = j.secret || '';
     document.getElementById('setup-card').style.display = '';
     document.getElementById('confirm-msg').textContent = '';
     document.getElementById('confirm-code').value = '';
