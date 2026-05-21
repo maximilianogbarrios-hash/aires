@@ -236,10 +236,22 @@
             <span>${isPagado ? '✓ pagado' : 'pagar'}</span>
           </label>`;
       } else {
-        const dotClass = !isPagado ? 'pd-r' : (p.mismatch_banco ? 'pd-a' : 'pd-v');
-        const dotTip = !isPagado ? 'Pendiente de pago'
-          : (p.mismatch_banco ? `Pagado · difiere del banco (${eur(p.pagado_banco)})` : 'Pagado · coincide con banco');
-        pagadoUI = `<span class="ped-pay-dot ${dotClass}" title="${dotTip}"></span>`;
+        // Rol pedidos (y otros view-only): muestra el pago bancario en
+        // modo lectura con monto, no sólo un dot. Tres estados:
+        //   ✅ 198€  → pagado en banco, coincide ±5% con confirmado
+        //   ⚠ 243€  → pagado en banco, difiere >5% del confirmado
+        //   —        → sin dato bancario todavía
+        if (p.pagado_banco == null) {
+          pagadoUI = '<span class="ped-pagado-ro" style="color:var(--text-2);font-weight:400" title="Sin pago detectado en banco esta semana">—</span>';
+        } else {
+          const ok = !p.mismatch_banco;
+          const icon = ok ? '✅' : '⚠';
+          const color = ok ? '#16a34a' : '#dc2626';
+          const tip = ok
+            ? `Pagado en banco · coincide con confirmado ±5% (${eur(p.pagado_banco)})`
+            : `Pagado en banco · difiere >5% del confirmado (banco ${eur(p.pagado_banco)} vs real ${eur(p.importe_real)})`;
+          pagadoUI = `<span class="ped-pagado-ro" style="color:${color};font-weight:500" title="${tip}">${icon} ${eur(p.pagado_banco)}</span>`;
+        }
       }
 
       // Badge banco vs confirmado. Antes requería isPagado === true para
