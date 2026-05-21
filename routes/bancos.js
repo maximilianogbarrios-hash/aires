@@ -12,6 +12,22 @@ const { CATEGORIAS_PROVEEDOR_OPERATIVO } = require('../lib/bank/categorizer');
 const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
 const bankDb = require('../lib/bank/db');
 
+// Selector ampliado de sociedad (Mejora B): traduce valores virtuales
+// 'sin_elche' (excluye hostelero=Grupo Hostelero Aires SL) y 'solo_elche'
+// (solo hostelero) a cláusulas SQL. Devuelve null si no hay filtro o el
+// valor es vacío. Para sociedades individuales devuelve la cláusula
+// estándar de igualdad.
+function buildSociedadClause(sociedad_id, paramIndex) {
+  if (!sociedad_id) return null;
+  if (sociedad_id === 'sin_elche') {
+    return { sql: `sociedad_id <> $${paramIndex}`, vals: ['hostelero'] };
+  }
+  if (sociedad_id === 'solo_elche') {
+    return { sql: `sociedad_id = $${paramIndex}`, vals: ['hostelero'] };
+  }
+  return { sql: `sociedad_id = $${paramIndex}`, vals: [sociedad_id] };
+}
+
 // Vista efectiva según rol del usuario. Admin/socio ven todo; el resto sólo
 // proveedores operativos (PROVEEDOR_* + MANTENIMIENTO).
 function vistaEfectivaParaRol(rol, vistaQuery) {
@@ -283,7 +299,8 @@ router.get('/proveedores', async (req, res) => {
 
     const where = ['importe < 0'];
     const vals = [];
-    if (sociedad_id) { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
+    const socCl = buildSociedadClause(sociedad_id, vals.length + 1);
+    if (socCl) { where.push(socCl.sql); vals.push(...socCl.vals); }
     if (periodo)          { where.push(`periodo=$${vals.length+1}`);  vals.push(periodo); }
     if (periodo_desde)    { where.push(`periodo>=$${vals.length+1}`); vals.push(periodo_desde); }
     if (periodo_hasta)    { where.push(`periodo<=$${vals.length+1}`); vals.push(periodo_hasta); }
@@ -494,7 +511,8 @@ router.get('/proveedor-evolucion', async (req, res) => {
       if (!mesesArr.length) return { byProv: new Map(), byCat: new Map() };
       const params = [mesesArr];
       let where = 'importe < 0 AND periodo = ANY($1::text[])';
-      if (sociedad_id) { where += ` AND sociedad_id=$${params.length + 1}`; params.push(sociedad_id); }
+      const socCl = buildSociedadClause(sociedad_id, params.length + 1);
+      if (socCl) { where += ` AND ${socCl.sql}`; params.push(...socCl.vals); }
       const rows = await many(
         `SELECT concepto, categoria, periodo, importe::float8 AS importe
            FROM ab_movimientos
@@ -610,7 +628,8 @@ router.get('/grupo-detalle', async (req, res) => {
 
     const where = ['importe < 0'];
     const vals = [];
-    if (sociedad_id)   { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
+    const socCl = buildSociedadClause(sociedad_id, vals.length + 1);
+    if (socCl)         { where.push(socCl.sql);                       vals.push(...socCl.vals); }
     if (periodo)       { where.push(`periodo=$${vals.length+1}`);     vals.push(periodo); }
     if (periodo_desde) { where.push(`periodo>=$${vals.length+1}`);    vals.push(periodo_desde); }
     if (periodo_hasta) { where.push(`periodo<=$${vals.length+1}`);    vals.push(periodo_hasta); }

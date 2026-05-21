@@ -180,7 +180,15 @@
       <span id="prov-vista-badge" style="font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;background:var(--bg-secondary);color:var(--text-2)">—</span>
     </div>
     <div style="display:grid;grid-template-columns:200px 160px 160px auto auto;gap:8px;align-items:end">
-      <select id="prov-sociedad" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"><option value="">Todas las sociedades</option></select>
+      <select id="prov-sociedad" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
+        <option value="">Todas las sociedades</option>
+        <option value="sin_elche">Sin Elche (4 sociedades)</option>
+        <option value="solo_elche">Solo Elche (Grupo Hostelero)</option>
+        <option value="alicante">Aires Alicante SL</option>
+        <option value="smart">Smart Aires SL</option>
+        <option value="murcia">Aires Burger Bar Murcia SL</option>
+        <option value="benidorm">Aires Burger Bar Benidorm SL</option>
+      </select>
       <select id="prov-periodo-desde" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
       <select id="prov-periodo-hasta" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
       <button onclick="loadProvRanking()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Aplicar</button>
