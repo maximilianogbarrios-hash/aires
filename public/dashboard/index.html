@@ -119,6 +119,7 @@
   <button class="tab" data-tab="costos" onclick="showTab('costos',this)">Costos</button>
   <button class="tab" data-tab="presupuesto" onclick="showTab('presupuesto',this)">Presupuesto</button>
   <button class="tab" data-tab="seguimiento" onclick="showTab('seguimiento',this)">Seguimiento</button>
+  <button class="tab" data-tab="personal" onclick="showTab('personal',this)" id="tab-personal">Personal</button>
   <button class="tab" data-tab="pedidos" onclick="showTab('pedidos',this)" id="tab-pedidos">Pedidos</button>
   <button class="tab" data-tab="evolucion" onclick="showTab('evolucion',this)">Evolución</button>
   <button class="tab" data-tab="traspasos" onclick="showTab('traspasos',this)">Traspasos</button>
@@ -357,6 +358,26 @@
   </div>
 </div>
 
+<!-- PERSONAL (pestaña principal — antes era sub-tab de Pedidos) -->
+<div id="sect-personal" class="sect">
+  <div class="card no-print" style="margin-bottom:1rem;padding:.6rem .9rem">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
+      <p style="font-size:13px;font-weight:500">👥 Personal · horas por local y semana</p>
+      <div id="pers-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
+    </div>
+  </div>
+  <div class="g4" style="margin-bottom:.75rem">
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Horas disponibles red</p><p style="font-size:18px;font-weight:500" id="ped-pk-disp">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Horas cargadas</p><p style="font-size:18px;font-weight:500" id="ped-pk-carg">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">% utilización</p><p style="font-size:18px;font-weight:500" id="ped-pk-util">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Locales en rojo</p><p style="font-size:18px;font-weight:500" id="ped-pk-rojo">—</p></div>
+  </div>
+  <div class="card">
+    <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Semáforo: 🟢 ≤±5% · 🟡 ±5-12% · 🔴 >±12% · Editá las horas cargadas por semana (auto-guardado debounce 800ms o Enter)</p>
+    <div id="ped-personal-table" style="overflow-x:auto">—</div>
+  </div>
+</div>
+
 <!-- PEDIDOS -->
 <div id="sect-pedidos" class="sect">
   <!-- Sub-tabs -->
@@ -364,11 +385,10 @@
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         <button class="sub-tab on" data-sub="mp"       onclick="showPedidosSub('mp',this)">Materia Prima</button>
-        <button class="sub-tab"    data-sub="personal" onclick="showPedidosSub('personal',this)">Personal</button>
-        <button class="sub-tab"    data-sub="mix"      onclick="showPedidosSub('mix',this)" id="sub-tab-mix">% Proveedores</button>
         <button class="sub-tab"    data-sub="cmp"      onclick="showPedidosSub('cmp',this)">Comparativa Bancos</button>
         <button class="sub-tab"    data-sub="hist"     onclick="showPedidosSub('hist',this)">Historial</button>
         <button class="sub-tab"    data-sub="rk"       onclick="showPedidosSub('rk',this)">Ranking eficiencia</button>
+        <button class="sub-tab"    data-sub="mix"      onclick="showPedidosSub('mix',this)" id="sub-tab-mix">% Proveedores</button>
       </div>
       <div id="ped-sub-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
     </div>
@@ -394,18 +414,8 @@
     </div>
   </div>
 
-  <!-- PERSONAL -->
-  <div id="pedsub-personal" class="ped-sub">
-    <div class="g4" style="margin-bottom:.75rem">
-      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Horas disponibles red</p><p style="font-size:18px;font-weight:500" id="ped-pk-disp">—</p></div>
-      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Horas cargadas</p><p style="font-size:18px;font-weight:500" id="ped-pk-carg">—</p></div>
-      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">% utilización</p><p style="font-size:18px;font-weight:500" id="ped-pk-util">—</p></div>
-      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Locales en rojo</p><p style="font-size:18px;font-weight:500" id="ped-pk-rojo">—</p></div>
-    </div>
-    <div class="card">
-      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Semáforo: 🟢 ≤±5% · 🟡 ±5-12% · 🔴 >±12% · Editá las horas cargadas por semana (no se persisten todavía)</p>
-      <div id="ped-personal-table" style="overflow-x:auto">—</div>
-    </div>
+  <!-- PERSONAL (sub-tab vacía — la pestaña principal sect-personal absorbió este contenido) -->
+  <div id="pedsub-personal" class="ped-sub" style="display:none">
   </div>
 
   <!-- MIX PROVEEDORES -->

@@ -1040,6 +1040,11 @@ function showTab(name, btn) {
   if (name === 'seguimiento') {
     if (!uiState.segLoaded) loadSeguimiento();
   }
+  // Personal es una pestaña principal nueva (extraída de sub-tab Pedidos).
+  // Reusa la lógica de pedidos.js exponiendo window.pedEnterPersonal.
+  if (name === 'personal' && typeof window.pedEnterPersonal === 'function') {
+    window.pedEnterPersonal();
+  }
 }
 
 function togglePanel() {

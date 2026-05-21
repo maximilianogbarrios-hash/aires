@@ -1127,6 +1127,28 @@
     if (pState.sub === 'cmp') await renderCmpBancos();
     if (pState.sub === 'rk')  await renderRanking();
   };
+
+  // Personal pasó a ser pestaña principal (sect-personal). main.js
+  // llama acá al entrar a esa pestaña. Reusa la lógica original sin
+  // duplicar — el DOM target es el mismo (ped-personal-table, ped-pk-*).
+  window.pedEnterPersonal = async function () {
+    await ensureBootstrap();
+    // Controles de mes en la barra propia de la pestaña.
+    const pc = $('pers-controls');
+    if (pc) {
+      const m = pState.mes;
+      pc.innerHTML = `
+        <select onchange="pedSetMes(+this.value, ${m.mes})" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:var(--r-md);font-size:12px;background:var(--bg-primary);color:var(--text)">
+          ${[2025,2026,2027].map((y) => `<option value="${y}" ${y === m.anio ? 'selected' : ''}>${y}</option>`).join('')}
+        </select>
+        <select onchange="pedSetMes(${m.anio}, +this.value)" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:var(--r-md);font-size:12px;background:var(--bg-primary);color:var(--text)">
+          ${['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'].map((lbl, i) => `<option value="${i+1}" ${i+1 === m.mes ? 'selected' : ''}>${lbl}</option>`).join('')}
+        </select>
+      `;
+    }
+    pState.sub = 'personal'; // para que pedSetMes vuelva a llamar renderPersonal
+    await renderPersonal();
+  };
   window.pedSetLocalFilter = async function (id) {
     pState.filterLocal = id || null;
     await renderSub(pState.sub);
