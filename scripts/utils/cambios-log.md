@@ -279,3 +279,69 @@ funciona en los tres puntos del flujo:
 insertadas mantienen su `categoria` y `proveedor_normalizado` salvo
 que se vuelva a correr una reclasificación manual.
 
+
+## Mejora D — Panel admin "Gestionar Gastos Dirección" + include override (2026-05-21)
+
+**Objetivo**: dar a admin/socio una UI para decidir qué proveedores
+entran al slice fusionado "Gastos Dirección" que ven los roles
+no-admin, sin tocar código y manteniendo la lista por defecto
+(NOMINAS_DIRECCION, GASTOS_DIRECCION, PRESTAMOS, FINANCIERO).
+
+**Cambios**:
+
+- Migration 10 → tabla `ab_gastos_direccion_overrides` (PK proveedor,
+  acción include|exclude, auditoría creado_en/creado_por).
+- Backend:
+  - `loadGdOverrides()` + `perteneceAGastosDireccion(prov, cat, ovr)`
+    en `routes/bancos.js`. Precedencia: `exclude > include >
+    default-by-category`.
+  - `GET /api/v1/bancos/gastos-direccion/composicion` (admin only):
+    composición actual del slice fusionado, agrupada por categoría
+    default + secciones "incluidos via override" y "excluidos via
+    override".
+  - `POST /api/v1/bancos/gastos-direccion/override` (admin only):
+    UPSERT `{ proveedor, accion: 'include'|'exclude' }`.
+  - `DELETE /api/v1/bancos/gastos-direccion/override/:proveedor`
+    (admin only): vuelve al default.
+  - `/proveedores`, `/grupo-detalle`, `/proveedor-evolucion`
+    re-derivan la membresía con `perteneceAGastosDireccion`.
+
+- Frontend (`public/bancos/index.html` + `public/js/bancos.js`):
+  - Botón ⚙ "Gastos Dirección" visible sólo para admin/socio.
+  - Sidebar con 4 secciones (categorías default), botón "Quitar" por
+    proveedor, secciones "Incluidos" / "Excluidos" via override, e
+    input de búsqueda con datalist para incluir un proveedor cualquiera.
+
+**Fix de borde — include override para categorías no-operativas**:
+
+Bug detectado en smoke test: si el admin incluía vía override un
+proveedor cuya `categoria` NO estaba en `CATEGORIAS_PROVEEDOR_OPERATIVO`
+(ej. "Energía y Gas" / SUMINISTROS_ENERGIA), el filtro SQL `categoria
+= ANY(CATEGORIAS_PROVEEDOR_OPERATIVO)` que aplicaba `/proveedores` a
+roles no-admin descartaba esas filas antes de que el JS pudiera
+derivar el proveedor canónico y reconocer el include.
+
+Solución: para roles no-admin, no filtramos por categoría en SQL.
+Traemos todas las filas (modulo intra-grupo) y, tras derivar el
+proveedor canónico en el bucle de agregación, descartamos las que NO
+sean operativas Y tampoco pertenezcan a Gastos Dirección (default o
+override include). Para admin con vista=operativo se conserva el
+filtro SQL por performance.
+
+**E2E test** (`scripts/utils/e2e-gd-include.js`, 2026-05-21):
+
+```
+1) Baseline (gerente): GD total: 55616.20 € · miembros: 6
+   "Energía y Gas" visible separado?: false (ya excluido por filtro
+   SQL antiguo — no aparecía ni en su slice propio ni en GD)
+
+2) Admin: INCLUDE "Energía y Gas" → 200 OK
+3) Re-fetch (gerente):
+   GD total: 254693.47 € · miembros: 7 (Δ +199 077 € · +1)
+   "Energía y Gas" visible separado?: false (fusionado correctamente)
+   ✓ INCLUDE OK: YES
+
+4) DELETE override → 200 OK
+5) Re-fetch (gerente): GD total: 55616.20 € · miembros: 6
+   ✓ ROLLBACK OK: YES
+```

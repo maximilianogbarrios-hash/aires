@@ -325,6 +325,9 @@ function aplicarVistaSegunRol() {
     badge.style.background = rolEsAdmin() ? '#F3E8FF' : '#EAF3DE';
     badge.style.color      = rolEsAdmin() ? '#7E22CE' : '#3B6D11';
   }
+  // Botón ⚙ Gastos Dirección sólo visible para admin/socio.
+  const btnGd = $('prov-btn-gd-manage');
+  if (btnGd) btnGd.style.display = rolEsAdmin() ? '' : 'none';
 }
 
 async function loadProvRanking() {
@@ -1292,6 +1295,182 @@ async function confirmReclasificar(i) {
   }
 }
 
+// ─── Gestión "Gastos Dirección" (admin/socio) ─────────────────────────
+// Reusa el sidebar prov-sidebar pero con contenido propio: lista de
+// proveedores en cada categoría sensible, con botones Quitar/Agregar.
+
+async function openGdManage() {
+  if (!rolEsAdmin()) return;
+  $('prov-sb-title').textContent = '⚙ Gestionar Gastos Dirección';
+  $('prov-sb-meta').textContent = 'Cargando…';
+  $('prov-sb-body').innerHTML = '';
+  $('prov-sidebar-backdrop').style.display = '';
+  $('prov-sidebar').style.display = '';
+  await reloadGdManage();
+}
+
+async function reloadGdManage() {
+  try {
+    const j = await api('/api/v1/bancos/gastos-direccion/composicion');
+    state._gdData = j;
+    const tot = j.total_fusionado || 0;
+    $('prov-sb-meta').textContent = `${eur2(tot)} · ${j.n_proveedores} proveedores fusionados · categorías default: ${j.categorias_default.join(', ')}`;
+    renderGdManageBody(j);
+  } catch (e) {
+    $('prov-sb-meta').textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderGdManageBody(j) {
+  const body = $('prov-sb-body');
+  let html = '';
+
+  // Sección por categoría (default)
+  for (const cat of j.categorias_default) {
+    const provs = j.por_categoria[cat] || [];
+    html += `<div style="margin-bottom:14px">
+      <p style="font-size:12px;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">${cat} <span style="color:var(--text-2);font-weight:400;text-transform:none;letter-spacing:0">(${provs.length})</span></p>`;
+    if (!provs.length) {
+      html += `<p style="font-size:11px;color:var(--text-2);padding-left:8px">Sin proveedores en esta categoría.</p>`;
+    } else {
+      html += provs.map((p) => _renderGdRow(p, true)).join('');
+    }
+    html += `</div>`;
+  }
+
+  // Sección incluidos vía override (categoría no-default)
+  const extras = j.por_categoria.__INCLUIDOS_EXTRA__ || [];
+  if (extras.length) {
+    html += `<div style="margin-bottom:14px;padding:8px 10px;background:#EEF2FF;border-radius:8px;border:.5px solid #C7D2FE">
+      <p style="font-size:12px;font-weight:600;color:#3730A3;margin-bottom:6px">+ Incluidos vía override (${extras.length})</p>`;
+    html += extras.map((p) => _renderGdRow(p, true)).join('');
+    html += `</div>`;
+  }
+
+  // Sección excluidos vía override
+  const exc = j.excluidos_via_override || [];
+  if (exc.length) {
+    html += `<div style="margin-bottom:14px;padding:8px 10px;background:#FEF2F2;border-radius:8px;border:.5px solid #FECACA">
+      <p style="font-size:12px;font-weight:600;color:#991B1B;margin-bottom:6px">− Excluidos vía override (${exc.length})</p>
+      <p style="font-size:10px;color:var(--text-2);margin-bottom:6px">Estos proveedores normalmente serían parte del slice (categoría sensible) pero fueron excluidos por un override.</p>`;
+    html += exc.map((p) => _renderGdRow(p, false)).join('');
+    html += `</div>`;
+  }
+
+  // Sección agregar proveedor
+  html += `<div style="margin-top:18px;padding-top:14px;border-top:.5px dashed var(--border-3)">
+    <p style="font-size:12px;font-weight:600;margin-bottom:6px">Agregar proveedor a Gastos Dirección</p>
+    <p style="font-size:10px;color:var(--text-2);margin-bottom:8px">Movés un proveedor de OTRA categoría al grupo protegido. Quedará oculto para roles no-admin.</p>
+    <div style="display:flex;gap:6px;align-items:center">
+      <input type="text" id="gd-add-input" autocomplete="off" list="gd-add-list" placeholder="Empezá a escribir el nombre canónico…" style="flex:1;padding:6px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
+      <datalist id="gd-add-list"></datalist>
+      <button onclick="gdAddProveedor()" style="padding:6px 12px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Incluir</button>
+    </div>
+    <p id="gd-add-hint" style="font-size:9px;color:var(--text-2);margin-top:4px">—</p>
+  </div>`;
+
+  body.innerHTML = html;
+  _populateGdAddDatalist();
+}
+
+function _renderGdRow(p, esActivo) {
+  const ovChip = p.override
+    ? `<span style="font-size:9px;padding:1px 6px;border-radius:8px;background:${p.override === 'include' ? '#DBEAFE' : '#FEE2E2'};color:${p.override === 'include' ? '#1E40AF' : '#991B1B'};margin-left:4px">${p.override}</span>`
+    : '';
+  const nameEsc = (p.proveedor || '').replace(/'/g, "\\'");
+  const fechaTxt = p.ultima_fecha ? ` · últ. ${p.ultima_fecha}` : '';
+  let actionBtn = '';
+  if (esActivo) {
+    // El proveedor está en el grupo (default o include). El botón Quitar
+    // crea/actualiza un override 'exclude' (si está por default) o borra
+    // el override 'include' (si fue agregado manualmente).
+    if (p.override === 'include') {
+      actionBtn = `<button onclick="gdRemoveOverride('${nameEsc}')" style="padding:3px 8px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:10px">Quitar</button>`;
+    } else {
+      actionBtn = `<button onclick="gdSetOverride('${nameEsc}', 'exclude')" style="padding:3px 8px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:10px">Quitar</button>`;
+    }
+  } else {
+    // Está excluido. El botón "Restaurar" borra el override 'exclude'.
+    actionBtn = `<button onclick="gdRemoveOverride('${nameEsc}')" style="padding:3px 8px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:10px">Restaurar</button>`;
+  }
+  return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;border:.5px solid var(--border-3);margin-bottom:4px">
+    <div style="flex:1;min-width:0">
+      <p style="font-size:11px;font-weight:500">${p.proveedor}${ovChip}</p>
+      <p style="font-size:10px;color:var(--text-2);margin-top:1px">${eur2(p.total_importe)} · ${p.num_transacciones} tx${fechaTxt}</p>
+    </div>
+    ${actionBtn}
+  </div>`;
+}
+
+let _gdAllProveedoresCache = null;
+async function _populateGdAddDatalist() {
+  if (!_gdAllProveedoresCache) {
+    try {
+      const r = await api('/api/v1/bancos/proveedores-normalizados?limit=500');
+      _gdAllProveedoresCache = r.proveedores || [];
+    } catch (e) {
+      _gdAllProveedoresCache = [];
+    }
+  }
+  // Filtrar candidatos: NO mostrar los que ya están en el grupo (sin override
+  // o con include); SÍ mostrar excluidos (para volver a incluirlos).
+  const enGrupo = new Set();
+  const data = state._gdData || {};
+  for (const cat of data.categorias_default || []) {
+    for (const p of (data.por_categoria[cat] || [])) {
+      if (p.override !== 'exclude') enGrupo.add(p.proveedor);
+    }
+  }
+  for (const p of (data.por_categoria.__INCLUIDOS_EXTRA__ || [])) enGrupo.add(p.proveedor);
+
+  const candidatos = _gdAllProveedoresCache.filter((p) => !enGrupo.has(p.nombre));
+  const dl = $('gd-add-list');
+  if (!dl) return;
+  dl.innerHTML = candidatos
+    .sort((a, b) => a.nombre.localeCompare(b.nombre))
+    .map((p) => {
+      const esc = (p.nombre || '').replace(/"/g, '&quot;');
+      return `<option value="${esc}" label="${esc} · ${eur(p.total_importe)}">${esc} · ${eur(p.total_importe)}</option>`;
+    }).join('');
+  const hint = $('gd-add-hint');
+  if (hint) hint.textContent = `${candidatos.length} proveedores disponibles para agregar al grupo`;
+}
+
+async function gdSetOverride(proveedor, accion) {
+  try {
+    await api('/api/v1/bancos/gastos-direccion/override', {
+      method: 'POST',
+      body: JSON.stringify({ proveedor, accion }),
+    });
+    Api.pill(`${proveedor}: override ${accion}`);
+    _gdAllProveedoresCache = null;
+    await reloadGdManage();
+    await loadProvRanking(); // refresca donut/leyenda
+  } catch (e) {
+    Api.pill('Error: ' + e.message, true);
+  }
+}
+
+async function gdRemoveOverride(proveedor) {
+  try {
+    await api('/api/v1/bancos/gastos-direccion/override/' + encodeURIComponent(proveedor), { method: 'DELETE' });
+    Api.pill(`${proveedor}: override removido`);
+    _gdAllProveedoresCache = null;
+    await reloadGdManage();
+    await loadProvRanking();
+  } catch (e) {
+    Api.pill('Error: ' + e.message, true);
+  }
+}
+
+async function gdAddProveedor() {
+  const input = $('gd-add-input');
+  const nombre = (input?.value || '').trim();
+  if (!nombre) return;
+  await gdSetOverride(nombre, 'include');
+  if (input) input.value = '';
+}
+
 Object.assign(window, {
   reload, showTab, toggleUpload, uploadExtracto, uploadCierres, loadMovs, changePage, exportCsv, logout,
   loadProvRanking, exportProveedoresCsv,
@@ -1300,6 +1479,8 @@ Object.assign(window, {
   setDonutThreshold, enterDonutDrill, exitDonutDrill,
   // Sidebar de detalle / reclasificación
   openProvSidebar, closeProvSidebar, toggleReclasificar, confirmReclasificar, rcRefreshNombres,
+  // Panel de gestión Gastos Dirección (admin/socio)
+  openGdManage, gdSetOverride, gdRemoveOverride, gdAddProveedor,
   // Evolución temporal
   loadEvolucion, evRenderSugerencias, evSeleccionar, evQuitar, evAplicarTopMatch,
 });

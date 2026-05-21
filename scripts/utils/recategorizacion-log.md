@@ -1,33 +1,34 @@
 # Log de recategorización de `ab_movimientos`
 
-Última ejecución: **2026-05-21T09:37:51.938Z** — modo: **APPLY**
+Última ejecución: **2026-05-21T13:39:35.199Z** — modo: **APPLY**
 
 Total movimientos procesados (importe<0): **9921**
-- Cambios de categoría: **0**
-- Sin cambios: **9921**
-- Sociedades×periodos a recalcular: **0**
+- Cambios de categoría: **925**
+- Sin cambios: **8996**
+- Sociedades×periodos a recalcular: **60**
 
 ## Distribución final por categoría (nueva taxonomía)
 
 | Categoría | Nº movs | Total € |
 |---|---:|---:|
-| `INTRAGRUPO` | 286 | 1.084.885 € |
+| `INTRAGRUPO` | 287 | 1.087.885 € |
 | `PROVEEDOR_CARNES` | 469 | 518.546 € |
 | `ALQUILER` | 629 | 499.095 € |
 | `NOMINAS` | 389 | 458.576 € |
 | `SS_LABORAL` | 140 | 438.099 € |
-| `PROVEEDOR_OTROS` | 2229 | 396.397 € |
+| `PROVEEDOR_OTROS` | 2189 | 394.216 € |
 | `SUMINISTROS_ENERGIA` | 587 | 303.200 € |
 | `IMPUESTOS` | 142 | 225.048 € |
-| `MANTENIMIENTO` | 791 | 213.819 € |
 | `PROVEEDOR_MAKRO` | 660 | 197.561 € |
+| `MANTENIMIENTO` | 640 | 155.301 € |
 | `PROVEEDOR_PANADERIA` | 76 | 137.945 € |
 | `PROVEEDOR_FRITAS` | 125 | 127.068 € |
 | `PROVEEDOR_BEBIDAS` | 245 | 95.800 € |
 | `PROVEEDOR_ACEITES` | 229 | 88.460 € |
 | `SERVICIOS_PROF` | 235 | 84.525 € |
 | `PROVEEDOR_PACKAGING` | 181 | 66.632 € |
-| `FINANCIERO` | 2057 | 61.324 € |
+| `EQUIPAMIENTO` | 191 | 60.700 € |
+| `FINANCIERO` | 2056 | 58.324 € |
 | `PROVEEDOR_LACTEOS` | 97 | 48.383 € |
 | `SEGUROS` | 48 | 28.395 € |
 | `PUBLICIDAD` | 136 | 26.852 € |
@@ -40,6 +41,21 @@ Total movimientos procesados (importe<0): **9921**
 
 | Transición | Nº | Total € | Ejemplos |
 |---|---:|---:|---|
+| `PROVEEDOR_LACTEOS → SUMINISTROS_ENERGIA` | 229 | 97.390 € | `Transferencia Inmediata A Favor De Bodega Campoluz, S.l. Concepto Factura 19/190`<br>`Transferencia Inmediata A Favor De Bodega Campoluz, S.l. Concepto Factura 27655/`<br>`Transferencia Inmediata A Favor De Bodega Campoluz, S.l. Concepto Factura 26643/`<br>`Transferencia Inmediata A Favor De Bodega Campoluz, S.l. Concepto Factura 2479`<br>`Transferencia Inmediata A Favor De Bodega Campoluz, S.l. Concepto Factura 2217/2` |
+| `PROVEEDOR_LACTEOS → ALQUILER` | 423 | 93.281 € | `Transferencia A Favor De Dialque S.a.u. Concepto: Factura N1035027983`<br>`Transferencia A Favor De Dialque S.a.u. Concepto: Factura N1035027001/27468`<br>`Transferencia A Favor De Dialque S.a.u. Concepto: Factura N1035029333/646`<br>`Transferencia A Favor De Dialque S.a.u. Concepto: Factura N1035028918`<br>`Transferencia A Favor De Dialque S.a.u. Concepto: Factura N1036000967/1401/2276` |
+| `NOMINAS_DIRECCION → NOMINAS` | 26 | 40.097 € | `Traspaso: Nomina Daniel Romero Armada Dic 2024`<br>`Traspaso: Nomina Daniel Romero Armada Diciembre 2025`<br>`Traspaso: Nomina Daniel Romero Armada Dic 25`<br>`Traspaso: Nomina Daniel Romero Armada Dic 2025`<br>`Transferencia A Favor De Daniel Romero Armada Concepto: Nomina Daniel Romero Arm` |
+| `PRESTAMOS → FINANCIERO` | 28 | 36.316 € | `Liquidacion Periodica Prestamo 0049 2429 143 0432636`<br>`Liquidacion Periodica Prestamo 0049 2429 143 0432636`<br>`Liquidacion Periodica Prestamo 0049 2429 143 0432636`<br>`Liquidacion Periodica Prestamo 0049 2429 143 0432636`<br>`Liquidacion Periodica Prestamo 0049 1560 143 0002226` |
+| `MANTENIMIENTO → EQUIPAMIENTO` | 29 | 20.924 € | `Transaccion Contactless En Media Markt Elc, Villajoyosa Es, Tarj. :*568409`<br>`Transaccion Contactless En Media Markt Elc, Villajoyosa Es, Tarj. :*568409`<br>`Transaccion Contactless En Media Markt Elc, Villajoyosa Es, Tarj. :*568409`<br>`Transaccion Contactless En Media Markt Elc, Villajoyosa Es, Tarj. :*568409`<br>`Transaccion Contactless En Media Markt Elc, Villajoyosa Es, Tarj. :*568409` |
+| `GASTOS_VEHICULOS → FINANCIERO` | 66 | 14.908 € | `Cuota Leasing, Adeudo Cuota Del Contrato: 556139, Fecha Vencimiento: 20250603, N`<br>`Cuota Leasing, Adeudo Cuota Del Contrato: 556139, Fecha Vencimiento: 20250703, N`<br>`Cuota Leasing, Adeudo Cuota Del Contrato: 556139, Fecha Vencimiento: 20250803, N`<br>`Cuota Leasing, Adeudo Cuota Del Contrato: 556139, Fecha Vencimiento: 20250903, N`<br>`Cuota Leasing, Adeudo Cuota Del Contrato: 556139, Fecha Vencimiento: 20251003, N` |
+| `GASTOS_DIRECCION → MANTENIMIENTO` | 12 | 13.164 € | `Compra Conduce Revel Sl, Madrid, Tarjeta 4176570174720617 , Comision 0,00`<br>`Compra Conduce Revel Sl, Madrid, Tarjeta 4176570174720617 , Comision 0,00`<br>`Compra Conduce Revel Sl, Madrid, Tarjeta 4176570174720617 , Comision 0,00`<br>`Compra Conduce Revel Sl, Madrid, Tarjeta 4176570174720617 , Comision 0,00`<br>`Compra Conduce Revel Sl, Madrid, Tarjeta 4176570174720617 , Comision 0,00` |
+| `OTROS_GASTOS → SUMINISTROS_ENERGIA` | 72 | 6734 € | `Recibo Radius Business Solutions (espana) S.l. Nº Recibo 0049 2429 755 Bbxxfcl R`<br>`Recibo Radius Business Solutions (espana) S.l. Nº Recibo 0049 2429 755 Bbxvqwt R`<br>`Recibo Radius Business Solutions (espana) S.l. Nº Recibo 0049 2429 755 Bbydtys R`<br>`Recibo Radius Business Solutions (espana) S.l. Nº Recibo 0049 2429 755 Bbybrsn R`<br>`Recibo Radius Business Solutions (espana) S.l. Nº Recibo 0049 2429 755 Bbylbvj R` |
+| `EQUIPAMIENTO → FINANCIERO` | 3 | 2165 € | `Transferencia Inmediata A Favor De Banco Bilbao Viscaya Argentaria Concepto 0326`<br>`Transferencia Inmediata A Favor De Banco Bilbao Viscaya Argentaria Concepto 0325`<br>`Transferencia Inmediata A Favor De Banco Bilbao Viscaya Argentaria Concepto 7503` |
+| `PROVEEDOR_LACTEOS → PROVEEDOR_OTROS` | 15 | 1884 € | `Transferencia A Favor De Productos Lacteos Tgt S.a. Concepto: Factura N128507378`<br>`Transferencia A Favor De Productos Lacteos Tgt S.a. Concepto: Factura N128507530`<br>`Transferencia A Favor De Productos Lacteos Tgt S.a. Concepto: Factura N128507725`<br>`Transferencia A Favor De Productos Lacteos Tgt S.a. Concepto: Factura N128503219`<br>`Transferencia A Favor De Productos Lacteos Tgt S.a. Concepto: Factura N128503089` |
+| `IMPUESTOS → PROVEEDOR_OTROS` | 7 | 1753 € | `Recibo Suma Gestion Tributaria, Concepto: Nif: B06851935 Ajunt Elx Residu 1sem20`<br>`Recibo Suma Gestion Tributaria Nif: B06851935 Ajunt Elx Residu 2sem2025 Cl Trone`<br>`Recibo Suma Gestion Tributaria, Concepto: Nif: B44897973 Ajunt Elx Residu 1sem20`<br>`Recibo Suma Gestion Tributaria Nif: B44897973 Ajunt Elx Residu 2sem2025 Av San B`<br>`Recibo Suma Gestion Tributaria Nº Recibo 0049 2429 755 Bbywvyp Ref. Mandato 5000` |
+| `INTRAGRUPO → PROVEEDOR_OTROS` | 4 | 1050 € | `TRANSFERENCIA A Raba Buildings SL`<br>`TRANSFERENCIA A RABA BUILDINGS SL`<br>`TRANSFERENCIA A RABA BUILDINGS SL`<br>`TRANSFERENCIA A RABA BUILDINGS SL` |
+| `EQUIPAMIENTO → NOMINAS` | 7 | 663 € | `Transferencia A Favor De Banco Bilbao Vizcaya Argentaria Concepto: 0325003204963`<br>`Transferencia A Favor De Banco Bilbao Vizcaya Argentaria Concepto: 2825005948437`<br>`Transferencia A Favor De Banco Bilbao Vizcaya Argentaria Concepto: 7503250047988`<br>`Transferencia A Favor De Banco Bilbao Vizcaya Argentaria Concepto: 3025002837523`<br>`Transferencia A Favor De Banco Bilbao Vizcaya Argentaria Concepto: 3025002835508` |
+| `NOMINAS_DIRECCION → OTROS` | 3 | 168 € | `TARJETA CREDITO MAXIMILIANO GASTON BARRIOS GON`<br>`COMISIÓN MANTENIM.TARJETA MAXIMILIANO GASTON BARRIOS GON`<br>`TARJETA CREDITO DANIEL OSCAR ROMERO ARMADA` |
+| `EQUIPAMIENTO → PROVEEDOR_OTROS` | 1 | 145 € | `Transferencia A Favor De Argen 3 D Impresiones Concepto: Factura 2025.75` |
 
 ## Decisiones tomadas
 
@@ -113,274 +129,4 @@ Objetivo: bajar PROVEEDOR_OTROS y OTROS reagrupando los conceptos más frecuente
 - **Landfood** ahora también matchea `land\s+food` (sin guion).
 - **Brico Depot** ahora matchea con y sin espacio (`\bbrico\s*depot\b`).
 - **Embargo judicial** → OTROS (no es proveedor ni gasto recurrente).
-
-### Ronda 5 (correcciones puntuales + 4 categorías nuevas, 2026-05-21)
-
-**Categorías nuevas en `CATEGORIAS_GASTO`:**
-
-- `NOMINAS_DIRECCION` — sueldos de socios/directivos separados de NOMINAS.
-- `EQUIPAMIENTO` — herramientas, mobiliario y equipo separados de MANTENIMIENTO (este último queda con Leroy/Bricomart/Obramat y obra real).
-- `PRESTAMOS` — cuotas de préstamos bancarios separadas de FINANCIERO (este queda con comisiones y operaciones).
-- `OTROS_GASTOS` — gastos de servicios externos identificables que no encajan en proveedor operativo (Radius, etc.).
-
-**Reglas DB persistidas** (todas en `ab_reglas_normalizacion`, prioridad indicada). Las reglas se insertaron mediante `scripts/utils/ronda5-recategorizar.js`. La protección INTRAGRUPO en el handler de `/upload-extracto` se reforzó: `if (m.categoria === 'INTRAGRUPO') continue` antes de aplicar reglas DB — los traspasos internos del grupo (Aires↔Aires) tienen precedencia absoluta.
-
-| nombre canónico         | patrón ILIKE                                         | categoría          | prio |
-|---|---|---|---:|
-| Sueldos Dirección       | `maximiliano (g/gaston) barrios`, `daniel (oscar) romero`, `yanina (paola) barrios` | NOMINAS_DIRECCION | 120 |
-| Dialque SAU             | `dialque`                                           | PROVEEDOR_LACTEOS | 110 |
-| TGT                     | `TGT` (excluye conceptos con `dialque`)             | PROVEEDOR_LACTEOS | 110 |
-| Entrepinares            | `entrepinares`                                       | PROVEEDOR_LACTEOS | 110 |
-| Campoluz                | `campoluz`, `campo luz`                              | PROVEEDOR_LACTEOS | 110 |
-| GGM Gastro              | `GGM`                                                | EQUIPAMIENTO      | 110 |
-| Amazon                  | `amazon`, `AMZ`                                      | EQUIPAMIENTO      | 110 |
-| IKEA                    | `ikea`                                               | EQUIPAMIENTO      | 110 |
-| Viveros                 | `vivero`                                             | EQUIPAMIENTO      | 110 |
-| Maquinas Febal          | `febal`                                              | EQUIPAMIENTO      | 110 |
-| Argent 3D               | `argent` (excluye `argentina`), `argen `             | EQUIPAMIENTO      | 110 |
-| Arrolas                 | `arrolas`                                            | PROVEEDOR_OTROS   | 110 |
-| Carnicas Mulas SL       | `carnicas mulas`                                     | PROVEEDOR_CARNES  | 110 |
-| Radius                  | `radius`                                             | OTROS_GASTOS      | 110 |
-| Préstamos Bancarios     | `liquidacion periodica (prestamo)`, `cuota prestamo`, `amortizaci(ó)n` | PRESTAMOS | 110 |
-
-**UPDATE retroactivo:** **1 313 filas actualizadas** sobre las 5 sociedades × 12 períodos. Se preservó `INTRAGRUPO` (286 filas) en todos los casos. Recálculo de `ab_resumen_mensual`: 60 combos × 0 errores.
-
-**Transiciones más relevantes:**
-
-| categoría origen → destino                            | filas | importe   |
-|---|---:|---:|
-| ALQUILER → PROVEEDOR_LACTEOS (Dialque)                | 423   | 93 281€   |
-| SUMINISTROS_ENERGIA → PROVEEDOR_LACTEOS (Campoluz)    | 229   | 97 390€   |
-| Resto → PROVEEDOR_LACTEOS (Entrepinares + TGT)        | 112   | 50 267€   |
-| MANTENIMIENTO → EQUIPAMIENTO (Amazon + IKEA + GGM + ...) | 177 | 44 021€   |
-| NOMINAS → NOMINAS_DIRECCION (Sueldos Dirección)       | 29    | 40 265€   |
-| FINANCIERO → PRESTAMOS (Préstamos Bancarios)          | 28    | 36 316€   |
-| SUMINISTROS_ENERGIA → OTROS_GASTOS (Radius)           | 72    | 6 734€    |
-| PROVEEDOR_CARNES (proveedor_normalizado solo)         | 244   | —         |
-
-**Distribución final (gastos)** vs Ronda 4:
-
-| categoría              | mov     | total       | delta vs ronda 4 |
-|---|---:|---:|---|
-| INTRAGRUPO             | 286     | 1 084 885€  | (sin cambios)    |
-| PROVEEDOR_CARNES       | 469     |   518 546€  | (sin cambios)    |
-| SS_LABORAL             | 140     |   438 099€  | (sin cambios)    |
-| NOMINAS                | 356     |   417 816€  | −33 mov / −53k   |
-| ALQUILER               | 206     |   405 815€  | −423 mov / −93k  |
-| PROVEEDOR_OTROS        | 2 173   |   392 187€  | −56 mov / −4k    |
-| PROVEEDOR_LACTEOS      | **764** |  **240 937€** | +667 mov / +192k |
-| IMPUESTOS              | 142     |   225 048€  | (sin cambios)    |
-| SUMINISTROS_ENERGIA    | 286     |   199 077€  | −301 mov / −104k |
-| PROVEEDOR_MAKRO        | 660     |   197 561€  | (sin cambios)    |
-| MANTENIMIENTO          | 666     |   174 952€  | −125 mov / −39k  |
-| **EQUIPAMIENTO**       | **176** |  **44 021€** | nueva            |
-| **NOMINAS_DIRECCION**  | **29**  |  **40 265€** | nueva            |
-| **PRESTAMOS**          | **28**  |  **36 316€** | nueva            |
-| FINANCIERO             | 2 026   |    22 843€  | −31 mov / −38k   |
-| **OTROS_GASTOS**       | **72**  |   **6 734€** | nueva            |
-
-**Punto 8 — "Proveedores Menores muestra 0€":** la query del usuario devolvía 0 resultados porque `proveedor_normalizado` estaba NULL en casi todos los movimientos. Tras la Ronda 5 (1 313 filas tienen nombre canónico) la query devuelve 1 caso real: Viveros (3 tx, 1 272€, total<2 000€ AND count<5). El endpoint `/proveedores` ya agrupa correctamente: el slice "Proveedores Menores" muestra **355 185€ en 2 206 tx** (no 0€). El bug original era de datos (columna NULL), no de lógica del endpoint. Se conservó el rollup automático actual.
-
-**Punto 10 — Grupo Lácteos en el donut:** los 4 proveedores aparecen como slices individuales cuando el umbral lo permite (con `max_grupos≥125` o vista expandida). Cada uno con `categoria=PROVEEDOR_LACTEOS`:
-
-| proveedor       | total      | tx  |
-|---|---:|---:|
-| Campoluz        | 97 390€    | 229 |
-| Dialque SAU     | 93 281€    | 423 |
-| Entrepinares    | 48 383€    |  97 |
-| TGT             |  1 884€    |  15 |
-
-**Reversibilidad:**
-
-```bash
-# DRY-RUN para ver qué cambiaría:
-node scripts/utils/ronda5-recategorizar.js --dry-run
-
-# APPLY:
-node scripts/utils/ronda5-recategorizar.js
-
-# Si necesitás borrar las 29 reglas de Ronda 5:
-#   DELETE FROM ab_reglas_normalizacion WHERE prioridad IN (110, 120);
-# Después correr scripts/utils/recategorize-movimientos.js para
-# regenerar las categorías desde el categorizer hardcoded.
-```
-
-### Ronda 6 (correcciones puntuales sobre Ronda 5, 2026-05-21)
-
-**Categorías nuevas en `CATEGORIAS_GASTO`:**
-
-- `GASTOS_DIRECCION` — gastos personales/operativos de la dirección
-  (Revel, Créditos Dirección, etc.).
-- `GASTOS_VEHICULOS` — Stellantis, leasing, renting, antes "Vehículos
-  y Leasing" → separados de FINANCIERO.
-
-**Reglas DB Ronda 6** (insertadas vía `scripts/utils/ronda6-recategorizar.js`):
-
-| nombre canónico       | patrón ILIKE                    | categoría         | prio | nota |
-|---|---|---|---:|---|
-| TGT                   | `TGT`, `T.G.T`                  | PROVEEDOR_LACTEOS | **120** | sube de 110 → 120 (gana sobre Dialque excluido por `extraWhere`) |
-| Revel                 | `revel`, `conduce revel`        | GASTOS_DIRECCION  | 110  |  |
-| Créditos Dirección    | `credito`, `crédito`            | GASTOS_DIRECCION  | 110  | `extraWhere: AND categoria <> 'NOMINAS_DIRECCION'` para no pisar sueldos |
-| Gastos Vehículos      | `stellantis`, `leasing`, `renting` | GASTOS_VEHICULOS | 110  |  |
-
-**UPDATE retroactivo:** **78 filas** actualizadas. 19 combos sociedad×periodo recalculados, 0 errores.
-
-| transición                                         | filas | importe   |
-|---|---:|---:|
-| FINANCIERO → GASTOS_VEHICULOS (Stellantis+leasing+renting) | 66 | 14 908€ |
-| MANTENIMIENTO → GASTOS_DIRECCION (Revel/Conduce Revel)     | 12 | 13 164€ |
-
-**Distribución final** (cambios vs Ronda 5):
-
-- MANTENIMIENTO: 666 → 654 mov (−12 a GASTOS_DIRECCION)
-- FINANCIERO:    2 026 → 1 960 mov (−66 a GASTOS_VEHICULOS)
-- GASTOS_VEHICULOS: 66 mov / 14 908€ (NUEVA)
-- GASTOS_DIRECCION: 12 mov / 13 164€ (NUEVA)
-
-**Verificación de slices independientes** en `/proveedores?max_grupos=200`:
-
-| proveedor       | total    | tx  | categoría         |
-|---|---:|---:|---|
-| Campoluz        | 97 390€  | 229 | PROVEEDOR_LACTEOS |
-| Dialque SAU     | 93 281€  | 423 | PROVEEDOR_LACTEOS |
-| Entrepinares    | 48 383€  |  97 | PROVEEDOR_LACTEOS |
-| **TGT**         |  1 884€  |  15 | PROVEEDOR_LACTEOS |
-| Gastos Vehículos| 14 908€  |  66 | GASTOS_VEHICULOS  |
-| Revel           | 13 164€  |  12 | GASTOS_DIRECCION  |
-
-"Créditos Dirección" no aparece porque los 2 hits actuales con concepto que contiene "crédito" caen en `Sueldos Dirección` (NOMINAS_DIRECCION, prio 120). La regla existe en DB para uploads futuros que sí matcheen.
-
-**Reversibilidad:**
-
-```bash
-# DRY-RUN para preview:
-node scripts/utils/ronda6-recategorizar.js --dry-run
-# APPLY:
-node scripts/utils/ronda6-recategorizar.js
-```
-
-### Ronda 6b (corrección TGT + cap50, 2026-05-21)
-
-**Cambio 1 — TGT absorbe "TGT Dialque"**: el spec original de Ronda 6
-incluía un `extraWhere AND NOT (concepto ILIKE '%dialque%')` para que
-los conceptos "TRANSFERENCIA A TGT Dialque Murcia" cayeran en Dialque
-SAU. Revisión: el usuario pidió que TGT sea **slice independiente** con
-proveedor='TGT' incluyendo "TGT Dialque". Se eliminó la exclusión:
-
-| antes (Ronda 6)            | después (Ronda 6b)         |
-|---|---|
-| Regla TGT prio 120 con `NOT dialque` | Regla TGT prio 120 SIN exclusión |
-| "TGT Dialque Murcia" → Dialque SAU   | "TGT Dialque Murcia" → TGT       |
-
-**UPDATE retroactivo**: 97 filas reclasificadas de `Dialque SAU` →
-`TGT` (todos los conceptos que contienen "TGT" y antes estaban en
-Dialque). Recalc resumen: 12 combos.
-
-**Resultado donut**:
-
-| proveedor       | antes Ronda 6b | después Ronda 6b |
-|---|---:|---:|
-| TGT             |  1 884€ /  15 tx | **24 882€ / 112 tx** |
-| Dialque SAU     | 93 281€ / 423 tx |  70 283€ / 326 tx |
-
-**Cambio 2 — `max_grupos` default 30 → 50** en `routes/bancos.js`
-endpoint `/proveedores`. Con las nuevas categorías (PROVEEDOR_LACTEOS
-con 4 slices, GASTOS_DIRECCION, GASTOS_VEHICULOS, EQUIPAMIENTO, etc.)
-el límite de 30 ocultaba proveedores legítimos en "Proveedores
-Menores". El cap de 50 permite ver los 49 grupos individuales relevantes
-sin saturar.
-
-### Ronda 7 (correcciones puntuales sobre Ronda 6, 2026-05-21)
-
-**Objetivo: separar definitivamente EQUIPAMIENTO (inversión, locales
-nuevos) de MANTENIMIENTO (gasto corriente).**
-
-| antes (Ronda 5/6) | después (Ronda 7) |
-|---|---|
-| Viveros: EQUIPAMIENTO | **Viveros: MANTENIMIENTO** (gasto recurrente de cuidado de plantas/exterior) |
-
-EQUIPAMIENTO definitivo (5 proveedores, 173 filas, 42 750€):
-- GGM Gastro, Argent 3D, Amazon, IKEA, Maquinas Febal.
-
-MANTENIMIENTO (654+ filas): Leroy Merlin, Bricomart, Obramat, **Viveros**,
-herramientas, reparaciones, y todo lo previamente clasificado en
-MANTENIMIENTO por categorizer hardcoded.
-
-**Otras correcciones:**
-
-| patrón                            | categoría    | proveedor canónico   | filas | total  |
-|---|---|---|---:|---:|
-| `vivero`                          | MANTENIMIENTO | Viveros             |  3    |  1 272€ |
-| `suma gestion tributaria`         | IMPUESTOS     | SUMA - Impuestos    |  9    |  2 524€ |
-| `BSSG`                            | PROVEEDOR_OTROS | BSSG               |  1    |    801€ |
-
-**SUMA**: la regla cubre 9 movimientos (recibos + tarjetas de la
-Suma Gestión Tributaria de Diputación de Alicante — tasas residuos
-Ajunt Elx). Los 2 "IMPUESTOS SUMA GESTION TRIBUTARIA" están incluidos
-en la primera regla (skip 0 al ya estar correctos).
-
-**BSSG**: 1 sola transacción ("ADEUDO RECIBO BSSG" / 801€). No hay
-suficiente evidencia para clasificarlo como FINANCIERO ni SERVICIOS_PROF
-con certeza. Opción conservadora: mantener en PROVEEDOR_OTROS con
-nombre canónico 'BSSG' para que aparezca como slice identificable. El
-usuario puede reclasificarlo desde el sidebar cuando confirme qué es.
-
-**UPDATE retroactivo aplicado:** 13 filas, 9 combos sociedad×periodo
-recalculados, 0 errores. Script: `scripts/utils/ronda7-recategorizar.js`
-(idempotente, soporta `--dry-run`).
-
-### Ronda 8 — Raba Buildings → INTRAGRUPO + Grupo Hostelero Sl + relax INTRAGRUPO rule (2026-05-21)
-
-**Contexto:** los 14 movimientos relacionados con Raba Buildings SL
-(una entidad receptora externa al grupo Aires, pero que el usuario
-quiere tratar como intra-grupo para análisis) estaban repartidos en
-INTRAGRUPO / FINANCIERO / INGRESO_TRANSFERENCIA / PROVEEDOR_OTROS.
-
-**Cambios:**
-
-1) `lib/bank/normalizers.js` — añadido `'Grupo Hostelero Sl'` a
-   `INTRA_GRUPO_KEYWORDS`. Captura variantes truncadas como
-   "Traspaso: Aportacion/Prestamo Grupo Hostelero Sl A Raba Buildings Sl"
-   que antes caían en FINANCIERO porque no matcheaba "Grupo Hostelero
-   Aires" (con "Aires").
-
-2) `routes/bancos.js` `/upload-extracto` — relajada la protección
-   INTRAGRUPO: las reglas DB que **confirman** INTRAGRUPO ahora se
-   aplican (antes se rechazaban todas). Las que **cambian** a otra
-   categoría siguen rechazadas. Permite que reglas como `raba →
-   INTRAGRUPO / Raba Buildings` agreguen `proveedor_normalizado` sin
-   ser bloqueadas:
-
-   ```js
-   if (m.categoria === 'INTRAGRUPO' && r.categoria !== 'INTRAGRUPO') continue;
-   ```
-
-3) Regla DB nueva (`ab_reglas_normalizacion` id=48):
-   `patron='raba'`, `tipo_match='ilike'`,
-   `categoria='INTRAGRUPO'`, `proveedor_normalizado='Raba Buildings'`,
-   `prioridad=120`.
-
-4) **UPDATE retroactivo: 14 filas** (todas las que matchean
-   `concepto ILIKE '%raba%'`):
-   - 12 combos sociedad×periodo recalculados.
-   - Incluye reclasificación de la fila anómala de hostelero del
-     12/8/2025 (FINANCIERO → INTRAGRUPO).
-   - También las 2 entradas INGRESO_TRANSFERENCIA (+26 000€ del
-     2/6/2025 y +2 702,68€ del 1/12/2025) pasan a INTRAGRUPO según
-     spec del usuario ("TODOS los movimientos").
-
-| sociedad   | filas | neto |
-|---|---:|---:|
-| alicante   | 2 |  −6 600€ |
-| hostelero  | 4 |  −6 000€ |
-| smart      | 1 |  −3 500€ |
-| benidorm   | 1 |  −2 800€ |
-| murcia     | 6 |    +501€ |
-| **total**  | **14** | **−18 398€** |
-
-Resultado en el donut: las 14 filas quedan excluidas automáticamente
-del análisis de proveedores (esIntraGrupo() las detecta como
-INTRAGRUPO, igual que las transferencias entre las 5 sociedades del
-grupo Aires).
-
 

@@ -53,6 +53,24 @@ function esAdminLike(req) {
   return ROLES_ADMIN.has(req.session?.user?.role);
 }
 
+// Carga los overrides admin sobre la membresía del slice "Gastos Dirección".
+// Devuelve un Map<proveedor_normalizado, 'include'|'exclude'>.
+async function loadGdOverrides() {
+  const rows = await many('SELECT proveedor_normalizado, accion FROM ab_gastos_direccion_overrides');
+  const m = new Map();
+  for (const r of rows) m.set(r.proveedor_normalizado, r.accion);
+  return m;
+}
+
+// Resuelve si un proveedor canónico pertenece al slice fusionado
+// "Gastos Dirección", combinando default por categoría con overrides.
+function perteneceAGastosDireccion(proveedor, categoria, overrides) {
+  const ov = overrides.get(proveedor);
+  if (ov === 'exclude') return false;
+  if (ov === 'include') return true;
+  return CATEGORIAS_DIRECCION_FUSE.has(categoria);
+}
+
 const router = express.Router();
 router.use(requireAuth);
 
@@ -325,17 +343,16 @@ router.get('/proveedores', async (req, res) => {
     if (periodo_desde)    { where.push(`periodo>=$${vals.length+1}`); vals.push(periodo_desde); }
     if (periodo_hasta)    { where.push(`periodo<=$${vals.length+1}`); vals.push(periodo_hasta); }
     // Vista operativa: sólo categorías de proveedor real (PROVEEDOR_* +
-    // MANTENIMIENTO). Para roles no-admin INCLUIMOS también las
-    // categorías sensibles (NOMINAS_DIRECCION/GASTOS_DIRECCION/
-    // PRESTAMOS/FINANCIERO) en el filtro, porque después las
-    // fusionamos en un único slice "Gastos Dirección" (no se
-    // exponen individualmente, pero el total sí debe aparecer).
-    if (vista === 'operativo') {
-      const catsPermitidas = esAdminLike(req)
-        ? CATEGORIAS_PROVEEDOR_OPERATIVO
-        : [...CATEGORIAS_PROVEEDOR_OPERATIVO, ...CATEGORIAS_DIRECCION_FUSE];
-      where.push(`categoria = ANY($${vals.length+1}::text[])`);
-      vals.push(catsPermitidas);
+    // MANTENIMIENTO). Para roles admin con vista=operativo se aplica
+    // como filtro SQL (perf). Para roles no-admin no filtramos por
+    // categoría en SQL — necesitamos traer también las categorías
+    // sensibles (para fusionar) y las que tengan override 'include'
+    // (categorías arbitrarias). El filtro categoría se aplica DESPUÉS
+    // en JS, tras derivar el proveedor canónico de cada fila.
+    const gdOverridesPre = !esAdminLike(req) ? await loadGdOverrides() : null;
+    if (vista === 'operativo' && esAdminLike(req)) {
+      where.push(`categoria = ANY($${vals.length + 1}::text[])`);
+      vals.push(CATEGORIAS_PROVEEDOR_OPERATIVO);
     }
 
     const rows = await many(
@@ -355,6 +372,9 @@ router.get('/proveedores', async (req, res) => {
     const agg = new Map(); // proveedor → { total, n, categorias: Map<cat, count>, ultima_fecha }
     let totalExcluido = 0;
     let nExcluido = 0;
+    const opSet = new Set(CATEGORIAS_PROVEEDOR_OPERATIVO);
+    const filtrarNoAdmin = !esAdminLike(req) && vista === 'operativo';
+    const ovPre = gdOverridesPre || new Map();
     for (const r of rows) {
       if (esIntraGrupo(r.concepto)) {
         totalExcluido += Math.abs(+r.importe);
@@ -375,6 +395,12 @@ router.get('/proveedores', async (req, res) => {
           proveedor = n.proveedor;
           categoria = n.categoria;
         }
+      }
+      // Non-admin vista=operativo: descartamos categorías que no sean
+      // ni operativas ni elegibles para fusionar en Gastos Dirección
+      // (default por categoría o override 'include').
+      if (filtrarNoAdmin && !opSet.has(categoria) && !perteneceAGastosDireccion(proveedor, categoria, ovPre)) {
+        continue;
       }
       const k = proveedor;
       if (!agg.has(k)) agg.set(k, { total: 0, n: 0, cats: new Map(), ultima_fecha: null });
@@ -417,15 +443,16 @@ router.get('/proveedores', async (req, res) => {
     }).sort((a, b) => b.total_importe - a.total_importe);
 
     // Fusión de grupos sensibles para roles no-admin (Ronda 9): los
-    // proveedores con categoría NOMINAS_DIRECCION / GASTOS_DIRECCION /
-    // PRESTAMOS / FINANCIERO se colapsan en un único slice "Gastos
-    // Dirección". Se aplica ANTES del rollup de "Proveedores Menores"
-    // para que el fusionado quede como un slice principal y no caiga
-    // en el bucket de menores por casualidad.
+    // proveedores que pertenecen al grupo "Gastos Dirección" (default
+    // por categoría + overrides admin-managed) se colapsan en un único
+    // slice "Gastos Dirección". Se aplica ANTES del rollup de
+    // "Proveedores Menores" para que el fusionado quede como un slice
+    // principal y no caiga en el bucket de menores por casualidad.
     let fusionados = 0;
     if (!esAdminLike(req)) {
-      const sensibles = proveedores.filter((p) => CATEGORIAS_DIRECCION_FUSE.has(p.categoria));
-      const restantes = proveedores.filter((p) => !CATEGORIAS_DIRECCION_FUSE.has(p.categoria));
+      const overrides = gdOverridesPre || new Map();
+      const sensibles = proveedores.filter((p) => perteneceAGastosDireccion(p.proveedor, p.categoria, overrides));
+      const restantes = proveedores.filter((p) => !perteneceAGastosDireccion(p.proveedor, p.categoria, overrides));
       if (sensibles.length) {
         const tot = sensibles.reduce((s, p) => s + p.total_importe, 0);
         const tx = sensibles.reduce((s, p) => s + p.num_transacciones, 0);
@@ -571,15 +598,13 @@ router.get('/proveedor-evolucion', async (req, res) => {
     const mesesRango = buildMeses(desde, hasta);
     const mesesYoy = yoy ? mesesRango.map((p) => shiftYear(p, -1)) : [];
 
-    // Para roles no-admin: las series sobre categorías sensibles
-    // (NOMINAS_DIRECCION/GASTOS_DIRECCION/PRESTAMOS/FINANCIERO) se
-    // fusionan en una serie única "Gastos Dirección". Si el cliente
-    // pide individualmente una de las 4, la silenciamos. Si pide
-    // "Gastos Dirección" como proveedor, le devolvemos la suma de las 4.
+    // Para roles no-admin: las series sobre proveedores fusionados
+    // en "Gastos Dirección" (default por categoría + overrides admin)
+    // se ocultan; si piden la fusión por nombre, devolvemos el agregado.
     const noAdmin = !esAdminLike(req);
     const pideFusion = noAdmin && proveedores.includes(FUSE_PROVEEDOR);
-    // Filtramos las categorías sensibles que pudieran venir como
-    // categorias[] explícitas (para no exponerlas como series propias).
+    const gdOverridesEvol = noAdmin ? await loadGdOverrides() : new Map();
+    // Filtramos las categorías sensibles solicitadas explícitamente.
     const categoriasFiltradas = noAdmin
       ? categorias.filter((c) => !CATEGORIAS_DIRECCION_FUSE.has(c))
       : categorias;
@@ -604,10 +629,12 @@ router.get('/proveedor-evolucion', async (req, res) => {
       const byCat = new Map();  // categoria  -> Map<periodo, total>
       for (const r of rows) {
         if (esIntraGrupo(r.concepto)) continue;
-        const { proveedor, categoria } = normalizarProveedor(r.concepto, r.categoria);
+        const { proveedor: provDerivado, categoria } = normalizarProveedor(r.concepto, r.categoria);
+        // Prefer proveedor_normalizado persistido; si no, el derivado.
+        const proveedor = r.proveedor_normalizado || provDerivado;
         const cat = categoria || r.categoria;
         const abs = Math.abs(+r.importe);
-        const esSensible = noAdmin && CATEGORIAS_DIRECCION_FUSE.has(r.categoria);
+        const esSensible = noAdmin && perteneceAGastosDireccion(proveedor, r.categoria, gdOverridesEvol);
 
         if (esSensible) {
           // Suma silenciosa bajo "Gastos Dirección" si fue solicitada.
@@ -755,19 +782,19 @@ router.get('/grupo-detalle', async (req, res) => {
     const periodo_hasta = req.query.periodo_hasta || null;
 
     // Bloqueo de drill-down sobre grupos sensibles para roles no-admin.
-    // El slice "Gastos Dirección" (fusión de NOMINAS_DIRECCION /
-    // GASTOS_DIRECCION / PRESTAMOS / FINANCIERO) no se expande, y
-    // tampoco se permite acceder por URL a los proveedores individuales
-    // que pertenecen a esas categorías sensibles.
+    // El slice "Gastos Dirección" no se expande, y tampoco se permite
+    // acceder por URL a los proveedores individuales que pertenecen a
+    // ese grupo (default por categoría + overrides admin-managed).
     if (!esAdminLike(req)) {
       if (grupo === FUSE_PROVEEDOR) {
         return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
       }
+      const overrides = await loadGdOverrides();
       const cat = await one(
         'SELECT MAX(categoria) AS cat FROM ab_movimientos WHERE proveedor_normalizado = $1',
         [grupo]
       );
-      if (cat?.cat && CATEGORIAS_DIRECCION_FUSE.has(cat.cat)) {
+      if (perteneceAGastosDireccion(grupo, cat?.cat, overrides)) {
         return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
       }
     }
@@ -891,6 +918,142 @@ router.get('/grupo-detalle', async (req, res) => {
   } catch (e) {
     console.error('[bancos.grupo-detalle]', e);
     res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ─── GASTOS DIRECCIÓN · gestión admin-only ─────────────────────────────
+// Estos endpoints permiten a admin/socio inspeccionar y manipular qué
+// proveedores caen en el slice fusionado "Gastos Dirección" que ven
+// los roles no-admin. La membresía default está dada por la categoría
+// (CATEGORIAS_DIRECCION_FUSE). La tabla ab_gastos_direccion_overrides
+// permite override por proveedor: 'include' lo agrega aunque su
+// categoría no esté en el set, 'exclude' lo saca aunque sí esté.
+
+function requireAdminLike(req, res, next) {
+  if (!esAdminLike(req)) return res.status(403).json({ error: 'admin/socio only' });
+  return next();
+}
+
+// GET /api/v1/bancos/gastos-direccion/composicion
+// Devuelve la composición actual del grupo fusionado, agrupada por
+// categoría, con los overrides admin marcados explícitamente. Usa la
+// misma lógica de derivación que /proveedores (proveedor_normalizado
+// columna > regla DB > normalizarProveedor()).
+router.get('/gastos-direccion/composicion', requireAdminLike, async (req, res) => {
+  try {
+    const [overrides, reglasDb] = await Promise.all([loadGdOverrides(), loadReglas()]);
+    const rows = await many(
+      `SELECT proveedor_normalizado, categoria, importe::float8 AS importe,
+              concepto, fecha::text AS fecha
+         FROM ab_movimientos
+        WHERE importe < 0`
+    );
+    // Agregar por (proveedor canónico) sumando importe + tx + categoría top.
+    const agg = new Map();
+    for (const r of rows) {
+      if (esIntraGrupo(r.concepto)) continue;
+      let prov, cat;
+      if (r.proveedor_normalizado) { prov = r.proveedor_normalizado; cat = r.categoria; }
+      else {
+        const rule = matchRegla(r.concepto, reglasDb);
+        if (rule) { prov = rule.proveedor_normalizado; cat = rule.categoria; }
+        else {
+          const n = normalizarProveedor(r.concepto, r.categoria);
+          prov = n.proveedor; cat = n.categoria;
+        }
+      }
+      const key = prov;
+      if (!agg.has(key)) agg.set(key, { proveedor: prov, total: 0, n: 0, cats: new Map(), ultima_fecha: null });
+      const a = agg.get(key);
+      a.total += Math.abs(+r.importe);
+      a.n += 1;
+      a.cats.set(cat, (a.cats.get(cat) || 0) + 1);
+      if (!a.ultima_fecha || r.fecha > a.ultima_fecha) a.ultima_fecha = r.fecha;
+    }
+    // Construir mapa por categoría con los miembros del grupo.
+    const porCategoria = {};
+    for (const c of CATEGORIAS_DIRECCION_FUSE) porCategoria[c] = [];
+    porCategoria.__INCLUIDOS_EXTRA__ = []; // override 'include' con categoría no-default
+    const incluidosOverride = [];
+    const excluidosOverride = [];
+    let totalFusionado = 0;
+    for (const a of agg.values()) {
+      let topCat = null, topCnt = 0;
+      for (const [c, n] of a.cats.entries()) if (n > topCnt) { topCnt = n; topCat = c; }
+      const ov = overrides.get(a.proveedor) || null;
+      const pertenece = perteneceAGastosDireccion(a.proveedor, topCat, overrides);
+      const item = {
+        proveedor: a.proveedor,
+        categoria: topCat,
+        total_importe: Math.round(a.total * 100) / 100,
+        num_transacciones: a.n,
+        ultima_fecha: a.ultima_fecha,
+        override: ov,
+      };
+      if (pertenece) {
+        totalFusionado += a.total;
+        if (porCategoria[topCat]) porCategoria[topCat].push(item);
+        else porCategoria.__INCLUIDOS_EXTRA__.push(item);
+        if (ov === 'include') incluidosOverride.push(item);
+      } else if (ov === 'exclude') {
+        excluidosOverride.push(item);
+      }
+    }
+    // Sort cada bucket por total DESC.
+    for (const k of Object.keys(porCategoria)) porCategoria[k].sort((a, b) => b.total_importe - a.total_importe);
+    incluidosOverride.sort((a, b) => b.total_importe - a.total_importe);
+    excluidosOverride.sort((a, b) => b.total_importe - a.total_importe);
+
+    res.json({
+      slice_proveedor: FUSE_PROVEEDOR,
+      categorias_default: [...CATEGORIAS_DIRECCION_FUSE],
+      por_categoria: porCategoria,
+      incluidos_via_override: incluidosOverride,
+      excluidos_via_override: excluidosOverride,
+      total_fusionado: Math.round(totalFusionado * 100) / 100,
+      n_proveedores: Object.values(porCategoria).reduce((s, arr) => s + arr.length, 0),
+    });
+  } catch (e) {
+    console.error('[bancos.gd.composicion]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// POST /api/v1/bancos/gastos-direccion/override
+// body: { proveedor, accion: 'include' | 'exclude' }
+router.post('/gastos-direccion/override', express.json(), requireAdminLike, async (req, res) => {
+  try {
+    const { proveedor, accion } = req.body || {};
+    if (!proveedor || !['include', 'exclude'].includes(accion)) {
+      return res.status(400).json({ error: 'proveedor y accion ∈ {include, exclude} requeridos' });
+    }
+    const r = await one(
+      `INSERT INTO ab_gastos_direccion_overrides (proveedor_normalizado, accion, creado_por)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (proveedor_normalizado) DO UPDATE
+         SET accion = EXCLUDED.accion, creado_en = NOW(), creado_por = EXCLUDED.creado_por
+       RETURNING proveedor_normalizado, accion, creado_en, creado_por`,
+      [proveedor, accion, req.session?.user?.email || null]
+    );
+    res.json({ ok: true, override: r });
+  } catch (e) {
+    console.error('[bancos.gd.override.post]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// DELETE /api/v1/bancos/gastos-direccion/override/:proveedor
+// Quita el override → el proveedor vuelve al comportamiento default
+// (en el grupo si su categoría es sensible, fuera si no).
+router.delete('/gastos-direccion/override/:proveedor', requireAdminLike, async (req, res) => {
+  try {
+    const proveedor = decodeURIComponent(req.params.proveedor || '');
+    if (!proveedor) return res.status(400).json({ error: 'proveedor requerido' });
+    const r = await query('DELETE FROM ab_gastos_direccion_overrides WHERE proveedor_normalizado = $1', [proveedor]);
+    res.json({ ok: true, deleted: r.rowCount });
+  } catch (e) {
+    console.error('[bancos.gd.override.delete]', e);
+    res.status(500).json({ error: e.message || 'internal' });
   }
 });
 

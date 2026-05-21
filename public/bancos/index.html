@@ -208,6 +208,7 @@
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.5rem">
       <p style="font-size:13px;font-weight:500">Distribución de gasto <span id="prov-donut-mode" style="color:var(--text-2);font-weight:400">(&gt; 1% + Otros)</span></p>
       <div style="display:flex;gap:6px;align-items:center">
+        <button id="prov-btn-gd-manage" onclick="openGdManage()" style="display:none;padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);cursor:pointer;font-size:12px" title="Gestionar miembros del slice fusionado Gastos Dirección (admin/socio)">⚙ Gastos Dirección</button>
         <label style="font-size:11px;color:var(--text-2)">Umbral:</label>
         <select id="prov-donut-threshold" onchange="setDonutThreshold(this.value)" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
           <option value="0.10">&gt; 10%</option>
