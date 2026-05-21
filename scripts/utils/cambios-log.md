@@ -4,6 +4,83 @@ Este archivo documenta decisiones tomadas durante las series de mejoras
 funcionales (mejoras 5-9 y siguientes). El log de recategorizaciones
 está separado en [recategorizacion-log.md](recategorizacion-log.md).
 
+## Refactor de roles y permisos — control granular tabs/sub-tabs/UI (5 bloques)
+
+Reescritura coordinada en backend y frontend del sistema de permisos del
+dashboard, /bancos y módulo Pedidos, todo manejado desde `lib/roles.js`
+como single source of truth.
+
+### Bloque A — `lib/roles.js`
+- `PERMS` nuevos: `print_w` (admin/socio), `config_w_log_only` (gerente).
+- `PERMS.locales_w` pierde `'administrativo'`.
+- `PERMS.pedidos_view/w` ganan `'personal'`.
+- `TABS_DASHBOARD` ajustada: `resumen` y `ranking` quitan administrativo/
+  pedidos/personal; `costos` queda admin/socio; `evolucion` y `traspasos`
+  quedan admin/socio; `seguimiento` y `pedidos` ganan pedidos+personal.
+- `SUB_TABS_PEDIDOS` ajustada: `mp` para todos los roles con acceso a
+  Pedidos; `personal` para admin/socio/gerente/pedidos/personal; `mix`
+  solo admin/socio; `cmp` admin/socio/administrativo; `hist`+`rk`
+  admin/socio/gerente.
+- `SUB_TABS_BANCOS` nueva: `resumen`+`proveedores` admin/socio/gerente/
+  administrativo; `movimientos`+`gastos`+`cruce` solo admin/socio.
+- Nuevo helper `subTabsBancosPermitidas(role)`.
+
+### Bloque B — Migration 11 `ab_parametros_historial`
+Tabla de auditoría para cambios al panel de Parámetros. Schema:
+`(id serial, usuario_email, campo, valor_anterior numeric, valor_nuevo
+numeric, fecha timestamptz default NOW())`. Índices por fecha DESC y
+usuario_email. La id=10 ya estaba ocupada por `gastos_direccion_overrides`.
+
+### Bloque C — Backend
+- `PUT /api/v1/aires/config` ahora exige `requirePerm('config_w')`
+  (admin/socio/gerente). Para `'gerente'` cada cambio numérico (pctMP,
+  pctPersonal, pctImpuestos, pctPublicidad, euroHora, poolProduccion,
+  poolEspeciales) que difiera del valor previo se inserta en
+  `ab_parametros_historial`. **Decisión**: admin y socio NO loggean
+  porque introduce ruido sin valor — el objetivo es rastrear quién
+  bajó márgenes desde el rol gerente.
+- `GET /api/v1/aires/bootstrap` ahora devuelve además `sub_tabs_bancos[]`
+  y nuevos flags: `config_w_log_only`, `bancos_upload_admin`, `print_w`.
+- `GET /api/v1/auth/me` ahora devuelve `sub_tabs_bancos[]` y `flags{}`.
+  Lo consume `public/js/bancos.js` sin hardcodear matrices en cliente.
+
+### Bloque D — Frontend dashboard (`public/js/main.js`)
+- `setUserUI()` consume `ctx.flags` como única fuente de visibilidad UI:
+  - Panel `#params-panel` visible cuando `flags.config_w`
+    (admin/socio/gerente). Antes hard-coded admin+socio; gerente no
+    podía editar.
+  - Botón `#tb-imprimir` visible cuando `flags.print_w` (admin/socio).
+  - Cuando `flags.config_w_log_only` (rol gerente) se inserta un aviso
+    amarillo dentro del panel: "Tus cambios al panel de parámetros
+    quedan registrados en el historial de auditoría".
+
+### Bloque E — Frontend bancos (`public/js/bancos.js`)
+- `boot()` lee `me.sub_tabs_bancos` y `me.flags` y aplica:
+  - Filtrado de tabs: gerente/administrativo ven solo Resumen +
+    Proveedores. Movimientos/Análisis gastos/Cruce TPV ocultos.
+  - Botón "⬆ Subir extracto / cierres" → flag `bancos_upload_admin`.
+  - Botones "Export CSV" → flag `export_w`.
+- `showTab(name)` ignora navegación a tabs fuera de `state.subTabsBancos`
+  (defense-in-depth contra acceso por consola).
+
+### 2FA obligatorio (commit f21090b previo)
+- `requireAuth` redirige a `/account?msg=2fa-required` (browser) o devuelve
+  403 (API) si `req.session.user.totp_enabled === false` y la ruta no está
+  en whitelist (`/account` + `/api/v1/auth/*`).
+- Banner en `/account` se muestra automáticamente y abre el wizard.
+- `req.session.user.totp_enabled` se setea al login y se actualiza tras
+  `/2fa/confirm` y `/2fa/disable`.
+
+### Matriz autoritativa final
+| Rol | Tabs dashboard | Sub-tabs Pedidos | Sub-tabs Bancos | Otros |
+|---|---|---|---|---|
+| **admin** | todas | todas | todas | export, print, upload, KPIs, vista soc |
+| **socio** | todas | todas | todas | print, KPIs, vista soc |
+| **gerente** | resumen, ranking, presupuesto, seguimiento, pedidos | mp, personal, hist, rk | resumen, proveedores | KPIs, edita params (loggeado) |
+| **administrativo** | seguimiento, pedidos | mp, cmp | resumen, proveedores | pagar pedidos |
+| **pedidos** | seguimiento, pedidos | mp, personal | — (sin acceso) | — |
+| **personal** | seguimiento, pedidos | mp, personal | — (sin acceso) | — |
+
 ## Mejora 5 — Gráfico evolución temporal por proveedor (`/bancos` → Proveedores)
 
 **Backend**
