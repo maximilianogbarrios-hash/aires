@@ -157,3 +157,125 @@ rol nuevo, sólo se cambia `lib/roles.js`.
   página rompería el flujo de carga. La validación dura sigue siendo
   server-side (`config_w` perm).
 
+## Mejora A — Click en leyenda → panel de detalle con reclasificación (2026-05-21)
+
+**Migration 9 (`reglas_normalizacion`)**:
+- Tabla nueva `ab_reglas_normalizacion (id, patron, tipo_match,
+  categoria, proveedor_normalizado, prioridad, activo, creado_en)`
+  con índice por `(activo, prioridad DESC)` y CHECK sobre
+  `tipo_match ∈ {ilike, regex, exacto}`.
+- Columna nueva `ab_movimientos.proveedor_normalizado VARCHAR(200) NULL`
+  para persistir el nombre canónico cuando el usuario reclasifica
+  manualmente.
+
+**Helper `lib/bank/db-rules.js`**:
+- `loadReglas()` carga ordenado por `prioridad DESC, id ASC`.
+- `matchRegla(concepto, reglas)` matchea por `ilike` (substring
+  case-insensitive), `exacto` (igualdad case-insensitive) o `regex`
+  (RegExp con flag `i`). Devuelve la primera regla que matchee o `null`.
+
+**Precedencia de derivación de grupo en `/proveedores`**:
+1. `ab_movimientos.proveedor_normalizado` si está set (reclasificación
+   manual ya persistida).
+2. Match contra reglas DB (`matchRegla`).
+3. `normalizarProveedor()` hardcodeado.
+
+**Aplicación en `/upload-extracto`**: tras parsear el XLSX y antes del
+INSERT, se cargan las reglas DB y se aplican a cada movimiento. Si
+matchea, se sobrescribe la categoría del categorizer y se setea
+`proveedor_normalizado`. La respuesta reporta `reglas_db_aplicadas`.
+
+**Endpoints nuevos**:
+- `GET    /api/v1/bancos/grupo-detalle?grupo=X&periodo_*=&sociedad_id=`
+- `POST   /api/v1/bancos/reclasificar  body { concepto, categoria_nueva,
+          proveedor_nuevo, guardar_regla, tipo_match?, patron? }`
+- `GET    /api/v1/bancos/reglas-normalizacion`
+- `DELETE /api/v1/bancos/reglas-normalizacion/:id`
+
+**Sidebar frontend**: click en cualquier item de la leyenda (excepto
+"Otros (N)" que mantiene su drill-down) abre un panel lateral fijo
+con título, totales, % del gasto y lista de conceptos. Cada concepto
+tiene botón "Reclasificar" que expande un form inline (select
+categoría, input nombre normalizado, checkbox "Aplicar a futuros
+extractos"). Confirmar dispara POST `/reclasificar` y recarga el
+donut + tabla ranking.
+
+## Mejora B — Selector de sociedad ampliado (2026-05-21)
+
+Reemplaza el selector dinámico (5 opciones desde `state.sociedades`)
+por uno con 7 opciones hardcodeadas en el HTML:
+
+- `""` Todas las sociedades
+- `"sin_elche"` Sin Elche (4 sociedades: alicante + smart + murcia + benidorm)
+- `"solo_elche"` Solo Elche (Grupo Hostelero)
+- `"alicante"`, `"smart"`, `"murcia"`, `"benidorm"` individuales
+
+Helper backend `buildSociedadClause(sociedad_id, paramIndex)` traduce
+los valores virtuales a cláusulas SQL: `'sin_elche'` →
+`sociedad_id <> 'hostelero'`, `'solo_elche'` → `sociedad_id = 'hostelero'`,
+otros → `sociedad_id = <id>`. Aplicado a `/proveedores`, `/grupo-detalle`
+y `/proveedor-evolucion` (los endpoints que alimentan donut + leyenda
++ tabla + gráfico evolución + KPIs).
+
+Sanity check con datos 2025-06 → 2026-05:
+
+| filtro       | total gasto | sociedades incluidas |
+|--------------|------------:|----------------------|
+| Todas        | 4 043 411€  | 5                    |
+| Sin Elche    | 3 569 249€  | 4 (sin hostelero)    |
+| Solo Elche   |   474 162€  | 1 (hostelero)        |
+| alicante     |   954 965€  | 1                    |
+| smart        |   917 240€  | 1                    |
+| murcia       | 1 140 467€  | 1                    |
+| benidorm     |   556 577€  | 1                    |
+
+**Sanity**: sin_elche + solo_elche = 4 043 411 = todas (diff 0€).
+alicante + smart + murcia + benidorm = 3 569 249 = sin_elche ✓.
+
+## Mejora C — Verificación E2E: reglas DB aplicadas a futuros extractos (2026-05-21)
+
+**Objetivo**: confirmar que el flujo completo cierra:
+
+1. Usuario reclasifica desde el sidebar → POST `/reclasificar` con
+   `guardar_regla=true` → fila en `ab_reglas_normalizacion` con
+   `prioridad=100` (mayor que cualquier regla seed por defecto).
+2. Cuando se sube un nuevo extracto → `/upload-extracto` carga reglas
+   DB, las aplica a cada movimiento antes del INSERT.
+3. El nuevo movimiento queda persistido con la categoría y el
+   `proveedor_normalizado` que dicta la regla, no con el resultado del
+   categorizer hardcoded.
+
+**Test ejecutado** (script inline node, 2026-05-21):
+
+```
+=== E2E: regla DB aplicada a futuro upload ===
+1) Sin regla DB → categorizer hardcodeado devuelve: PROVEEDOR_OTROS
+2) Regla DB creada → id=2 patron="PROVEEDOR DE PRUEBA E2E"
+   → PUBLICIDAD / "Proveedor E2E Test"
+3) matchRegla devolvió: {cat:PUBLICIDAD, prov:Proveedor E2E Test}
+4) insertMovimientos: { inserted: 1, duplicated: 0 }
+5) Fila persistida: categoria=PUBLICIDAD
+                  · proveedor_normalizado=Proveedor E2E Test
+6) Validación: categoria_correcta=true · proveedor_correcto=true
+   ✓ PASS — la regla DB tiene precedencia sobre el categorizer hardcoded
+7) Cleanup OK
+```
+
+**Conclusión**: el ciclo Aprendizaje → Persistencia → Aplicación
+funciona en los tres puntos del flujo:
+
+- `POST /reclasificar` ⇒ inserta en `ab_reglas_normalizacion` y
+  marca también `ab_movimientos.proveedor_normalizado` para las filas
+  existentes con ese concepto exacto.
+- `loadReglas()` + `matchRegla()` se invocan tanto en `/proveedores`
+  (derivación de grupo en runtime) como en `/upload-extracto` (al
+  insertar nuevas filas).
+- La precedencia es `ab_movimientos.proveedor_normalizado > regla
+  DB > normalizarProveedor()` en consultas, y `regla DB >
+  categorizer()` en upload.
+
+**Reversibilidad**: cualquier regla puede borrarse con
+`DELETE /reglas-normalizacion/:id` (hard delete). Las filas ya
+insertadas mantienen su `categoria` y `proveedor_normalizado` salvo
+que se vuelva a correr una reclasificación manual.
+
