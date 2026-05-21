@@ -289,3 +289,43 @@ con 4 slices, GASTOS_DIRECCION, GASTOS_VEHICULOS, EQUIPAMIENTO, etc.)
 el límite de 30 ocultaba proveedores legítimos en "Proveedores
 Menores". El cap de 50 permite ver los 49 grupos individuales relevantes
 sin saturar.
+
+### Ronda 7 (correcciones puntuales sobre Ronda 6, 2026-05-21)
+
+**Objetivo: separar definitivamente EQUIPAMIENTO (inversión, locales
+nuevos) de MANTENIMIENTO (gasto corriente).**
+
+| antes (Ronda 5/6) | después (Ronda 7) |
+|---|---|
+| Viveros: EQUIPAMIENTO | **Viveros: MANTENIMIENTO** (gasto recurrente de cuidado de plantas/exterior) |
+
+EQUIPAMIENTO definitivo (5 proveedores, 173 filas, 42 750€):
+- GGM Gastro, Argent 3D, Amazon, IKEA, Maquinas Febal.
+
+MANTENIMIENTO (654+ filas): Leroy Merlin, Bricomart, Obramat, **Viveros**,
+herramientas, reparaciones, y todo lo previamente clasificado en
+MANTENIMIENTO por categorizer hardcoded.
+
+**Otras correcciones:**
+
+| patrón                            | categoría    | proveedor canónico   | filas | total  |
+|---|---|---|---:|---:|
+| `vivero`                          | MANTENIMIENTO | Viveros             |  3    |  1 272€ |
+| `suma gestion tributaria`         | IMPUESTOS     | SUMA - Impuestos    |  9    |  2 524€ |
+| `BSSG`                            | PROVEEDOR_OTROS | BSSG               |  1    |    801€ |
+
+**SUMA**: la regla cubre 9 movimientos (recibos + tarjetas de la
+Suma Gestión Tributaria de Diputación de Alicante — tasas residuos
+Ajunt Elx). Los 2 "IMPUESTOS SUMA GESTION TRIBUTARIA" están incluidos
+en la primera regla (skip 0 al ya estar correctos).
+
+**BSSG**: 1 sola transacción ("ADEUDO RECIBO BSSG" / 801€). No hay
+suficiente evidencia para clasificarlo como FINANCIERO ni SERVICIOS_PROF
+con certeza. Opción conservadora: mantener en PROVEEDOR_OTROS con
+nombre canónico 'BSSG' para que aparezca como slice identificable. El
+usuario puede reclasificarlo desde el sidebar cuando confirme qué es.
+
+**UPDATE retroactivo aplicado:** 13 filas, 9 combos sociedad×periodo
+recalculados, 0 errores. Script: `scripts/utils/ronda7-recategorizar.js`
+(idempotente, soporta `--dry-run`).
+
