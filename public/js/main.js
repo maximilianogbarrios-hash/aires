@@ -92,6 +92,10 @@ function setUserUI() {
   const esAdminSocio = ['admin', 'socio'].includes(ctx.user.role);
   const panel = $('params-panel');
   if (panel) panel.style.display = esAdminSocio ? '' : 'none';
+  // Botón Imprimir del topbar: visible sólo para admin y socio. Para otros
+  // roles queda oculto (gating de exportación a nivel UI).
+  const btnPrint = $('tb-imprimir');
+  if (btnPrint) btnPrint.style.display = esAdminSocio ? '' : 'none';
 
   // Mejora 8: visibilidad granular.
   const flags = ctx.flags || {};

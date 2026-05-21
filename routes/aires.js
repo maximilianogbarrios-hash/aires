@@ -482,6 +482,7 @@ router.get('/bootstrap', async (req, res) => {
       config_w:       !!(role && PERMS.config_w.includes(role)),
       bancos:         !!(role && PERMS.bancos.includes(role)),
       pedidos_pagar:  !!(role && PERMS.pedidos_pagar_w.includes(role)),
+      export_w:       !!(role && PERMS.export_w.includes(role)),
     };
     res.json({ config, locales, historial, presupuesto, user: req.session.user, tabs, sub_tabs_pedidos, flags });
   } catch (e) {

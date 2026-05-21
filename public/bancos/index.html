@@ -130,7 +130,7 @@
         <p style="font-size:11px;color:var(--text-2)" id="m-count">—</p>
         <p style="font-size:12px;font-weight:500;margin-top:2px" id="m-total">Total filtrado: —</p>
       </div>
-      <button onclick="exportCsv()" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px;flex-shrink:0">Export CSV</button>
+      <button id="m-btn-export" onclick="exportCsv()" style="display:none;padding:4px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px;flex-shrink:0">Export CSV</button>
     </div>
     <div style="overflow-x:auto"><table>
       <thead><tr>
@@ -192,7 +192,7 @@
       <select id="prov-periodo-desde" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
       <select id="prov-periodo-hasta" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
       <button onclick="loadProvRanking()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Aplicar</button>
-      <button onclick="exportProveedoresCsv()" style="padding:6px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Export CSV</button>
+      <button id="prov-btn-export" onclick="exportProveedoresCsv()" style="display:none;padding:6px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Export CSV</button>
     </div>
     <p style="font-size:10px;color:var(--text-2);margin-top:.5rem">Selector "Desde" igual a "Hasta" → análisis de un solo mes. Rangos completos suman los meses elegidos. La vista se elige automáticamente según tu rol: admin/socio ven todos los gastos (impuestos, nóminas, etc.); el resto sólo ve proveedores operativos.</p>
   </div>

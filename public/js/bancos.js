@@ -77,6 +77,15 @@ async function boot() {
     // para no-admin (requirePerm en routes/bancos.js).
     const btnUpload = $('btn-upload-toggle');
     if (btnUpload) btnUpload.style.display = (me.user.role === 'admin') ? '' : 'none';
+    // Export CSV (Movimientos + Proveedores): sólo admin (perm export_w).
+    // Los demás roles no ven los botones — gating a nivel UI; los endpoints
+    // futuros que devuelvan archivos descargables se protegen con
+    // requirePerm('export_w') en el backend.
+    const esExportAdmin = me.user.role === 'admin';
+    const btnExpM = $('m-btn-export');
+    if (btnExpM) btnExpM.style.display = esExportAdmin ? '' : 'none';
+    const btnExpP = $('prov-btn-export');
+    if (btnExpP) btnExpP.style.display = esExportAdmin ? '' : 'none';
   } catch {}
   const meta = await api('/api/v1/bancos/meta');
   state.sociedades = meta.sociedades || [];

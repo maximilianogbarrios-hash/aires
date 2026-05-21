@@ -345,3 +345,47 @@ filtro SQL por performance.
 5) Re-fetch (gerente): GD total: 55616.20 € · miembros: 6
    ✓ ROLLBACK OK: YES
 ```
+
+## Mejora E — Gating de exportación / descarga por rol (2026-05-21)
+
+**Objetivo**: restringir cualquier acción que materialice datos en
+formato descargable (CSV/Excel/PDF) y la "impresión" del dashboard a
+roles autorizados, manteniendo el gating extensible vía permiso para
+habilitarlo por usuario desde /admin sin tocar código.
+
+**Cambios**:
+
+- `lib/roles.js`: nuevo permiso `export_w: ['admin']`. Cualquier
+  endpoint nuevo que entregue archivos descargables se protege con
+  `requirePerm('export_w')`. Hoy no hay endpoints de export en
+  `routes/*` (los CSV los arma el front desde `state` ya cargado),
+  pero el permiso queda listo para uso futuro.
+
+- `routes/aires.js` bootstrap: expone `flags.export_w` derivado de
+  `PERMS.export_w`. El frontend lo lee desde `ctx.flags`.
+
+- `public/dashboard/index.html`: botón "Imprimir" del topbar pasa a
+  `id="tb-imprimir"` con `display:none` por defecto.
+  `public/js/main.js#setUserUI` lo muestra sólo si rol ∈
+  {admin, socio} (criterio: Imprimir es un "soft export" via
+  `window.print()` y mantiene el alcance de admin+socio).
+
+- `public/bancos/index.html`: los 2 botones Export CSV reciben
+  `id="m-btn-export"` (Movimientos) e `id="prov-btn-export"`
+  (Proveedores), ambos con `display:none` por defecto.
+  `public/js/bancos.js#boot` los muestra sólo si `me.user.role ===
+  'admin'` (export "duro" — descarga archivo).
+
+**Matriz resultante**:
+
+| Acción                       | admin | socio | gerente | administrativo | pedidos | personal |
+|------------------------------|:-----:|:-----:|:-------:|:--------------:|:-------:|:--------:|
+| Export CSV /bancos→Movim.    |  ✓    |       |         |                |         |          |
+| Export CSV /bancos→Proveed.  |  ✓    |       |         |                |         |          |
+| Botón Imprimir (window.print)|  ✓    |  ✓    |         |                |         |          |
+| Endpoints export_w (futuros) |  ✓    |       |         |                |         |          |
+
+**Defense in depth**: el UI gating evita la acción accidental; el
+permiso `export_w` está disponible para que futuros endpoints
+declaren `requirePerm('export_w')` y devuelvan 403 a clientes que
+intenten saltarse la UI.
