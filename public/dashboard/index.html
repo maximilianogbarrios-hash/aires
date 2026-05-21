@@ -381,14 +381,15 @@
 
   <!-- MATERIA PRIMA -->
   <div id="pedsub-mp" class="ped-sub on">
-    <div class="g4" style="margin-bottom:.75rem">
+    <div class="g5" style="margin-bottom:.75rem">
       <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Budget MP semana</p><p style="font-size:18px;font-weight:500" id="ped-k-budget">—</p></div>
       <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Pedidos confirmados</p><p style="font-size:18px;font-weight:500" id="ped-k-conf">—</p></div>
       <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Pendientes</p><p style="font-size:18px;font-weight:500" id="ped-k-pend">—</p></div>
-      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">% ejecutado</p><p style="font-size:18px;font-weight:500" id="ped-k-exec">—</p><p style="font-size:11px;color:var(--text-2)" id="ped-k-exec-eur">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Pendiente de pago</p><p style="font-size:18px;font-weight:500;color:#BA7517" id="ped-k-pendpago">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Total pagado</p><p style="font-size:18px;font-weight:500;color:#16a34a" id="ped-k-pagado">—</p><p style="font-size:11px;color:var(--text-2)"><span id="ped-k-exec">—</span> ejecutado · <span id="ped-k-exec-eur">—</span></p></div>
     </div>
     <div class="card">
-      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Semáforo proveedor: 🟢 ≤±10% · 🟡 ±10-20% · 🔴 >±20% · Click en celda para editar importe real</p>
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Semáforo proveedor: 🟢 ≤±10% · 🟡 ±10-20% · 🔴 >±20% · Click en celda para editar importe real (auto-guarda en 800ms o al presionar Enter)</p>
       <div id="ped-mp-table" style="overflow-x:auto">—</div>
     </div>
   </div>

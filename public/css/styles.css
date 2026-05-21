@@ -23,7 +23,9 @@ body{font-family:var(--font);color:var(--text);background:var(--bg);padding:0 1.
 .surf{background:var(--bg-secondary);border-radius:var(--r-md);padding:.75rem .9rem}
 .g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .g4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-@media(max-width:640px){.g4{grid-template-columns:repeat(2,1fr)}}
+.g5{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+@media(max-width:640px){.g4{grid-template-columns:repeat(2,1fr)} .g5{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:980px) and (min-width:641px){.g5{grid-template-columns:repeat(3,1fr)}}
 .bA{background:#EAF3DE;color:#3B6D11}.bB{background:#FAEEDA;color:#854F0B}
 .bC{background:#E6F1FB;color:#185FA5}.bD{background:#FCEBEB;color:#A32D2D}.bE{background:#F3E8FF;color:#7E22CE}
 .bV{background:#EAF3DE;color:#3B6D11}.bJ{background:#FAEEDA;color:#854F0B}.bP{background:#FCEBEB;color:#A32D2D}
@@ -77,6 +79,17 @@ input[type=number].real-inp{width:80px;text-align:right;font-size:12px;padding:3
 .ped-pagado-toggle input:checked + span{color:#16a34a;font-weight:500}
 .ped-pagado-toggle input:disabled{opacity:.4}
 .ped-pagado-ro{color:#16a34a;font-size:11px;font-weight:500;margin-top:1px}
+/* Feedback visual del input "Confirmado €" (Mejora MP bugs 1+2) */
+.ped-mp-inp{transition:border-color .25s, background-color .25s, box-shadow .25s}
+.ped-mp-inp.saving{border-color:#BA7517;background:#FEF3C7}
+.ped-mp-inp.saved{border-color:#16a34a;background:#DCFCE7;box-shadow:0 0 0 2px rgba(22,163,74,.18)}
+.ped-mp-inp.errored{border-color:#dc2626;background:#FEE2E2;box-shadow:0 0 0 2px rgba(220,38,38,.22)}
+.ped-mp-badge{margin-top:1px}
+/* Dot semáforo del estado Pagado para roles que sólo leen (BUG 4) */
+.ped-pay-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-top:2px}
+.ped-pay-dot.pd-r{background:#dc2626}
+.ped-pay-dot.pd-a{background:#eab308}
+.ped-pay-dot.pd-v{background:#22c55e}
 /* Mejora 9: input "text-number" sin flechas y con UX cómodo */
 .ped-hours-inp{text-align:right}
 .ped-hours-inp::-webkit-outer-spin-button,.ped-hours-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
