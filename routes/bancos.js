@@ -648,7 +648,8 @@ router.get('/grupo-detalle', async (req, res) => {
     );
     const reglasDb = await loadReglas();
 
-    const porConcepto = new Map();
+    // Pre-derivar proveedor canónico por fila (evita derivar dos veces).
+    const enriched = [];
     for (const r of rows) {
       if (esIntraGrupo(r.concepto)) continue;
       let proveedor, categoria;
@@ -666,10 +667,46 @@ router.get('/grupo-detalle', async (req, res) => {
           categoria = n.categoria;
         }
       }
-      if (proveedor !== grupo) continue;
+      enriched.push({ ...r, _proveedor: proveedor, _categoria: categoria });
+    }
+
+    // Caso especial: el slice "Proveedores Menores" del endpoint
+    // /proveedores es un bucket virtual (no es un proveedor real). Para
+    // hacer drill-down, identificamos los proveedores que caen debajo
+    // del umbral (count < 5 AND total < 2 000€) y devolvemos sus
+    // conceptos como si fueran un solo grupo unificado.
+    const ES_MENORES = (grupo === 'Proveedores Menores');
+    let provsMenores = null;
+    if (ES_MENORES) {
+      const totPorProv = new Map();
+      for (const e of enriched) {
+        const x = totPorProv.get(e._proveedor) || { total: 0, n: 0 };
+        x.total += Math.abs(+e.importe);
+        x.n += 1;
+        totPorProv.set(e._proveedor, x);
+      }
+      provsMenores = new Set(
+        [...totPorProv.entries()]
+          .filter(([, x]) => x.n < 5 && x.total < 2000)
+          .map(([p]) => p)
+      );
+    }
+
+    const porConcepto = new Map();
+    for (const r of enriched) {
+      if (ES_MENORES) {
+        if (!provsMenores.has(r._proveedor)) continue;
+      } else {
+        if (r._proveedor !== grupo) continue;
+      }
       const k = r.concepto;
       if (!porConcepto.has(k)) {
-        porConcepto.set(k, { concepto: r.concepto, total: 0, n: 0, categoria_actual: categoria, ultima_fecha: null, ids: [], sociedades: new Map() });
+        porConcepto.set(k, {
+          concepto: r.concepto, total: 0, n: 0,
+          categoria_actual: r._categoria,
+          proveedor_canonico: r._proveedor,
+          ultima_fecha: null, ids: [], sociedades: new Map(),
+        });
       }
       const c = porConcepto.get(k);
       c.total += Math.abs(+r.importe);
@@ -689,6 +726,10 @@ router.get('/grupo-detalle', async (req, res) => {
         total_importe: c.total,
         num_transacciones: c.n,
         categoria_actual: c.categoria_actual,
+        // Proveedor canónico del concepto. Útil sobre todo cuando el grupo
+        // es "Proveedores Menores" (bucket virtual con N proveedores) para
+        // que el sidebar muestre a qué proveedor real pertenece cada fila.
+        proveedor_canonico: c.proveedor_canonico,
         ultima_fecha: c.ultima_fecha,
         sample_ids: c.ids.slice(0, 5),
         sociedades: [...c.sociedades.entries()]
@@ -698,7 +739,14 @@ router.get('/grupo-detalle', async (req, res) => {
       .sort((a, b) => b.total_importe - a.total_importe);
 
     const totalGrupo = conceptos.reduce((s, c) => s + c.total_importe, 0);
-    res.json({ grupo, total: totalGrupo, num_conceptos: conceptos.length, conceptos });
+    res.json({
+      grupo,
+      es_bucket_menores: !!provsMenores,
+      proveedores_menores: provsMenores ? [...provsMenores].sort() : null,
+      total: totalGrupo,
+      num_conceptos: conceptos.length,
+      conceptos,
+    });
   } catch (e) {
     console.error('[bancos.grupo-detalle]', e);
     res.status(500).json({ error: 'internal' });

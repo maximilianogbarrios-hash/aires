@@ -1044,12 +1044,19 @@ function renderSociedadesBadges(sociedades) {
 
 function renderProvSidebarRows(conceptos) {
   const body = $('prov-sb-body');
+  const esBucketMenores = !!state._sbData?.es_bucket_menores;
   body.innerHTML = conceptos.map((c, i) => {
     const conceptoEsc = (c.concepto || '').replace(/"/g, '&quot;');
+    // En "Proveedores Menores" cada fila pertenece a un proveedor distinto;
+    // mostramos su nombre canónico como pista visual para que el usuario
+    // sepa a qué proveedor agrupado pertenece sin tener que adivinar.
+    const provChip = (esBucketMenores && c.proveedor_canonico && c.proveedor_canonico !== state._sbData.grupo)
+      ? `<span style="display:inline-block;background:#EEF2FF;color:#3730A3;border-radius:10px;padding:1px 7px;font-size:9px;font-weight:600;margin-left:4px">${c.proveedor_canonico}</span>`
+      : '';
     return `<div data-row="${i}" style="border:.5px solid var(--border-3);border-radius:8px;padding:8px 10px;margin-bottom:8px">
       <div style="display:flex;gap:8px;align-items:flex-start">
         <div style="flex:1;min-width:0">
-          <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${conceptoEsc}">${c.concepto}</p>
+          <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${conceptoEsc}">${c.concepto}${provChip}</p>
           <p style="font-size:10px;color:var(--text-2);margin-top:2px">
             <strong style="color:#dc2626">${eur2(c.total_importe)}</strong> · ${c.num_transacciones} tx · cat. <code>${c.categoria_actual || '—'}</code>${c.ultima_fecha ? ' · últ. ' + c.ultima_fecha : ''}
           </p>
