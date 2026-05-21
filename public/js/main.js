@@ -563,6 +563,24 @@ function rKPIs(R) {
   $('hdr-mg').style.color = clrG(tM);
   const nD = R.filter((r) => r.g === 'D').length;
   $('hdr-sub').textContent = `Mi Análisis · ${Ract.length} locales activos${nD ? ' (+ '+nD+' en salida)' : ''}${ctx.config.modoSociedad ? ' · Vista Sociedad' : ''}`;
+  // 3b — Etiqueta aclaratoria "Margen total red vs Margen vista actual".
+  // Total red = todos los locales activos SIN excluir Elche (independiente
+  // del modoSociedad). Vista actual = lo que se está calculando ahora
+  // (que sí respeta filtros).
+  const RAllRed = E.calcAllRed ? E.calcAllRed(ctx) : null;
+  let elcheR = null;
+  try { elcheR = E.calcElche ? E.calcElche(ctx) : null; } catch {}
+  const tFred = (RAllRed?.filter ? RAllRed.filter((r) => r.g !== 'D').reduce((s, r) => s + r.fac, 0) : tF)
+              + (ctx.config.modoSociedad && elcheR ? (elcheR.fac || 0) : 0);
+  const tMred = (RAllRed?.filter ? RAllRed.filter((r) => r.g !== 'D').reduce((s, r) => s + r.mg, 0) : tM)
+              + (ctx.config.modoSociedad && elcheR ? (elcheR.mg || 0) : 0);
+  const mPred = tFred > 0 ? tMred / tFred : 0;
+  const label = $('mg-comparativa');
+  if (label) {
+    label.textContent = ctx.config.modoSociedad
+      ? `Margen total red: ${pct(mPred)} (incluye Elche) · Margen vista actual: ${pct(mP)} (sociedad — sin Elche)`
+      : `Margen total red: ${pct(mPred)} · Margen vista actual: ${pct(mP)}`;
+  }
 }
 
 function rResumen(R) {
@@ -609,16 +627,19 @@ function rResumen(R) {
 
 function elcheCard(r) {
   if (!r) return '';
-  return `<div class="elche-banner">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.75rem">
-      <div><p style="font-size:11px;font-weight:500;color:#854F0B;margin-bottom:2px">LOCAL EXTERNO — SOLO DANI</p><p style="font-size:15px;font-weight:500">ELCHE</p></div>
-      <span class="bdg b${r.estado[0] === 'V' ? 'V' : r.estado[0] === 'A' ? 'J' : 'P'}">${r.estado}</span>
-    </div>
-    <div class="g4" style="font-size:12px">
-      <div><p style="color:var(--text-2)">Facturación</p><p style="font-weight:500">${eur(r.fac)}</p></div>
-      <div><p style="color:var(--text-2)">Margen €</p><p style="font-weight:500;color:${clrG(r.mg)}">${eur(r.mg)}</p></div>
-      <div><p style="color:var(--text-2)">Margen %</p><p style="font-weight:500">${pct(r.mgP)}</p></div>
-      <div><p style="color:var(--text-2)">Horas/sem</p><p style="font-weight:500">${r.hS.toFixed(1)} h</p></div>
+  return `<div style="margin-top:1.5rem;padding-top:1rem;border-top:2px dashed #D8B4FE">
+    <p style="font-size:11px;font-weight:500;color:#7E22CE;text-transform:uppercase;letter-spacing:1px;margin-bottom:.5rem">⌁ Grupo Hostelero Aires (separado del modo Sociedad)</p>
+    <div class="elche-banner">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.75rem">
+        <div><p style="font-size:11px;font-weight:500;color:#854F0B;margin-bottom:2px">LOCAL EXTERNO — SOLO DANI</p><p style="font-size:15px;font-weight:500">ELCHE</p></div>
+        <span class="bdg b${r.estado[0] === 'V' ? 'V' : r.estado[0] === 'A' ? 'J' : 'P'}">${r.estado}</span>
+      </div>
+      <div class="g4" style="font-size:12px">
+        <div><p style="color:var(--text-2)">Facturación</p><p style="font-weight:500">${eur(r.fac)}</p></div>
+        <div><p style="color:var(--text-2)">Margen €</p><p style="font-weight:500;color:${clrG(r.mg)}">${eur(r.mg)}</p></div>
+        <div><p style="color:var(--text-2)">Margen %</p><p style="font-weight:500">${pct(r.mgP)}</p></div>
+        <div><p style="color:var(--text-2)">Horas/sem</p><p style="font-weight:500">${r.hS.toFixed(1)} h</p></div>
+      </div>
     </div>
   </div>`;
 }
