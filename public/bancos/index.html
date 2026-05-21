@@ -198,14 +198,20 @@
 
   <div class="card" style="margin-bottom:1rem">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.5rem">
-      <p style="font-size:13px;font-weight:500">Distribución de gasto <span id="prov-donut-mode" style="color:var(--text-2);font-weight:400">(top 15 + Otros)</span></p>
-      <div style="display:flex;gap:6px">
-        <button class="tgl on" id="btn-donut-top" onclick="setDonutMode('top')">Top 15</button>
-        <button class="tgl" id="btn-donut-all" onclick="setDonutMode('all')">Ver todos</button>
+      <p style="font-size:13px;font-weight:500">Distribución de gasto <span id="prov-donut-mode" style="color:var(--text-2);font-weight:400">(&gt; 1% + Otros)</span></p>
+      <div style="display:flex;gap:6px;align-items:center">
+        <label style="font-size:11px;color:var(--text-2)">Umbral:</label>
+        <select id="prov-donut-threshold" onchange="setDonutThreshold(this.value)" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
+          <option value="0.10">&gt; 10%</option>
+          <option value="0.05">&gt; 5%</option>
+          <option value="0.01" selected>&gt; 1%</option>
+          <option value="0.005">&gt; 0,5%</option>
+          <option value="all">Ver todos</option>
+        </select>
         <button class="tgl" id="btn-donut-back" onclick="exitDonutDrill()" style="display:none">← Volver</button>
       </div>
     </div>
-    <p id="prov-donut-hint" style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Click sobre el segmento "Otros (N)" para hacer drill-down y ver los proveedores agrupados.</p>
+    <p id="prov-donut-hint" style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Proveedores por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down y ver el detalle.</p>
     <div style="display:grid;grid-template-columns:320px 1fr;gap:1.5rem;align-items:center">
       <div style="position:relative;height:300px"><canvas id="prov-donut"></canvas></div>
       <div id="prov-legend" style="display:grid;grid-template-columns:1fr;gap:4px;max-height:300px;overflow-y:auto"></div>

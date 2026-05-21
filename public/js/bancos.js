@@ -14,8 +14,9 @@ const state = {
   prov: {
     rows: [], total: 0, intra: 0, n_intra: 0, loaded: false, vista: null,
     sort: { col: 'total_importe', dir: -1 },     // -1 desc, +1 asc
-    donutMode: 'top',                              // 'top' | 'all' | 'drill'
-    drillRows: null,                               // filas del drill-down "Otros"
+    donutThreshold: 0.01,                          // % mínimo de participación: 0.10|0.05|0.01|0.005|null (Ver todos)
+    donutDrillOpen: false,                         // drill-down "Otros" abierto
+    donutDrillRows: null,                          // filas que cayeron bajo el umbral
   },
   user: null,
 };
@@ -367,39 +368,50 @@ function renderProvKpis() {
     : 'ninguna en este filtro';
 }
 
+function fmtThresholdPct(t) {
+  if (t == null) return '';
+  return (t * 100).toFixed(t < 0.01 ? 1 : 0).replace('.', ',');
+}
+
+function partitionByThreshold(rows, threshold) {
+  // porcentaje viene del backend como fracción 0..1 (a.total / totalGasto).
+  const above = rows.filter((r) => (r.porcentaje || 0) > threshold);
+  const below = rows.filter((r) => (r.porcentaje || 0) <= threshold);
+  return { above, below };
+}
+
 function renderProvDonut() {
   if (!chProvDonut) return;
   const rows = state.prov.rows;
-  const mode = state.prov.donutMode;
-  let labels = [], values = [], counts = [], drillOpen = false;
+  const threshold = state.prov.donutThreshold;
+  const drillOpen = !!state.prov.donutDrillOpen;
+  let labels = [], values = [], counts = [];
   let modeLbl = '';
 
-  if (mode === 'drill' && state.prov.drillRows) {
-    const drill = state.prov.drillRows;
+  if (drillOpen && state.prov.donutDrillRows) {
+    const drill = state.prov.donutDrillRows;
     labels = drill.map((r) => r.proveedor);
     values = drill.map((r) => r.total_importe);
     counts = drill.map((r) => r.num_transacciones);
-    drillOpen = true;
     modeLbl = `(drill: ${drill.length} proveedores agrupados como "Otros")`;
-  } else if (mode === 'all') {
+  } else if (threshold == null) {
     labels = rows.map((r) => r.proveedor);
     values = rows.map((r) => r.total_importe);
     counts = rows.map((r) => r.num_transacciones);
     modeLbl = `(${rows.length} proveedores, completo)`;
   } else {
-    const top = rows.slice(0, 15);
-    const rest = rows.slice(15);
-    const restTotal = rest.reduce((s, r) => s + r.total_importe, 0);
-    const restCount = rest.reduce((s, r) => s + r.num_transacciones, 0);
-    labels = top.map((r) => r.proveedor);
-    values = top.map((r) => r.total_importe);
-    counts = top.map((r) => r.num_transacciones);
-    if (rest.length > 0) {
-      labels.push(`Otros (${rest.length})`);
-      values.push(restTotal);
-      counts.push(restCount);
+    const { above, below } = partitionByThreshold(rows, threshold);
+    const belowTotal = below.reduce((s, r) => s + r.total_importe, 0);
+    const belowCount = below.reduce((s, r) => s + r.num_transacciones, 0);
+    labels = above.map((r) => r.proveedor);
+    values = above.map((r) => r.total_importe);
+    counts = above.map((r) => r.num_transacciones);
+    if (below.length > 0) {
+      labels.push(`Otros (${below.length})`);
+      values.push(belowTotal);
+      counts.push(belowCount);
     }
-    modeLbl = '(top 15 + Otros)';
+    modeLbl = `(> ${fmtThresholdPct(threshold)}% · ${above.length} + Otros)`;
   }
 
   const colors = labels.map((_, i) => COLORS_CAT[i % COLORS_CAT.length]);
@@ -410,12 +422,14 @@ function renderProvDonut() {
   chProvDonut.update();
 
   $('prov-donut-mode').textContent = modeLbl;
-  $('btn-donut-top').classList.toggle('on', mode === 'top' && !drillOpen);
-  $('btn-donut-all').classList.toggle('on', mode === 'all' && !drillOpen);
+  // El <select> de umbral se mantiene en su valor actual; sólo lo
+  // sincronizamos cuando setDonutThreshold lo recibe.
   $('btn-donut-back').style.display = drillOpen ? '' : 'none';
   $('prov-donut-hint').textContent = drillOpen
-    ? `Drill-down activo: estos son los ${state.prov.drillRows?.length || 0} proveedores que sumaban "Otros".`
-    : 'Click sobre el segmento "Otros (N)" para hacer drill-down y ver los proveedores agrupados.';
+    ? `Drill-down activo: estos son los ${state.prov.donutDrillRows?.length || 0} proveedores debajo del umbral.`
+    : (threshold == null
+        ? 'Mostrando todos los proveedores como slices individuales.'
+        : 'Proveedores por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down.');
 
   const tot = state.prov.total;
   $('prov-legend').innerHTML = labels.map((lab, i) => {
@@ -431,25 +445,30 @@ function renderProvDonut() {
   }).join('');
 }
 
-function setDonutMode(mode) {
-  state.prov.donutMode = mode;
-  state.prov.drillRows = null;
+function setDonutThreshold(val) {
+  const t = (val === 'all' || val === '' || val == null) ? null : parseFloat(val);
+  state.prov.donutThreshold = (Number.isFinite(t) && t > 0) ? t : null;
+  state.prov.donutDrillOpen = false;
+  state.prov.donutDrillRows = null;
+  // Sincronizar el <select> (cuando se llama desde código sin pasar por el onchange)
+  const sel = $('prov-donut-threshold');
+  if (sel) sel.value = state.prov.donutThreshold == null ? 'all' : String(state.prov.donutThreshold);
   renderProvDonut();
 }
 
 function enterDonutDrill() {
-  // Replicar la lógica de "Otros (N)" pero como dataset propio.
-  const rows = state.prov.rows;
-  const rest = rows.slice(15);
-  if (!rest.length) return;
-  state.prov.donutMode = 'drill';
-  state.prov.drillRows = rest;
+  const threshold = state.prov.donutThreshold;
+  if (threshold == null) return;  // en "Ver todos" no hay Otros
+  const { below } = partitionByThreshold(state.prov.rows, threshold);
+  if (!below.length) return;
+  state.prov.donutDrillOpen = true;
+  state.prov.donutDrillRows = below;
   renderProvDonut();
 }
 
 function exitDonutDrill() {
-  state.prov.donutMode = 'top';
-  state.prov.drillRows = null;
+  state.prov.donutDrillOpen = false;
+  state.prov.donutDrillRows = null;
   renderProvDonut();
 }
 
@@ -951,7 +970,7 @@ Object.assign(window, {
   loadProvRanking, exportProveedoresCsv,
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
-  setDonutMode, enterDonutDrill, exitDonutDrill,
+  setDonutThreshold, enterDonutDrill, exitDonutDrill,
   // Evolución temporal
   loadEvolucion, evRenderSugerencias, evSeleccionar, evQuitar, evAplicarTopMatch,
 });
