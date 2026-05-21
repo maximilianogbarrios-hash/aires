@@ -466,3 +466,47 @@ habilitarlo por usuario desde /admin sin tocar código.
 permiso `export_w` está disponible para que futuros endpoints
 declaren `requirePerm('export_w')` y devuelvan 403 a clientes que
 intenten saltarse la UI.
+
+## Mejora F — Suelo de fecha 2026-01 para no-admin en /bancos → Proveedores (2026-05-21)
+
+**Objetivo**: para roles que no son admin ni socio, restringir el
+análisis de proveedores (donut, tabla, drill-down, evolución) a datos
+de enero 2026 en adelante. admin/socio sin restricción.
+
+**Cambios backend** (`routes/bancos.js`):
+
+- Constante `PERIODO_FLOOR_NO_ADMIN = '2026-01'`.
+- Helper `clampPeriodoParaNoAdmin(req, params)` que:
+  - admin/socio → devuelve los params sin tocar.
+  - no-admin → si `periodo < suelo` o `periodo_hasta < suelo`,
+    marca `fueraDeRango=true` (el endpoint corto-circuita con
+    respuesta vacía + `periodo_floor_aplicado`).
+  - no-admin → si `periodo_desde < suelo`, lo eleva al suelo.
+- Aplicado en `/proveedores`, `/grupo-detalle` y
+  `/proveedor-evolucion`. En este último, los params se llaman
+  `desde`/`hasta` y la lógica se inlinea.
+
+**Cambios frontend**:
+
+- `public/bancos/index.html`: nota visible `prov-period-floor-note`
+  ("Solo se pueden ver datos desde enero 2026."), oculta por defecto.
+- `public/js/bancos.js#initProvFiltros`: para no-admin se filtra
+  `state.periodos` a `p >= '2026-01'` antes de poblar los selectores
+  Desde/Hasta + se muestra la nota. El default Desde/Hasta usa la
+  lista filtrada (no se cae al periodo más antiguo del rango total).
+
+**E2E smoke** (server corriendo local, sesiones inyectadas en `ab_session`):
+
+| Caso                                        | Resultado |
+|---------------------------------------------|-----------|
+| A) admin periodo=2025-08                    | sin restricción: 395 010 € · 43 grupos |
+| B) gerente periodo=2025-08                  | empty + floor=2026-01 (`total_gasto=0`) |
+| C) gerente desde=2025-10 hasta=2026-03      | clamp desde→2026-01: 413 410 € · 33 grupos |
+| D) gerente periodo=2026-02                  | datos normales: 131 376 € · 22 grupos |
+| E) gerente rango 2025-08..2025-12           | empty + floor (sin overlap) |
+| F) gerente /grupo-detalle periodo=2025-08   | empty + floor |
+| G) gerente /proveedor-evolucion 2025-06..2026-04 | 4 meses (2026-01..2026-04), desde clamped |
+
+**Defense in depth**: el filtro UI oculta las opciones; el backend
+clampea (o devuelve vacío) en los 3 endpoints aunque el cliente
+intente saltarse el selector via URL/herramienta externa.

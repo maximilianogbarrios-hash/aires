@@ -326,20 +326,31 @@ function initProvFiltros() {
       sSel.appendChild(o);
     }
   }
+  // Suelo de fecha para roles no-admin/socio: solo ven datos desde
+  // enero 2026 en adelante. Las opciones anteriores quedan ocultas
+  // en ambos selectores (Desde y Hasta). El backend también clampea
+  // (defense in depth) en /proveedores, /grupo-detalle y
+  // /proveedor-evolucion.
+  const FLOOR = '2026-01';
+  const periodosPermitidos = rolEsAdmin()
+    ? state.periodos
+    : state.periodos.filter((p) => p >= FLOOR);
   for (const id of ['prov-periodo-desde', 'prov-periodo-hasta']) {
     const sel = $(id);
     if (sel.options.length === 0) {
-      for (const p of state.periodos) {
+      for (const p of periodosPermitidos) {
         const o = document.createElement('option');
         o.value = p; o.textContent = PERIOD_LABELS(p);
         sel.appendChild(o);
       }
     }
   }
+  const note = $('prov-period-floor-note');
+  if (note) note.style.display = rolEsAdmin() ? 'none' : '';
   // Default: mes más reciente (=hasta) y 2 meses antes (=desde).
-  if (state.periodos.length > 0) {
-    const last = state.periodos[state.periodos.length - 1];
-    const first = state.periodos.length >= 3 ? state.periodos[state.periodos.length - 3] : state.periodos[0];
+  if (periodosPermitidos.length > 0) {
+    const last = periodosPermitidos[periodosPermitidos.length - 1];
+    const first = periodosPermitidos.length >= 3 ? periodosPermitidos[periodosPermitidos.length - 3] : periodosPermitidos[0];
     if (!$('prov-periodo-desde').value) $('prov-periodo-desde').value = first;
     if (!$('prov-periodo-hasta').value) $('prov-periodo-hasta').value = last;
   }

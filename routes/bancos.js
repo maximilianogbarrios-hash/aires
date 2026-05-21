@@ -49,8 +49,31 @@ const CATEGORIAS_DIRECCION_FUSE = new Set([
 ]);
 const FUSE_PROVEEDOR = 'Gastos Dirección';
 
+// Suelo de fecha para roles no-admin/socio en /bancos → Proveedores
+// (y sus drill-downs). Solo ven datos desde enero 2026 en adelante.
+// admin/socio sin restricción.
+const PERIODO_FLOOR_NO_ADMIN = '2026-01';
+
 function esAdminLike(req) {
   return ROLES_ADMIN.has(req.session?.user?.role);
+}
+
+// Aplica el suelo de periodo para roles no-admin/socio. Recibe los
+// params crudos y devuelve los valores efectivos a usar en la query.
+// Si el rango entero queda fuera del suelo, devuelve { fueraDeRango: true }
+// para que el endpoint pueda corto-circuitar con respuesta vacía.
+function clampPeriodoParaNoAdmin(req, { periodo, periodo_desde, periodo_hasta }) {
+  if (esAdminLike(req)) return { periodo, periodo_desde, periodo_hasta, fueraDeRango: false };
+  const F = PERIODO_FLOOR_NO_ADMIN;
+  if (periodo && periodo < F) return { periodo, periodo_desde, periodo_hasta, fueraDeRango: true };
+  if (periodo_hasta && periodo_hasta < F) return { periodo, periodo_desde, periodo_hasta, fueraDeRango: true };
+  const desdeClamped = periodo_desde && periodo_desde < F ? F : periodo_desde;
+  return {
+    periodo,
+    periodo_desde: desdeClamped,
+    periodo_hasta,
+    fueraDeRango: false,
+  };
 }
 
 // Carga los overrides admin sobre la membresía del slice "Gastos Dirección".
@@ -329,9 +352,25 @@ router.get('/cruces', async (req, res) => {
 router.get('/proveedores', async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
-    const periodo = req.query.periodo || null;
-    const periodo_desde = req.query.periodo_desde || null;
-    const periodo_hasta = req.query.periodo_hasta || null;
+    const clamped = clampPeriodoParaNoAdmin(req, {
+      periodo: req.query.periodo || null,
+      periodo_desde: req.query.periodo_desde || null,
+      periodo_hasta: req.query.periodo_hasta || null,
+    });
+    if (clamped.fueraDeRango) {
+      return res.json({
+        filtros: { sociedad_id, periodo: clamped.periodo, periodo_desde: clamped.periodo_desde, periodo_hasta: clamped.periodo_hasta, vista: 'operativo' },
+        vista_efectiva: 'operativo',
+        total_gasto: 0, total_excluido_intra_grupo: 0, n_excluido_intra_grupo: 0,
+        n_grupos_finales: 0, rollup_menores: null,
+        fusion_direccion: null,
+        proveedores: [],
+        periodo_floor_aplicado: PERIODO_FLOOR_NO_ADMIN,
+      });
+    }
+    const periodo = clamped.periodo;
+    const periodo_desde = clamped.periodo_desde;
+    const periodo_hasta = clamped.periodo_hasta;
 
     const vista = vistaEfectivaParaRol(req.session?.user?.role, req.query.vista);
 
@@ -570,7 +609,7 @@ router.get('/proveedores', async (req, res) => {
 router.get('/proveedor-evolucion', async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
-    const desde = req.query.desde || null;
+    let desde = req.query.desde || null;
     const hasta = req.query.hasta || null;
     const proveedores = (req.query.proveedores || '')
       .split(',').map((s) => s.trim()).filter(Boolean);
@@ -580,6 +619,15 @@ router.get('/proveedor-evolucion', async (req, res) => {
 
     if (!desde || !hasta) return res.status(400).json({ error: 'desde y hasta requeridos (YYYY-MM)' });
     if (!proveedores.length && !categorias.length) return res.json({ meses: [], series: [], series_yoy: [] });
+
+    // Suelo de fecha para no-admin/socio: solo datos desde enero 2026.
+    // Si hasta < suelo, no hay rango visible → devolvemos vacío.
+    // Si desde < suelo, lo subimos al suelo.
+    if (!esAdminLike(req)) {
+      const F = PERIODO_FLOOR_NO_ADMIN;
+      if (hasta < F) return res.json({ meses: [], proveedores: [], categorias: [], yoy: null, periodo_floor_aplicado: F });
+      if (desde < F) desde = F;
+    }
 
     function shiftYear(periodo, delta) {
       const [y, m] = periodo.split('-').map(Number);
@@ -777,9 +825,23 @@ router.get('/grupo-detalle', async (req, res) => {
     const grupo = String(req.query.grupo || '').trim();
     if (!grupo) return res.status(400).json({ error: 'grupo requerido' });
     const sociedad_id = req.query.sociedad_id || null;
-    const periodo = req.query.periodo || null;
-    const periodo_desde = req.query.periodo_desde || null;
-    const periodo_hasta = req.query.periodo_hasta || null;
+    const clamped = clampPeriodoParaNoAdmin(req, {
+      periodo: req.query.periodo || null,
+      periodo_desde: req.query.periodo_desde || null,
+      periodo_hasta: req.query.periodo_hasta || null,
+    });
+    if (clamped.fueraDeRango) {
+      return res.json({
+        grupo,
+        es_bucket_menores: false,
+        proveedores_menores: null,
+        total: 0, num_conceptos: 0, conceptos: [],
+        periodo_floor_aplicado: PERIODO_FLOOR_NO_ADMIN,
+      });
+    }
+    const periodo = clamped.periodo;
+    const periodo_desde = clamped.periodo_desde;
+    const periodo_hasta = clamped.periodo_hasta;
 
     // Bloqueo de drill-down sobre grupos sensibles para roles no-admin.
     // El slice "Gastos Dirección" no se expande, y tampoco se permite
