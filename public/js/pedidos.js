@@ -328,7 +328,13 @@
             </tr>`;
           }).join('')}
         </tbody>
-      </table>`;
+      </table>
+      <p style="font-size:10px;color:var(--text-2);margin-top:.5rem;padding:0 .25rem">
+        Atajos: <kbd style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;border:.5px solid var(--border-3);font-size:9px">Enter</kbd> guarda y baja al mismo proveedor del local siguiente ·
+        <kbd style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;border:.5px solid var(--border-3);font-size:9px">Tab</kbd> pasa al siguiente proveedor del mismo local ·
+        Click en input selecciona todo automáticamente ·
+        Diferencia compara pago bancario contra confirmado (o sugerido si no editaste).
+      </p>`;
     $('ped-mp-table').innerHTML = html;
   }
 
