@@ -73,7 +73,22 @@ router.post('/logout', (req, res) => {
 
 router.get('/me', (req, res) => {
   if (!req.session?.user) return res.status(401).json({ error: 'unauthorized' });
-  res.json({ user: req.session.user });
+  // También devolvemos flags y sub-tabs por rol para /bancos (single source
+  // of truth en backend; el frontend NO hardcodea matrices).
+  const { PERMS, subTabsBancosPermitidas } = require('../lib/roles');
+  const role = req.session.user.role;
+  res.json({
+    user: req.session.user,
+    sub_tabs_bancos: subTabsBancosPermitidas(role),
+    flags: {
+      bancos:                !!PERMS.bancos.includes(role),
+      bancos_upload_admin:   !!PERMS.bancos_upload_admin.includes(role),
+      export_w:              !!PERMS.export_w.includes(role),
+      print_w:               !!PERMS.print_w.includes(role),
+      dashboard_kpis:        !!PERMS.dashboard_kpis.includes(role),
+      vista_sociedad:        !!PERMS.vista_sociedad.includes(role),
+    },
+  });
 });
 
 // ─── 2FA management (requiere full auth) ──────────────────────────────

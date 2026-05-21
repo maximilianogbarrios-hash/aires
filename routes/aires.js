@@ -1,6 +1,6 @@
 const express = require('express');
 const { query, one, many, tx } = require('../lib/db');
-const { requireAuth } = require('../lib/auth');
+const { requireAuth, requirePerm } = require('../lib/auth');
 
 const router = express.Router();
 
@@ -19,13 +19,29 @@ router.get('/config', async (req, res) => {
   }
 });
 
-router.put('/config', async (req, res) => {
+// ─── CONFIG · PUT ────────────────────────────────────────────────────
+// Requiere config_w (admin/socio/gerente). Para gerente: cada cambio
+// numérico queda registrado en ab_parametros_historial con valor anterior
+// y nuevo (audita quién bajó margen, subió costos, etc.).
+router.put('/config', requirePerm('config_w'), async (req, res) => {
   try {
     const body = req.body || {};
     const allowed = new Set([
       'pctMP', 'pctPersonal', 'pctImpuestos', 'pctPublicidad', 'euroHora',
       'incluirGlovo', 'modoSociedad', 'poolGroups', 'poolProduccion', 'poolEspeciales',
     ]);
+    const camposNumericos = new Set(['pctMP','pctPersonal','pctImpuestos','pctPublicidad','euroHora','poolProduccion','poolEspeciales']);
+    const role = req.session?.user?.role;
+    const email = req.session?.user?.email || 'desconocido';
+    const debeLoguear = role === 'gerente';
+
+    // Snapshot del estado previo (para diffs en el log).
+    const prev = {};
+    if (debeLoguear) {
+      const rows = await many('SELECT clave, valor FROM ab_config');
+      for (const r of rows) prev[r.clave] = r.valor;
+    }
+
     await tx(async (client) => {
       for (const [k, v] of Object.entries(body)) {
         if (!allowed.has(k)) continue;
@@ -34,6 +50,20 @@ router.put('/config', async (req, res) => {
            ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`,
           [k, JSON.stringify(v)]
         );
+        // Log de cambios numéricos para gerente.
+        if (debeLoguear && camposNumericos.has(k)) {
+          const before = prev[k];
+          const beforeNum = (typeof before === 'number' || (typeof before === 'string' && before.trim() !== ''))
+            ? Number(before) : null;
+          const afterNum = (v == null || v === '') ? null : Number(v);
+          if (beforeNum !== afterNum) {
+            await client.query(
+              `INSERT INTO ab_parametros_historial (usuario_email, campo, valor_anterior, valor_nuevo)
+               VALUES ($1, $2, $3, $4)`,
+              [email, k, beforeNum, afterNum]
+            );
+          }
+        }
       }
     });
     res.json({ ok: true });
@@ -438,7 +468,7 @@ router.get('/presupuesto/contexto', async (req, res) => {
   }
 });
 
-const { tabsPermitidas, subTabsPedidosPermitidas, PERMS } = require('../lib/roles');
+const { tabsPermitidas, subTabsPedidosPermitidas, subTabsBancosPermitidas, PERMS } = require('../lib/roles');
 
 // ─── BOOTSTRAP: todo lo que necesita el front en un solo request ──────
 router.get('/bootstrap', async (req, res) => {
@@ -476,15 +506,19 @@ router.get('/bootstrap', async (req, res) => {
     const role = req.session?.user?.role;
     const tabs = role ? tabsPermitidas(role) : [];
     const sub_tabs_pedidos = role ? subTabsPedidosPermitidas(role) : [];
+    const sub_tabs_bancos = role ? subTabsBancosPermitidas(role) : [];
     const flags = {
-      dashboard_kpis: !!(role && PERMS.dashboard_kpis.includes(role)),
-      vista_sociedad: !!(role && PERMS.vista_sociedad.includes(role)),
-      config_w:       !!(role && PERMS.config_w.includes(role)),
-      bancos:         !!(role && PERMS.bancos.includes(role)),
-      pedidos_pagar:  !!(role && PERMS.pedidos_pagar_w.includes(role)),
-      export_w:       !!(role && PERMS.export_w.includes(role)),
+      dashboard_kpis:        !!(role && PERMS.dashboard_kpis.includes(role)),
+      vista_sociedad:        !!(role && PERMS.vista_sociedad.includes(role)),
+      config_w:              !!(role && PERMS.config_w.includes(role)),
+      config_w_log_only:     !!(role && PERMS.config_w_log_only.includes(role)),
+      bancos:                !!(role && PERMS.bancos.includes(role)),
+      bancos_upload_admin:   !!(role && PERMS.bancos_upload_admin.includes(role)),
+      pedidos_pagar:         !!(role && PERMS.pedidos_pagar_w.includes(role)),
+      export_w:              !!(role && PERMS.export_w.includes(role)),
+      print_w:               !!(role && PERMS.print_w.includes(role)),
     };
-    res.json({ config, locales, historial, presupuesto, user: req.session.user, tabs, sub_tabs_pedidos, flags });
+    res.json({ config, locales, historial, presupuesto, user: req.session.user, tabs, sub_tabs_pedidos, sub_tabs_bancos, flags });
   } catch (e) {
     console.error('[aires.bootstrap]', e);
     res.status(500).json({ error: 'internal' });
