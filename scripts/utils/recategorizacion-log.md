@@ -329,3 +329,58 @@ usuario puede reclasificarlo desde el sidebar cuando confirme qué es.
 recalculados, 0 errores. Script: `scripts/utils/ronda7-recategorizar.js`
 (idempotente, soporta `--dry-run`).
 
+### Ronda 8 — Raba Buildings → INTRAGRUPO + Grupo Hostelero Sl + relax INTRAGRUPO rule (2026-05-21)
+
+**Contexto:** los 14 movimientos relacionados con Raba Buildings SL
+(una entidad receptora externa al grupo Aires, pero que el usuario
+quiere tratar como intra-grupo para análisis) estaban repartidos en
+INTRAGRUPO / FINANCIERO / INGRESO_TRANSFERENCIA / PROVEEDOR_OTROS.
+
+**Cambios:**
+
+1) `lib/bank/normalizers.js` — añadido `'Grupo Hostelero Sl'` a
+   `INTRA_GRUPO_KEYWORDS`. Captura variantes truncadas como
+   "Traspaso: Aportacion/Prestamo Grupo Hostelero Sl A Raba Buildings Sl"
+   que antes caían en FINANCIERO porque no matcheaba "Grupo Hostelero
+   Aires" (con "Aires").
+
+2) `routes/bancos.js` `/upload-extracto` — relajada la protección
+   INTRAGRUPO: las reglas DB que **confirman** INTRAGRUPO ahora se
+   aplican (antes se rechazaban todas). Las que **cambian** a otra
+   categoría siguen rechazadas. Permite que reglas como `raba →
+   INTRAGRUPO / Raba Buildings` agreguen `proveedor_normalizado` sin
+   ser bloqueadas:
+
+   ```js
+   if (m.categoria === 'INTRAGRUPO' && r.categoria !== 'INTRAGRUPO') continue;
+   ```
+
+3) Regla DB nueva (`ab_reglas_normalizacion` id=48):
+   `patron='raba'`, `tipo_match='ilike'`,
+   `categoria='INTRAGRUPO'`, `proveedor_normalizado='Raba Buildings'`,
+   `prioridad=120`.
+
+4) **UPDATE retroactivo: 14 filas** (todas las que matchean
+   `concepto ILIKE '%raba%'`):
+   - 12 combos sociedad×periodo recalculados.
+   - Incluye reclasificación de la fila anómala de hostelero del
+     12/8/2025 (FINANCIERO → INTRAGRUPO).
+   - También las 2 entradas INGRESO_TRANSFERENCIA (+26 000€ del
+     2/6/2025 y +2 702,68€ del 1/12/2025) pasan a INTRAGRUPO según
+     spec del usuario ("TODOS los movimientos").
+
+| sociedad   | filas | neto |
+|---|---:|---:|
+| alicante   | 2 |  −6 600€ |
+| hostelero  | 4 |  −6 000€ |
+| smart      | 1 |  −3 500€ |
+| benidorm   | 1 |  −2 800€ |
+| murcia     | 6 |    +501€ |
+| **total**  | **14** | **−18 398€** |
+
+Resultado en el donut: las 14 filas quedan excluidas automáticamente
+del análisis de proveedores (esIntraGrupo() las detecta como
+INTRAGRUPO, igual que las transferencias entre las 5 sociedades del
+grupo Aires).
+
+
