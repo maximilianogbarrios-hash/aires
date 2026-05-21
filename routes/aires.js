@@ -31,9 +31,10 @@ router.put('/config', requirePerm('config_w'), async (req, res) => {
       'incluirGlovo', 'modoSociedad', 'poolGroups', 'poolProduccion', 'poolEspeciales',
     ]);
     const camposNumericos = new Set(['pctMP','pctPersonal','pctImpuestos','pctPublicidad','euroHora','poolProduccion','poolEspeciales']);
-    const role = req.session?.user?.role;
     const email = req.session?.user?.email || 'desconocido';
-    const debeLoguear = role === 'gerente';
+    // Spec Bloque 2: el log de auditoría aplica a TODOS los roles que pueden
+    // editar (admin/socio/gerente). Antes sólo gerente quedaba registrado.
+    const debeLoguear = true;
 
     // Snapshot del estado previo (para diffs en el log).
     const prev = {};
@@ -469,6 +470,24 @@ router.get('/presupuesto/contexto', async (req, res) => {
 });
 
 const { tabsPermitidas, subTabsPedidosPermitidas, subTabsBancosPermitidas, PERMS } = require('../lib/roles');
+
+// GET /api/v1/aires/parametros/last-mod
+// Última modificación registrada en ab_parametros_historial. Devuelve
+// { fecha, usuario_email, campo, valor_anterior, valor_nuevo } o {} si
+// nunca se modificó.
+router.get('/parametros/last-mod', async (req, res) => {
+  try {
+    const row = await one(
+      `SELECT usuario_email, campo, valor_anterior::float8 AS valor_anterior,
+              valor_nuevo::float8 AS valor_nuevo, fecha
+         FROM ab_parametros_historial ORDER BY fecha DESC LIMIT 1`
+    );
+    res.json(row || {});
+  } catch (e) {
+    console.error('[aires.params.lastmod]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
 
 // ─── BOOTSTRAP: todo lo que necesita el front en un solo request ──────
 router.get('/bootstrap', async (req, res) => {

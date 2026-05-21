@@ -65,10 +65,12 @@ async function boot() {
     setUserUI();
     initCharts();
     bindParamSliders();
+    _captureParamsOriginal();
     buildSrvTable();
     buildFacInputs();
     buildLocFilter();
     update();
+    fetchLastParamsMod();
   } catch (e) {
     console.error('[boot]', e);
     Api.pill('Error cargando datos', true);
@@ -197,7 +199,35 @@ function syncSliderLabels() {
   $('vHora').textContent = (+$('sHora').value).toFixed(2).replace('.',',') + ' €';
 }
 
+// Buffer de cambios pendientes a los parámetros (no auto-guarda, espera
+// "Confirmar parámetros"). Estado original = snapshot al boot/last confirm.
+let _paramsOriginal = null;
+function _captureParamsOriginal() {
+  _paramsOriginal = {
+    pctMP: ctx.config.pctMP, pctPersonal: ctx.config.pctPersonal,
+    pctImpuestos: ctx.config.pctImpuestos, pctPublicidad: ctx.config.pctPublicidad,
+    euroHora: ctx.config.euroHora,
+  };
+}
+function _paramsTienenCambios() {
+  if (!_paramsOriginal) return false;
+  return Object.keys(_paramsOriginal).some((k) => +ctx.config[k] !== +_paramsOriginal[k]);
+}
+function _showParamsConfirmBar() {
+  const bar = $('params-confirm-bar');
+  if (bar) bar.style.display = _paramsTienenCambios() ? 'flex' : 'none';
+  // Highlight de cada slider con cambios.
+  ['sMP','sPers','sImp','sPub','sHora'].forEach((id) => {
+    const inp = $(id); if (!inp) return;
+    const key = id === 'sMP' ? 'pctMP' : id === 'sPers' ? 'pctPersonal'
+              : id === 'sImp' ? 'pctImpuestos' : id === 'sPub' ? 'pctPublicidad' : 'euroHora';
+    const dirty = _paramsOriginal && (+ctx.config[key] !== +_paramsOriginal[key]);
+    inp.classList.toggle('param-dirty', !!dirty);
+  });
+}
+
 function syncSlider() {
+  if (!_paramsOriginal) _captureParamsOriginal();
   ctx.config.pctMP = +$('sMP').value;
   ctx.config.pctPersonal = +$('sPers').value;
   ctx.config.pctImpuestos = +$('sImp').value;
@@ -206,13 +236,53 @@ function syncSlider() {
   syncSliderLabels();
   buildSrvTable();
   update();
-  Api.debouncedSave('config', () => Api.saveConfig({
-    pctMP: ctx.config.pctMP,
-    pctPersonal: ctx.config.pctPersonal,
-    pctImpuestos: ctx.config.pctImpuestos,
-    pctPublicidad: ctx.config.pctPublicidad,
-    euroHora: ctx.config.euroHora,
-  }));
+  _showParamsConfirmBar();
+  // NO auto-guarda — espera confirmar.
+}
+
+async function confirmParams() {
+  try {
+    await Api.saveConfig({
+      pctMP: ctx.config.pctMP,
+      pctPersonal: ctx.config.pctPersonal,
+      pctImpuestos: ctx.config.pctImpuestos,
+      pctPublicidad: ctx.config.pctPublicidad,
+      euroHora: ctx.config.euroHora,
+    });
+    Api.pill('✓ Parámetros confirmados');
+    _captureParamsOriginal();
+    _showParamsConfirmBar();
+    await fetchLastParamsMod();
+  } catch (e) {
+    Api.pill('Error: ' + e.message, true);
+  }
+}
+
+function discardParams() {
+  if (!_paramsOriginal) return;
+  Object.assign(ctx.config, _paramsOriginal);
+  $('sMP').value = ctx.config.pctMP;
+  $('sPers').value = ctx.config.pctPersonal;
+  $('sImp').value = ctx.config.pctImpuestos;
+  $('sPub').value = ctx.config.pctPublicidad;
+  $('sHora').value = ctx.config.euroHora;
+  syncSliderLabels();
+  buildSrvTable();
+  update();
+  _showParamsConfirmBar();
+}
+
+// "Última modificación: hoy 14:32 por luciano.todarello@..."
+async function fetchLastParamsMod() {
+  try {
+    const j = await Api.lastParamsMod();
+    const el = $('params-last-mod');
+    if (!el) return;
+    if (!j || !j.fecha) { el.textContent = 'Sin modificaciones registradas todavía.'; return; }
+    const f = new Date(j.fecha);
+    const fechaTxt = f.toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+    el.textContent = `Última modificación: ${fechaTxt} por ${j.usuario_email} (${j.campo}: ${j.valor_anterior} → ${j.valor_nuevo})`;
+  } catch {}
 }
 
 function syncPool() {
@@ -250,11 +320,15 @@ function buildSrvTable() {
     const ratioClr = ratio > 0.1 ? '#dc2626' : ratio > 0.07 ? '#BA7517' : '#16a34a';
     const bdg = l.dani_only ? 'E' : l.grupo;
     const bdgLbl = l.dani_only ? 'Dani' : l.grupo;
+    const dAlq = _srvDirty[l.id]?.alquiler;
+    const dSum = _srvDirty[l.id]?.suministros;
+    const dirtyA = dAlq && +dAlq.from !== +dAlq.to;
+    const dirtyS = dSum && +dSum.from !== +dSum.to;
     return `<tr>
       <td style="font-weight:500">${l.nombre_display}</td>
       <td><span class="bdg b${bdg}">${bdgLbl}</span></td>
-      <td style="text-align:right"><input class="num-inp" type="number" value="${alq}" min="0" step="50" onchange="updLocalField('${l.id}','alquiler',this.value)"></td>
-      <td style="text-align:right"><input class="num-inp" type="number" value="${sum_}" min="0" step="50" onchange="updLocalField('${l.id}','suministros',this.value)"></td>
+      <td style="text-align:right" class="${dirtyA ? 'srv-cell-dirty' : ''}">${dirtyA ? '<span style="color:#BA7517">✏️</span> ' : ''}<input class="num-inp" type="number" value="${alq}" min="0" step="50" onchange="updLocalField('${l.id}','alquiler',this.value)"></td>
+      <td style="text-align:right" class="${dirtyS ? 'srv-cell-dirty' : ''}">${dirtyS ? '<span style="color:#BA7517">✏️</span> ' : ''}<input class="num-inp" type="number" value="${sum_}" min="0" step="50" onchange="updLocalField('${l.id}','suministros',this.value)"></td>
       <td style="text-align:right;font-weight:500">${eur(alq + sum_)}</td>
       <td style="text-align:right">${eur(fac)}</td>
       <td style="text-align:right;font-weight:500;color:${ratioClr}">${pct(ratio)}</td>
@@ -281,13 +355,89 @@ function buildLocFilter() {
 }
 
 // ─── Update handlers ───────────────────────────────────────────────────
+// Buffer de cambios pendientes para alquiler/suministros/fac_mi_analisis.
+// La estructura: { localId: { field: { from, to } } }
+const _srvDirty = {};
+function _srvTieneCambios() {
+  for (const lid of Object.keys(_srvDirty)) {
+    for (const f of Object.keys(_srvDirty[lid])) {
+      const d = _srvDirty[lid][f];
+      if (d && +d.from !== +d.to) return true;
+    }
+  }
+  return false;
+}
+function _srvCountDirty() {
+  let n = 0;
+  for (const lid of Object.keys(_srvDirty)) {
+    for (const f of Object.keys(_srvDirty[lid])) {
+      const d = _srvDirty[lid][f];
+      if (d && +d.from !== +d.to) n++;
+    }
+  }
+  return n;
+}
+function _showSrvConfirmBar() {
+  const bar = $('srv-confirm-bar');
+  const n = _srvCountDirty();
+  if (bar) bar.style.display = n > 0 ? 'flex' : 'none';
+  const txt = $('srv-confirm-text');
+  if (txt) txt.textContent = `✏️ ${n} celda${n === 1 ? '' : 's'} sin guardar en alquiler/suministros`;
+}
+
+// Las celdas dirty se marcan con .srv-cell-dirty (estilo amarillo en CSS).
 function updLocalField(id, field, val) {
   const l = locById(id); if (!l) return;
   const num = (val === '' || val == null) ? null : Math.max(0, +val || 0);
+  // Capturar valor original la primera vez que se toca esta celda.
+  _srvDirty[id] = _srvDirty[id] || {};
+  if (!(field in _srvDirty[id])) {
+    _srvDirty[id][field] = { from: l[field], to: num };
+  } else {
+    _srvDirty[id][field].to = num;
+  }
   l[field] = num;
   buildSrvTable();
   update();
-  Api.debouncedSave(`local.${id}.${field}`, () => Api.saveLocal(id, { [field]: num }));
+  _showSrvConfirmBar();
+}
+
+async function confirmSrv() {
+  const dirty = [];
+  for (const lid of Object.keys(_srvDirty)) {
+    for (const f of Object.keys(_srvDirty[lid])) {
+      const d = _srvDirty[lid][f];
+      if (d && +d.from !== +d.to) dirty.push({ localId: lid, field: f, value: d.to });
+    }
+  }
+  if (!dirty.length) return;
+  try {
+    // Guardar cada fila modificada.
+    for (const d of dirty) {
+      await Api.saveLocal(d.localId, { [d.field]: d.value });
+    }
+    // Reset buffer.
+    for (const lid of Object.keys(_srvDirty)) delete _srvDirty[lid];
+    _showSrvConfirmBar();
+    buildSrvTable();
+    Api.pill('✓ Cambios guardados');
+  } catch (e) {
+    Api.pill('Error: ' + e.message, true);
+  }
+}
+
+function discardSrv() {
+  for (const lid of Object.keys(_srvDirty)) {
+    const l = locById(lid);
+    if (!l) continue;
+    for (const f of Object.keys(_srvDirty[lid])) {
+      l[f] = _srvDirty[lid][f].from;
+    }
+    delete _srvDirty[lid];
+  }
+  _showSrvConfirmBar();
+  buildSrvTable();
+  update();
 }
 
 function updHoras(id, val) {
@@ -1055,7 +1205,17 @@ function togglePanel() {
 }
 
 // ─── Expose to HTML (onclick attrs) ────────────────────────────────────
+// Alerta beforeunload si hay cambios sin guardar (parámetros o servicios).
+window.addEventListener('beforeunload', (ev) => {
+  if (_paramsTienenCambios() || _srvTieneCambios()) {
+    ev.preventDefault();
+    ev.returnValue = 'Tenés cambios sin guardar en parámetros o alquiler/suministros.';
+    return ev.returnValue;
+  }
+});
+
 Object.assign(window, {
+  confirmParams, discardParams, confirmSrv, discardSrv,
   setSoc, togGlovo, syncSlider, syncPool, togglePanel,
   updLocalField, updHoras, togLoc,
   updPresFac, updPresReal, onPresMonthChange, togglePresWeek, updFacSemanal,

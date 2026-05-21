@@ -64,10 +64,10 @@
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem 2rem;margin-bottom:1rem">
       <div>
         <p style="font-size:11px;font-weight:500;color:var(--text-2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px">% sobre facturación</p>
-        <div class="pr"><span class="pl">Materia Prima</span><input type="range" min="30" max="50" step=".5" id="sMP" oninput="syncSlider()"><span class="pv" id="vMP">—</span></div>
-        <div class="pr"><span class="pl">Personal</span><input type="range" min="20" max="45" step=".5" id="sPers" oninput="syncSlider()"><span class="pv" id="vPers">—</span></div>
-        <div class="pr"><span class="pl">Impuestos</span><input type="range" min="0" max="5" step=".1" id="sImp" oninput="syncSlider()"><span class="pv" id="vImp">—</span></div>
-        <div class="pr"><span class="pl">Publicidad</span><input type="range" min="0" max="3" step=".1" id="sPub" oninput="syncSlider()"><span class="pv" id="vPub">—</span></div>
+        <div class="pr"><span class="pl">Materia Prima</span><input type="range" min="0" max="60" step=".5" id="sMP" oninput="syncSlider()"><span class="pv" id="vMP">—</span></div>
+        <div class="pr"><span class="pl">Personal</span><input type="range" min="0" max="50" step=".5" id="sPers" oninput="syncSlider()"><span class="pv" id="vPers">—</span></div>
+        <div class="pr"><span class="pl">Impuestos</span><input type="range" min="0" max="15" step=".1" id="sImp" oninput="syncSlider()"><span class="pv" id="vImp">—</span></div>
+        <div class="pr"><span class="pl">Publicidad</span><input type="range" min="0" max="10" step=".1" id="sPub" oninput="syncSlider()"><span class="pv" id="vPub">—</span></div>
         <div class="pr"><span class="pl">€/hora con SS</span><input type="range" min="8" max="20" step=".5" id="sHora" oninput="syncSlider()"><span class="pv" id="vHora">—</span></div>
       </div>
       <div>
@@ -85,11 +85,30 @@
         </div>
       </div>
     </div>
+
+    <!-- BARRA DE CONFIRMACIÓN PARÁMETROS -->
+    <div id="params-confirm-bar" style="display:none;padding:10px 14px;background:#FEF3C7;border:1px solid #FBBF24;border-radius:8px;margin-bottom:1rem;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">
+      <span style="font-size:12px;color:#78350F;font-weight:500">✏️ Tenés cambios sin guardar en los parámetros</span>
+      <div style="display:flex;gap:8px">
+        <button onclick="discardParams()" style="padding:6px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Descartar</button>
+        <button onclick="confirmParams()" style="padding:6px 14px;border:none;border-radius:6px;background:#16a34a;color:#fff;cursor:pointer;font-weight:500;font-size:12px">✓ Confirmar parámetros</button>
+      </div>
+    </div>
+    <p id="params-last-mod" style="font-size:10px;color:var(--text-2);margin-bottom:.75rem">—</p>
+
     <!-- SERVICIOS -->
     <div style="border-top:.5px solid var(--border-3);padding-top:1rem;margin-bottom:1rem">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
         <p style="font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:.8px;color:var(--text-2)">Alquiler y servicios por local — editable</p>
         <p style="font-size:11px;color:var(--text-2)">Ratio alquiler/fac objetivo &lt;10%</p>
+      </div>
+      <!-- BARRA DE CONFIRMACIÓN ALQUILER/SUMINISTROS -->
+      <div id="srv-confirm-bar" style="display:none;padding:8px 12px;background:#FEF3C7;border:1px solid #FBBF24;border-radius:8px;margin-bottom:8px;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">
+        <span style="font-size:11px;color:#78350F;font-weight:500" id="srv-confirm-text">✏️ Cambios sin guardar en alquiler/suministros</span>
+        <div style="display:flex;gap:6px">
+          <button onclick="discardSrv()" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Descartar</button>
+          <button onclick="confirmSrv()" style="padding:5px 12px;border:none;border-radius:6px;background:#16a34a;color:#fff;cursor:pointer;font-weight:500;font-size:11px">✓ Confirmar cambios</button>
+        </div>
       </div>
       <div style="overflow-x:auto">
         <table>

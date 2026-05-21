@@ -90,6 +90,10 @@ input[type=number].real-inp{width:80px;text-align:right;font-size:12px;padding:3
 .ped-pay-dot.pd-r{background:#dc2626}
 .ped-pay-dot.pd-a{background:#eab308}
 .ped-pay-dot.pd-v{background:#22c55e}
+/* Sliders y celdas con cambios sin guardar (Bloque 2) */
+input[type=range].param-dirty{accent-color:#D97706}
+input[type=range].param-dirty::-webkit-slider-runnable-track{background:#FEF3C7}
+.srv-cell-dirty{background:#FEF3C7!important}
 /* Dropdown custom para reclasificación de proveedores (/bancos sidebar) */
 .rc-list-item:hover{background:var(--bg-secondary)}
 .rc-list-item.rc-list-create:hover{background:#E6F1FB}

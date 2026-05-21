@@ -52,6 +52,8 @@ window.Api = (function () {
     method: 'PUT', body: JSON.stringify(patch),
   });
 
+  const lastParamsMod = () => jsonFetch('/api/v1/aires/parametros/last-mod');
+
   const saveLocal = (id, patch) => jsonFetch(`/api/v1/aires/locales/${encodeURIComponent(id)}`, {
     method: 'PUT', body: JSON.stringify(patch),
   });
@@ -131,7 +133,7 @@ window.Api = (function () {
   };
 
   return {
-    bootstrap, saveConfig, saveLocal, savePresupuesto, presupuestoContexto,
+    bootstrap, saveConfig, lastParamsMod, saveLocal, savePresupuesto, presupuestoContexto,
     saveFacturacionSemanal, getFacturacionSemanal, saveHorasSemanal,
     pedidosBootstrap, pedidosMP, pedidosPersonal,
     pedidosMix, pedidosMixSave, pedidosMixCopy, pedidosMixImport,
