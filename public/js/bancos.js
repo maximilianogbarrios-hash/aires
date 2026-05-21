@@ -14,7 +14,7 @@ const state = {
   prov: {
     rows: [], total: 0, intra: 0, n_intra: 0, loaded: false, vista: null,
     sort: { col: 'total_importe', dir: -1 },     // -1 desc, +1 asc
-    donutThreshold: 0.01,                          // % mínimo de participación: 0.10|0.05|0.01|0.005|null (Ver todos)
+    donutThreshold: null,                          // % mínimo de participación: 0.10|0.05|0.01|0.005|null (Ver todos). Default: Ver todos.
     donutDrillOpen: false,                         // drill-down "Otros" abierto
     donutDrillRows: null,                          // filas que cayeron bajo el umbral
   },
@@ -347,12 +347,24 @@ function initProvFiltros() {
   }
   const note = $('prov-period-floor-note');
   if (note) note.style.display = rolEsAdmin() ? 'none' : '';
-  // Default: mes más reciente (=hasta) y 2 meses antes (=desde).
+  // Default sociedad: "Sin Elche" (4 sociedades — excluye Grupo Hostelero).
+  // Sólo lo seteamos si el usuario no eligió nada todavía.
+  if (sSel && !sSel.value) sSel.value = 'sin_elche';
+  // Default período: mes anterior al actual (Desde = Hasta = ese mes).
+  // Se calcula al vuelo con new Date() — el comportamiento sigue al
+  // calendario real, no al último período cargado. Para no-admin/socio
+  // se eleva al suelo (2026-01) si el mes anterior es menor. Si el
+  // período calculado no existe en la lista disponible (porque aún no
+  // se cargó ese extracto), caemos al último período disponible.
   if (periodosPermitidos.length > 0) {
-    const last = periodosPermitidos[periodosPermitidos.length - 1];
-    const first = periodosPermitidos.length >= 3 ? periodosPermitidos[periodosPermitidos.length - 3] : periodosPermitidos[0];
-    if (!$('prov-periodo-desde').value) $('prov-periodo-desde').value = first;
-    if (!$('prov-periodo-hasta').value) $('prov-periodo-hasta').value = last;
+    const hoy = new Date();
+    const prev = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+    let target = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+    if (!rolEsAdmin() && target < FLOOR) target = FLOOR;
+    const ultimo = periodosPermitidos[periodosPermitidos.length - 1];
+    const elegido = periodosPermitidos.includes(target) ? target : ultimo;
+    if (!$('prov-periodo-desde').value) $('prov-periodo-desde').value = elegido;
+    if (!$('prov-periodo-hasta').value) $('prov-periodo-hasta').value = elegido;
   }
 }
 

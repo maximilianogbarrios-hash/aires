@@ -637,3 +637,48 @@ f70c4d0 fix(resumen): margen aclaratorio + Elche separado con divisor visual (Bl
 
 (Bloque 5 sin commit nuevo — solo verificación de `f21090b` ya
 desplegado.)
+
+## Mejora G — Defaults de la pestaña Proveedores (2026-05-21)
+
+**Objetivo**: arrancar la pestaña /bancos → Proveedores con un set
+de filtros más "útil por defecto", evitando que el usuario tenga que
+configurar y hacer click en Aplicar para ver algo relevante.
+
+**Cambios**:
+
+1. **Sociedad por defecto**: `sin_elche` ("Sin Elche · 4 sociedades")
+   en lugar de "Todas las sociedades". Se setea en
+   `initProvFiltros` sólo si el `<select>` aún no tiene valor.
+
+2. **Período por defecto**: mes anterior al actual (Desde = Hasta =
+   ese mes). Cálculo al vuelo con `new Date()` → `prev`. Para
+   no-admin/socio se eleva al suelo `2026-01` si el mes anterior es
+   menor. Si el período calculado no existe en
+   `periodosPermitidos` (porque aún no se cargó ese extracto), se
+   cae al último período disponible.
+
+3. **Auto-aplicar al cargar la pestaña**: ya estaba implementado vía
+   `showTab('proveedores')` → `initProvFiltros()` →
+   `loadProvRanking()` (la primera vez `state.prov.loaded=false`).
+   No requirió cambios.
+
+4. **Umbral del donut**: default `null` ("Ver todos") en lugar de
+   `0.01` (> 1%). Cambios: `state.prov.donutThreshold = null` y el
+   `<option value="all">` marcado como `selected` en HTML.
+
+**Edge cases**:
+
+- Estamos a 2026-05-21 → `prev = 2026-04`, sin clamp ni fallback.
+- Si fuera enero, `getMonth()-1 = -1` resuelve a diciembre del año
+  anterior (`new Date(2026, -1, 1)` → 2025-12), que para no-admin
+  cae bajo el suelo y se eleva a `2026-01`. ✓
+- Si el extracto del mes anterior no está cargado, el `<select>` no
+  tendría esa opción y `.value = '2026-04'` quedaría en blanco; el
+  fallback al último período disponible evita ese estado vacío.
+
+**Smoke** (API simulando lo que el front pediría con los defaults):
+
+```
+gerente · sin_elche · 2026-04 → 131 160 € · 21 grupos
+admin   · sin_elche · 2026-04 → 323 336 € · 37 grupos
+```
