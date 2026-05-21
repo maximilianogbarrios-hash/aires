@@ -28,21 +28,22 @@ function buildSociedadClause(sociedad_id, paramIndex) {
   return { sql: `sociedad_id = $${paramIndex}`, vals: [sociedad_id] };
 }
 
-// Vista efectiva según rol del usuario. Admin/socio ven todo; el resto sólo
-// proveedores operativos (PROVEEDOR_* + MANTENIMIENTO).
-function vistaEfectivaParaRol(rol, vistaQuery) {
-  const rolesAdmin = new Set(['admin', 'socio']);
-  if (rolesAdmin.has(rol)) {
-    return vistaQuery === 'operativo' ? 'operativo' : 'admin';
-  }
-  return 'operativo';
+// Vista unificada: TODOS los roles ven el mismo set de slices (proveedores
+// operativos + slice fusionado "Gastos Dirección"), con los mismos totales
+// y los mismos %. La única diferencia es el drill-down sobre el slice
+// fusionado, que sólo admin/socio pueden expandir (ver /grupo-detalle).
+// La función queda como compat para el campo `vista_efectiva` del response.
+function vistaEfectivaParaRol(/* rol, vistaQuery */) {
+  return 'unificado';
 }
 
-// Fusión de grupos sensibles para roles no-admin. Los movimientos
-// con estas categorías se colapsan en un único slice "Gastos Dirección"
-// con total sumado — gerente / administrativo / pedidos / personal no
-// ven el detalle de nóminas dirección, gastos dirección, préstamos
-// bancarios ni financiero.
+// Fusión de grupos sensibles aplicada para TODOS los roles. Los
+// movimientos con estas categorías se colapsan en un único slice
+// "Gastos Dirección" con total sumado. Antes admin/socio veían cada
+// proveedor desglosado y el resto el slice fusionado — eso causaba
+// totales distintos y slices distintos entre roles. Ahora la única
+// diferencia es quién puede hacer drill-down (admin/socio sí, el resto
+// recibe 403 con 🔒 en la UI).
 const ROLES_ADMIN = new Set(['admin', 'socio']);
 const CATEGORIAS_DIRECCION_FUSE = new Set([
   'NOMINAS_DIRECCION', 'GASTOS_DIRECCION', 'PRESTAMOS', 'FINANCIERO',
@@ -359,8 +360,8 @@ router.get('/proveedores', async (req, res) => {
     });
     if (clamped.fueraDeRango) {
       return res.json({
-        filtros: { sociedad_id, periodo: clamped.periodo, periodo_desde: clamped.periodo_desde, periodo_hasta: clamped.periodo_hasta, vista: 'operativo' },
-        vista_efectiva: 'operativo',
+        filtros: { sociedad_id, periodo: clamped.periodo, periodo_desde: clamped.periodo_desde, periodo_hasta: clamped.periodo_hasta, vista: 'unificado' },
+        vista_efectiva: 'unificado',
         total_gasto: 0, total_excluido_intra_grupo: 0, n_excluido_intra_grupo: 0,
         n_grupos_finales: 0, rollup_menores: null,
         fusion_direccion: null,
@@ -381,18 +382,13 @@ router.get('/proveedores', async (req, res) => {
     if (periodo)          { where.push(`periodo=$${vals.length+1}`);  vals.push(periodo); }
     if (periodo_desde)    { where.push(`periodo>=$${vals.length+1}`); vals.push(periodo_desde); }
     if (periodo_hasta)    { where.push(`periodo<=$${vals.length+1}`); vals.push(periodo_hasta); }
-    // Vista operativa: sólo categorías de proveedor real (PROVEEDOR_* +
-    // MANTENIMIENTO). Para roles admin con vista=operativo se aplica
-    // como filtro SQL (perf). Para roles no-admin no filtramos por
-    // categoría en SQL — necesitamos traer también las categorías
-    // sensibles (para fusionar) y las que tengan override 'include'
-    // (categorías arbitrarias). El filtro categoría se aplica DESPUÉS
-    // en JS, tras derivar el proveedor canónico de cada fila.
-    const gdOverridesPre = !esAdminLike(req) ? await loadGdOverrides() : null;
-    if (vista === 'operativo' && esAdminLike(req)) {
-      where.push(`categoria = ANY($${vals.length + 1}::text[])`);
-      vals.push(CATEGORIAS_PROVEEDOR_OPERATIVO);
-    }
+    // Vista unificada para TODOS los roles: traemos operativas + sensibles
+    // (CATEGORIAS_DIRECCION_FUSE) y filtramos el resto en JS, después de
+    // derivar el proveedor canónico (necesario porque los overrides
+    // 'include' pueden traer proveedores de categorías arbitrarias).
+    // Antes el filtro SQL aplicaba sólo para admin con vista=operativo —
+    // ya no, porque la vista admin desglosada se eliminó.
+    const gdOverridesPre = await loadGdOverrides();
 
     const rows = await many(
       `SELECT concepto, categoria, importe::float8 AS importe, fecha::text AS fecha, proveedor_normalizado
@@ -412,7 +408,6 @@ router.get('/proveedores', async (req, res) => {
     let totalExcluido = 0;
     let nExcluido = 0;
     const opSet = new Set(CATEGORIAS_PROVEEDOR_OPERATIVO);
-    const filtrarNoAdmin = !esAdminLike(req) && vista === 'operativo';
     const ovPre = gdOverridesPre || new Map();
     for (const r of rows) {
       if (esIntraGrupo(r.concepto)) {
@@ -435,10 +430,10 @@ router.get('/proveedores', async (req, res) => {
           categoria = n.categoria;
         }
       }
-      // Non-admin vista=operativo: descartamos categorías que no sean
-      // ni operativas ni elegibles para fusionar en Gastos Dirección
-      // (default por categoría o override 'include').
-      if (filtrarNoAdmin && !opSet.has(categoria) && !perteneceAGastosDireccion(proveedor, categoria, ovPre)) {
+      // Vista unificada: descartamos categorías que no sean ni operativas
+      // ni elegibles para fusionar en Gastos Dirección (default por
+      // categoría o override 'include'). Aplica a TODOS los roles, igual.
+      if (!opSet.has(categoria) && !perteneceAGastosDireccion(proveedor, categoria, ovPre)) {
         continue;
       }
       const k = proveedor;
@@ -450,18 +445,15 @@ router.get('/proveedores', async (req, res) => {
       if (!a.ultima_fecha || r.fecha > a.ultima_fecha) a.ultima_fecha = r.fecha;
     }
 
-    // En vista operativa, anexamos métricas de pedidos cargados por el usuario
+    // Anexamos métricas de pedidos cargados por el usuario
     // (ab_pedidos_semana): nº pedidos y fecha del último pedido por proveedor.
-    let pedidosInfo = new Map();
-    if (vista === 'operativo') {
-      const pedRows = await many(
-        `SELECT proveedor, COUNT(*)::int AS n, MAX(confirmado_en)::text AS ultimo
-           FROM ab_pedidos_semana
-          WHERE estado IN ('enviado','recibido')
-          GROUP BY proveedor`
-      );
-      pedidosInfo = new Map(pedRows.map((r) => [r.proveedor, r]));
-    }
+    const pedRows = await many(
+      `SELECT proveedor, COUNT(*)::int AS n, MAX(confirmado_en)::text AS ultimo
+         FROM ab_pedidos_semana
+        WHERE estado IN ('enviado','recibido')
+        GROUP BY proveedor`
+    );
+    const pedidosInfo = new Map(pedRows.map((r) => [r.proveedor, r]));
 
     // Categoría más frecuente por proveedor.
     const totalGasto = [...agg.values()].reduce((s, v) => s + v.total, 0);
@@ -481,14 +473,14 @@ router.get('/proveedores', async (req, res) => {
       };
     }).sort((a, b) => b.total_importe - a.total_importe);
 
-    // Fusión de grupos sensibles para roles no-admin (Ronda 9): los
-    // proveedores que pertenecen al grupo "Gastos Dirección" (default
-    // por categoría + overrides admin-managed) se colapsan en un único
-    // slice "Gastos Dirección". Se aplica ANTES del rollup de
-    // "Proveedores Menores" para que el fusionado quede como un slice
-    // principal y no caiga en el bucket de menores por casualidad.
+    // Fusión "Gastos Dirección" — aplicada a TODOS los roles. Los
+    // proveedores cuya categoría pertenece a CATEGORIAS_DIRECCION_FUSE
+    // (o tienen override 'include') se colapsan en un único slice.
+    // El total global y los % por slice son idénticos para todos los
+    // roles. La única diferencia es el drill-down: admin/socio pueden
+    // expandirlo en /grupo-detalle, el resto recibe 403 + 🔒 en UI.
     let fusionados = 0;
-    if (!esAdminLike(req)) {
+    {
       const overrides = gdOverridesPre || new Map();
       const sensibles = proveedores.filter((p) => perteneceAGastosDireccion(p.proveedor, p.categoria, overrides));
       const restantes = proveedores.filter((p) => !perteneceAGastosDireccion(p.proveedor, p.categoria, overrides));
@@ -590,10 +582,15 @@ router.get('/proveedores', async (req, res) => {
       n_excluido_intra_grupo: nExcluido,
       n_grupos_finales: proveedoresFinal.length,
       rollup_menores,
-      // Si el rol no es admin/socio, indica cuántos proveedores
-      // se fusionaron en el slice "Gastos Dirección". Permite al
-      // frontend desactivar drill-down sobre ese slice.
-      fusion_direccion: fusionados > 0 ? { proveedor: FUSE_PROVEEDOR, miembros: fusionados } : null,
+      // El slice "Gastos Dirección" se ve por todos los roles con el
+      // mismo importe. `puede_drilldown` indica si este rol puede pedir
+      // /grupo-detalle?grupo=Gastos Dirección (admin/socio sí, el resto
+      // recibe 403 — la UI muestra 🔒).
+      fusion_direccion: fusionados > 0 ? {
+        proveedor: FUSE_PROVEEDOR,
+        miembros: fusionados,
+        puede_drilldown: esAdminLike(req),
+      } : null,
       proveedores: proveedoresFinal,
     });
   } catch (e) {
@@ -646,13 +643,18 @@ router.get('/proveedor-evolucion', async (req, res) => {
     const mesesRango = buildMeses(desde, hasta);
     const mesesYoy = yoy ? mesesRango.map((p) => shiftYear(p, -1)) : [];
 
-    // Para roles no-admin: las series sobre proveedores fusionados
-    // en "Gastos Dirección" (default por categoría + overrides admin)
-    // se ocultan; si piden la fusión por nombre, devolvemos el agregado.
+    // Vista unificada: la serie agregada "Gastos Dirección" puede ser
+    // solicitada por cualquier rol (igual que el slice en /proveedores).
+    // Para roles no-admin además ocultamos las series individuales de
+    // proveedores fusionados, para mantener la opacidad sobre la
+    // composición. Admin/socio sí puede pedirlos individualmente si
+    // quiere (no hay restricción).
     const noAdmin = !esAdminLike(req);
-    const pideFusion = noAdmin && proveedores.includes(FUSE_PROVEEDOR);
-    const gdOverridesEvol = noAdmin ? await loadGdOverrides() : new Map();
-    // Filtramos las categorías sensibles solicitadas explícitamente.
+    const pideFusion = proveedores.includes(FUSE_PROVEEDOR);
+    const gdOverridesEvol = await loadGdOverrides();
+    // Para no-admin filtramos las categorías sensibles solicitadas
+    // explícitamente (no debe poder ver la serie de NOMINAS_DIRECCION
+    // por nombre de categoría). Admin sí puede.
     const categoriasFiltradas = noAdmin
       ? categorias.filter((c) => !CATEGORIAS_DIRECCION_FUSE.has(c))
       : categorias;
@@ -906,7 +908,14 @@ router.get('/grupo-detalle', async (req, res) => {
     // del umbral (count < 5 AND total < 2 000€) y devolvemos sus
     // conceptos como si fueran un solo grupo unificado.
     const ES_MENORES = (grupo === 'Proveedores Menores');
+    // Caso especial 2: el slice "Gastos Dirección" es un bucket virtual
+    // que agrupa proveedores con categorías sensibles + overrides admin.
+    // El drill-down sólo es accesible para admin/socio (el bloqueo de
+    // arriba ya garantiza esto). Aquí resolvemos qué proveedores caen
+    // en el bucket para incluir sus conceptos.
+    const ES_FUSE_DIRECCION = (grupo === FUSE_PROVEEDOR);
     let provsMenores = null;
+    let provsFuseDireccion = null;
     if (ES_MENORES) {
       const totPorProv = new Map();
       for (const e of enriched) {
@@ -921,11 +930,31 @@ router.get('/grupo-detalle', async (req, res) => {
           .map(([p]) => p)
       );
     }
+    if (ES_FUSE_DIRECCION) {
+      const overrides = await loadGdOverrides();
+      // Tomamos la categoría más frecuente por proveedor para resolver
+      // pertenencia al slice (mismo criterio que /proveedores).
+      const catPorProv = new Map();
+      for (const e of enriched) {
+        if (!catPorProv.has(e._proveedor)) catPorProv.set(e._proveedor, new Map());
+        const cm = catPorProv.get(e._proveedor);
+        cm.set(e._categoria, (cm.get(e._categoria) || 0) + 1);
+      }
+      const setFuse = new Set();
+      for (const [prov, cm] of catPorProv.entries()) {
+        let topCat = null, topCnt = 0;
+        for (const [c, n] of cm.entries()) if (n > topCnt) { topCnt = n; topCat = c; }
+        if (perteneceAGastosDireccion(prov, topCat, overrides)) setFuse.add(prov);
+      }
+      provsFuseDireccion = setFuse;
+    }
 
     const porConcepto = new Map();
     for (const r of enriched) {
       if (ES_MENORES) {
         if (!provsMenores.has(r._proveedor)) continue;
+      } else if (ES_FUSE_DIRECCION) {
+        if (!provsFuseDireccion.has(r._proveedor)) continue;
       } else {
         if (r._proveedor !== grupo) continue;
       }
@@ -973,6 +1002,8 @@ router.get('/grupo-detalle', async (req, res) => {
       grupo,
       es_bucket_menores: !!provsMenores,
       proveedores_menores: provsMenores ? [...provsMenores].sort() : null,
+      es_bucket_direccion: !!provsFuseDireccion,
+      proveedores_direccion: provsFuseDireccion ? [...provsFuseDireccion].sort() : null,
       total: totalGrupo,
       num_conceptos: conceptos.length,
       conceptos,

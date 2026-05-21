@@ -373,11 +373,14 @@ function rolEsAdmin() {
 }
 
 function aplicarVistaSegunRol() {
-  // Etiqueta visible que indica qué vista está activa (sin selector editable).
+  // Vista unificada para todos los roles: mismos slices, mismos totales,
+  // mismos %. Diferencia: admin/socio puede expandir el slice fusionado
+  // "Gastos Dirección" (drill-down), el resto ve 🔒.
   const badge = $('prov-vista-badge');
   if (badge) {
-    const txt = rolEsAdmin() ? 'Vista: Todos los gastos' : 'Vista: Proveedores operativos';
-    badge.textContent = txt;
+    badge.textContent = rolEsAdmin()
+      ? 'Vista unificada · drill-down completo'
+      : 'Vista unificada · Gastos Dirección 🔒';
     badge.style.background = rolEsAdmin() ? '#F3E8FF' : '#EAF3DE';
     badge.style.color      = rolEsAdmin() ? '#7E22CE' : '#3B6D11';
   }
@@ -503,23 +506,29 @@ function renderProvDonut() {
         : 'Proveedores por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down.');
 
   const tot = state.prov.total;
-  // El slice "Gastos Dirección" es el bucket fusionado para roles no
-  // admin/socio. No tiene drill-down — click no abre el sidebar.
-  const fusionGrupo = state.prov.fusion_direccion?.proveedor || null;
+  // El slice "Gastos Dirección" se ve en TODOS los roles con el mismo
+  // importe. Sólo admin/socio puede expandirlo: el backend devuelve
+  // `fusion_direccion.puede_drilldown` indicando si está habilitado.
+  // Para el resto, click bloqueado + 🔒 en la etiqueta.
+  const fusionInfo = state.prov.fusion_direccion;
+  const fusionGrupo = fusionInfo?.proveedor || null;
+  const fusionPuedeDrill = !!fusionInfo?.puede_drilldown;
   $('prov-legend').innerHTML = labels.map((lab, i) => {
     const v = values[i];
     const p = tot > 0 ? (v / tot * 100).toFixed(1) : '0';
     const isOtros = !drillOpen && lab.startsWith('Otros (');
-    const esFusionRestringida = fusionGrupo && lab === fusionGrupo;
+    const esFusionRestringida = fusionGrupo && lab === fusionGrupo && !fusionPuedeDrill;
+    const esFusionAdmin = fusionGrupo && lab === fusionGrupo && fusionPuedeDrill;
     const labEsc = lab.replace(/'/g, "\\'");
-    // Click en "Otros (N)" → drill. "Gastos Dirección" para non-admin →
-    // sin click. Cualquier otro grupo → sidebar de detalle.
+    // Click en "Otros (N)" → drill local. "Gastos Dirección" para
+    // non-admin → sin click. Cualquier otro grupo (incl. GD para
+    // admin) → sidebar de detalle.
     const onClick = esFusionRestringida
       ? ''
       : (isOtros ? `enterDonutDrill()` : `openProvSidebar('${labEsc}')`);
     const cursor = esFusionRestringida ? 'default' : 'pointer';
     const hover = esFusionRestringida ? '' : ' onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"';
-    const lockIcon = esFusionRestringida ? ' 🔒' : '';
+    const lockIcon = esFusionRestringida ? ' 🔒' : (esFusionAdmin ? ' 🔓' : '');
     const sufijo = isOtros ? ' →' : lockIcon;
     return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover}>
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
@@ -589,7 +598,10 @@ function applyProvFiltros(rows) {
 
 function renderProvTabla() {
   refreshProvCatSelect();
-  const operativo = state.prov.vista === 'operativo';
+  // Vista unificada (backend devuelve 'unificado'): la columna de
+  // pedidos del usuario ahora se muestra siempre — los datos vienen
+  // anexados para todos los proveedores con pedidos cargados.
+  const operativo = true;
   const allRows = state.prov.rows;
   let rows = applyProvFiltros(allRows);
 
