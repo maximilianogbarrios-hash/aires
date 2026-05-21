@@ -348,6 +348,130 @@ router.get('/proveedores', async (req, res) => {
   }
 });
 
+// ─── EVOLUCIÓN TEMPORAL POR PROVEEDOR / CATEGORÍA ─────────────────────
+// GET /bancos/proveedor-evolucion?proveedores=A,B&categorias=X,Y&desde=YYYY-MM&hasta=YYYY-MM&sociedad_id=
+// Devuelve serie mensual por cada proveedor + serie por cada categoría.
+// Si yoy=1, también devuelve la serie del mismo rango del año anterior.
+router.get('/proveedor-evolucion', async (req, res) => {
+  try {
+    const sociedad_id = req.query.sociedad_id || null;
+    const desde = req.query.desde || null;
+    const hasta = req.query.hasta || null;
+    const proveedores = (req.query.proveedores || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    const categorias = (req.query.categorias || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    const yoy = req.query.yoy === '1';
+
+    if (!desde || !hasta) return res.status(400).json({ error: 'desde y hasta requeridos (YYYY-MM)' });
+    if (!proveedores.length && !categorias.length) return res.json({ meses: [], series: [], series_yoy: [] });
+
+    function shiftYear(periodo, delta) {
+      const [y, m] = periodo.split('-').map(Number);
+      return `${y + delta}-${String(m).padStart(2, '0')}`;
+    }
+    function buildMeses(d, h) {
+      const out = [];
+      let [y, m] = d.split('-').map(Number);
+      const [y2, m2] = h.split('-').map(Number);
+      while (y < y2 || (y === y2 && m <= m2)) {
+        out.push(`${y}-${String(m).padStart(2, '0')}`);
+        m++; if (m > 12) { m = 1; y++; }
+      }
+      return out;
+    }
+    const mesesRango = buildMeses(desde, hasta);
+    const mesesYoy = yoy ? mesesRango.map((p) => shiftYear(p, -1)) : [];
+
+    async function fetchSeries(mesesArr) {
+      if (!mesesArr.length) return { byProv: new Map(), byCat: new Map() };
+      const params = [mesesArr];
+      let where = 'importe < 0 AND periodo = ANY($1::text[])';
+      if (sociedad_id) { where += ` AND sociedad_id=$${params.length + 1}`; params.push(sociedad_id); }
+      const rows = await many(
+        `SELECT concepto, categoria, periodo, importe::float8 AS importe
+           FROM ab_movimientos
+          WHERE ${where}`,
+        params
+      );
+
+      const byProv = new Map(); // proveedor -> Map<periodo, total>
+      const byCat = new Map();  // categoria  -> Map<periodo, total>
+      for (const r of rows) {
+        if (esIntraGrupo(r.concepto)) continue;
+        const { proveedor, categoria } = normalizarProveedor(r.concepto, r.categoria);
+        const cat = categoria || r.categoria;
+        const abs = Math.abs(+r.importe);
+        // Por proveedor
+        if (proveedores.includes(proveedor)) {
+          if (!byProv.has(proveedor)) byProv.set(proveedor, new Map());
+          byProv.get(proveedor).set(r.periodo, (byProv.get(proveedor).get(r.periodo) || 0) + abs);
+        }
+        // Por categoría
+        if (categorias.includes(cat)) {
+          if (!byCat.has(cat)) byCat.set(cat, new Map());
+          byCat.get(cat).set(r.periodo, (byCat.get(cat).get(r.periodo) || 0) + abs);
+        }
+      }
+      return { byProv, byCat };
+    }
+
+    const main = await fetchSeries(mesesRango);
+    const yoyData = yoy ? await fetchSeries(mesesYoy) : { byProv: new Map(), byCat: new Map() };
+
+    function expand(byKey, meses, mesesBase) {
+      const out = [];
+      for (const [k, m] of byKey.entries()) {
+        const data = mesesBase.map((p, i) => m.get(meses[i]) || 0);
+        out.push({ key: k, data });
+      }
+      return out;
+    }
+
+    res.json({
+      meses: mesesRango,
+      proveedores: expand(main.byProv, mesesRango, mesesRango),
+      categorias:  expand(main.byCat, mesesRango, mesesRango),
+      yoy: yoy ? {
+        meses: mesesYoy,
+        proveedores: expand(yoyData.byProv, mesesYoy, mesesRango),
+        categorias:  expand(yoyData.byCat,  mesesYoy, mesesRango),
+      } : null,
+    });
+  } catch (e) {
+    console.error('[bancos.evolucion]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Lista de proveedores disponibles para autocompletado.
+// Cachea por hora — cambia poco entre uploads.
+const provCache = { ts: 0, rows: null };
+router.get('/proveedores-lista', async (req, res) => {
+  try {
+    const now = Date.now();
+    if (provCache.rows && (now - provCache.ts) < 60 * 60 * 1000) {
+      return res.json({ proveedores: provCache.rows });
+    }
+    const rows = await many(
+      `SELECT concepto, categoria FROM ab_movimientos WHERE importe<0`
+    );
+    const set = new Map();
+    for (const r of rows) {
+      if (esIntraGrupo(r.concepto)) continue;
+      const { proveedor, categoria } = normalizarProveedor(r.concepto, r.categoria);
+      if (!set.has(proveedor)) set.set(proveedor, { proveedor, categoria });
+    }
+    const out = [...set.values()].sort((a, b) => a.proveedor.localeCompare(b.proveedor));
+    provCache.rows = out;
+    provCache.ts = now;
+    res.json({ proveedores: out });
+  } catch (e) {
+    console.error('[bancos.proveedores-lista]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // Lista de períodos con datos (para selectores).
 router.get('/periodos', async (req, res) => {
   try {

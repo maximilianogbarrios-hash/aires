@@ -40,7 +40,16 @@ const COLORS_CAT = [
   '#059669','#DC2626','#0F766E','#9333EA','#B45309','#1E40AF','#15803D','#9F1239',
 ];
 
-let chMensual = null, chGastos = null, chProvDonut = null;
+let chMensual = null, chGastos = null, chProvDonut = null, chEvolucion = null;
+
+// Estado para el módulo Evolución temporal de proveedores
+const evState = {
+  proveedores_lista: [],        // [{proveedor, categoria}]
+  categorias_lista: [],         // ['PROVEEDOR_CARNES', ...]
+  seleccionados_prov: [],
+  seleccionados_cat: [],
+  cargados: false,
+};
 
 async function api(url, opts = {}) {
   const r = await fetch(url, {
@@ -688,6 +697,197 @@ function showTab(name, btn) {
   if (name === 'proveedores') {
     initProvFiltros();
     if (!state.prov.loaded) loadProvRanking();
+    if (!evState.cargados) initEvolucion();
+  }
+}
+
+// ─── Evolución temporal por proveedor / categoría ─────────────────────
+async function initEvolucion() {
+  // Cargar lista de proveedores y construir selectores.
+  try {
+    const j = await api('/api/v1/bancos/proveedores-lista');
+    evState.proveedores_lista = j.proveedores || [];
+    evState.categorias_lista = [...new Set(evState.proveedores_lista.map((p) => p.categoria).filter(Boolean))].sort();
+  } catch (e) { console.warn('[ev] no se pudo cargar lista:', e); }
+
+  // Sociedades + período desde/hasta
+  const socSel = $('ev-soc');
+  if (socSel && socSel.options.length <= 1) {
+    for (const s of state.sociedades) {
+      const o = document.createElement('option');
+      o.value = s.id; o.textContent = s.nombre;
+      socSel.appendChild(o);
+    }
+  }
+  for (const id of ['ev-desde', 'ev-hasta']) {
+    const sel = $(id);
+    if (sel && sel.options.length === 0) {
+      for (const p of state.periodos) {
+        const o = document.createElement('option');
+        o.value = p; o.textContent = PERIOD_LABELS(p);
+        sel.appendChild(o);
+      }
+    }
+  }
+  // Default: 6 meses
+  if (state.periodos.length > 0) {
+    const last = state.periodos[state.periodos.length - 1];
+    const first = state.periodos.length >= 6
+      ? state.periodos[state.periodos.length - 6]
+      : state.periodos[0];
+    if (!$('ev-desde').value) $('ev-desde').value = first;
+    if (!$('ev-hasta').value) $('ev-hasta').value = last;
+  }
+
+  // Inicializar gráfico
+  if (!chEvolucion) {
+    chEvolucion = new Chart($('ev-chart'), {
+      type: 'line',
+      data: { labels: [], datasets: [] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: true, position: 'bottom', labels: { boxWidth: 14, font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const v = ctx.parsed.y;
+                const i = ctx.dataIndex;
+                const ds = ctx.dataset;
+                const prev = i > 0 ? ds.data[i - 1] : null;
+                let varTxt = '';
+                if (prev != null && prev > 0) {
+                  const dv = (v - prev) / prev * 100;
+                  varTxt = ` (${dv >= 0 ? '+' : ''}${dv.toFixed(1)}% vs mes ant.)`;
+                }
+                return ` ${ds.label}: ${eur(v)}${varTxt}`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { color: 'rgba(0,0,0,.05)' }, ticks: { font: { size: 11 } } },
+          y: { grid: { color: 'rgba(0,0,0,.05)' }, ticks: { font: { size: 11 }, callback: (v) => `${Math.round(v/1000)}K` } },
+        },
+      },
+    });
+  }
+
+  evState.cargados = true;
+  evRenderChips();
+  loadEvolucion();
+}
+
+function evRenderSugerencias() {
+  const q = $('ev-q').value.trim().toLowerCase();
+  const box = $('ev-sugerencias');
+  if (!q) { box.style.display = 'none'; return; }
+  const provs = evState.proveedores_lista.filter((p) =>
+    p.proveedor.toLowerCase().includes(q)
+  ).slice(0, 15);
+  const cats = evState.categorias_lista.filter((c) =>
+    c.toLowerCase().includes(q.toUpperCase().replace(/ /g, '_'))
+  ).slice(0, 8);
+  if (!provs.length && !cats.length) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  box.innerHTML = [
+    ...cats.map((c) => `<div class="ev-sug-item" data-type="cat" data-val="${c}" onmousedown="evSeleccionar('cat','${c.replace(/'/g,"&#39;")}')" style="padding:6px 9px;cursor:pointer;font-size:12px;border-bottom:.5px solid var(--border-3)"><span style="background:#E6F1FB;color:#185FA5;padding:1px 6px;border-radius:4px;font-size:10px;margin-right:6px">cat</span>${c}</div>`),
+    ...provs.map((p) => `<div class="ev-sug-item" data-type="prov" data-val="${p.proveedor}" onmousedown="evSeleccionar('prov','${p.proveedor.replace(/'/g,"&#39;")}')" style="padding:6px 9px;cursor:pointer;font-size:12px;border-bottom:.5px solid var(--border-3)"><span style="background:#EAF3DE;color:#3B6D11;padding:1px 6px;border-radius:4px;font-size:10px;margin-right:6px">prov</span>${p.proveedor}<span style="float:right;font-size:10px;color:var(--text-2)">${(p.categoria || '').replace('PROVEEDOR_','')}</span></div>`),
+  ].join('');
+}
+
+function evAplicarTopMatch() {
+  const first = $('ev-sugerencias').querySelector('.ev-sug-item');
+  if (!first) return;
+  evSeleccionar(first.dataset.type, first.dataset.val);
+}
+
+function evSeleccionar(tipo, valor) {
+  if (tipo === 'cat') {
+    if (!evState.seleccionados_cat.includes(valor)) evState.seleccionados_cat.push(valor);
+  } else {
+    if (!evState.seleccionados_prov.includes(valor)) evState.seleccionados_prov.push(valor);
+  }
+  $('ev-q').value = '';
+  $('ev-sugerencias').style.display = 'none';
+  evRenderChips();
+  loadEvolucion();
+}
+
+function evQuitar(tipo, valor) {
+  if (tipo === 'cat') evState.seleccionados_cat = evState.seleccionados_cat.filter((v) => v !== valor);
+  else evState.seleccionados_prov = evState.seleccionados_prov.filter((v) => v !== valor);
+  evRenderChips();
+  loadEvolucion();
+}
+
+function evRenderChips() {
+  const c = $('ev-chips');
+  const chips = [
+    ...evState.seleccionados_cat.map((v) => ({ tipo: 'cat', valor: v, color: '#185FA5', bg: '#E6F1FB' })),
+    ...evState.seleccionados_prov.map((v) => ({ tipo: 'prov', valor: v, color: '#3B6D11', bg: '#EAF3DE' })),
+  ];
+  if (!chips.length) {
+    c.innerHTML = '<p style="font-size:11px;color:var(--text-2);padding:4px 6px">Sin selección — usá el buscador.</p>';
+    return;
+  }
+  c.innerHTML = chips.map((ch) => `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;font-size:11px;background:${ch.bg};color:${ch.color};border-radius:12px">
+    <span>${ch.valor.replace('PROVEEDOR_', '')}</span>
+    <span style="cursor:pointer;font-weight:700" onclick="evQuitar('${ch.tipo}','${ch.valor.replace(/'/g, "&#39;")}')">×</span>
+  </span>`).join('');
+}
+
+async function loadEvolucion() {
+  if (!chEvolucion) return;
+  const params = new URLSearchParams();
+  if ($('ev-soc').value) params.set('sociedad_id', $('ev-soc').value);
+  params.set('desde', $('ev-desde').value);
+  params.set('hasta', $('ev-hasta').value);
+  if (evState.seleccionados_prov.length) params.set('proveedores', evState.seleccionados_prov.join(','));
+  if (evState.seleccionados_cat.length)  params.set('categorias',  evState.seleccionados_cat.join(','));
+  if ($('ev-yoy').checked) params.set('yoy', '1');
+
+  if (!evState.seleccionados_prov.length && !evState.seleccionados_cat.length) {
+    chEvolucion.data.labels = [];
+    chEvolucion.data.datasets = [];
+    chEvolucion.update();
+    return;
+  }
+  try {
+    const j = await api('/api/v1/bancos/proveedor-evolucion?' + params.toString());
+    const meses = j.meses || [];
+    const labels = meses.map(PERIOD_LABELS);
+    const isSingleMonth = meses.length === 1;
+
+    let colorIdx = 0;
+    const ds = [];
+    function mkDataset(label, data, opts = {}) {
+      const color = COLORS_CAT[colorIdx++ % COLORS_CAT.length];
+      return {
+        label, data,
+        borderColor: color,
+        backgroundColor: isSingleMonth ? color : color + '33',
+        tension: 0.3, fill: false,
+        borderDash: opts.dashed ? [4, 4] : [],
+        pointRadius: 3,
+      };
+    }
+    (j.categorias || []).forEach((s) => ds.push(mkDataset((s.key || '').replace('PROVEEDOR_', ''), s.data)));
+    (j.proveedores || []).forEach((s) => ds.push(mkDataset(s.key, s.data)));
+    // YoY: replicar con dash
+    if (j.yoy) {
+      (j.yoy.categorias || []).forEach((s) => ds.push(mkDataset((s.key || '').replace('PROVEEDOR_', '') + ' (año ant.)', s.data, { dashed: true })));
+      (j.yoy.proveedores || []).forEach((s) => ds.push(mkDataset(s.key + ' (año ant.)', s.data, { dashed: true })));
+    }
+
+    chEvolucion.config.type = isSingleMonth ? 'bar' : 'line';
+    chEvolucion.data.labels = labels;
+    chEvolucion.data.datasets = ds;
+    chEvolucion.update();
+  } catch (e) {
+    console.warn('[ev] error:', e);
+    Api && Api.pill ? Api.pill('Error al cargar evolución', true) : 0;
   }
 }
 
@@ -752,5 +952,7 @@ Object.assign(window, {
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
   setDonutMode, enterDonutDrill, exitDonutDrill,
+  // Evolución temporal
+  loadEvolucion, evRenderSugerencias, evSeleccionar, evQuitar, evAplicarTopMatch,
 });
 boot();
