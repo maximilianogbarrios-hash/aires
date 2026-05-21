@@ -825,3 +825,72 @@ no-admin ven los mismos slices y totales — sólo admin/socio pueden
 hacer drill-down sobre el slice fusionado), tanto admin como gerente
 ven el movimiento dentro de `Gastos Dirección` con el mismo total y
 mismo `_miembros`. La diferencia es sólo el permiso de expansión.
+
+## Fix J — Reclasificación manual con slice forzado-visible (2026-05-21)
+
+**Bug**: tras reclasificar un concepto desde el sidebar y guardar la
+regla, el nuevo slice no aparecía en el donut aunque la DB estaba
+correctamente actualizada. El refresh del donut ya estaba implementado
+(`confirmReclasificar` → `loadProvRanking()`), pero si el slice
+recién creado tenía importe bajo, caía en el rollup "Proveedores
+Menores" (`count < 5 AND total < 2 000 €`) o en el cap top-N.
+
+**Diseño**: marcar las reglas creadas desde el sidebar con un flag
+`forzar_visible=TRUE` para exentar al slice del rollup. Cualquier
+reclasificación manual del usuario debe materializarse de inmediato
+en el donut, incluso si el importe es chico — esa es la señal de
+intención.
+
+**Cambios**:
+
+- Migration 12 (`reglas_forzar_visible`): `ALTER TABLE
+  ab_reglas_normalizacion ADD COLUMN forzar_visible BOOLEAN NOT NULL
+  DEFAULT FALSE;` + índice parcial sobre `WHERE forzar_visible=TRUE`.
+
+- `lib/bank/db-rules.js#loadReglas`: incluye `forzar_visible` en
+  el SELECT.
+
+- `routes/bancos.js`:
+  - `/proveedores`: construye `proveedoresForzados =
+    Set(reglasDb.filter(forzar_visible).map(proveedor_normalizado))`
+    y lo usa como exclusión adicional en los dos predicates de
+    `colapsarEnMenores` (pasada threshold + pasada cap top-N).
+  - `/reclasificar`: el INSERT en `ab_reglas_normalizacion` ahora
+    fija `forzar_visible=TRUE` por defecto. La columna `prioridad=100`
+    se conserva.
+
+- `public/js/bancos.js#confirmReclasificar`:
+  - Feedback intermedio "✓ Reclasificado. Actualizando donut..."
+    inmediatamente después del POST, antes del `loadProvRanking()`.
+  - Feedback final con detalle (incluye "(regla #N, slice forzado
+    visible)" cuando se guardó regla).
+  - El refresh del donut (`loadProvRanking()`) ya estaba en el flujo
+    — no se duplicó.
+
+**E2E** (server reiniciado, migración aplicada):
+
+```
+A) Columna forzar_visible exists: { data_type:'boolean', default:'false' }
+
+B) Concepto seleccionado (importe -5,97 € · NO intra-grupo):
+   'Transaccion Contactless En Dialprix Alejan, Murcia Es, Tarj. :*568409'
+
+C) POST /reclasificar con guardar_regla=true →
+   regla_id=72, prioridad=100, forzar_visible=true ✓
+
+D) GET /proveedores tras reclasificar:
+   slice '__Test Sidebar Recls__' aparece con €5,97 / 1 tx
+   → NO absorbido por Menores aunque cae bajo el threshold (<5 tx
+   AND <2 000 €).
+
+E) Toggle forzar_visible=FALSE en la misma regla → re-fetch:
+   slice ABSORBIDO por "Proveedores Menores" (comportamiento default).
+   Confirma que el flag es la diferencia.
+
+F) Rollback OK.
+```
+
+**Comportamiento garantizado**: cualquier proveedor con al menos una
+regla activa con `forzar_visible=TRUE` siempre se renderiza como slice
+individual en el donut — no cae ni en threshold (count<5 AND total<2000€)
+ni en cap top-N (≤50 grupos).

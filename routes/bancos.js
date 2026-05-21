@@ -401,6 +401,13 @@ router.get('/proveedores', async (req, res) => {
     // categorizer y normalizer en runtime, para que filas viejas reflejen
     // las reglas que el usuario crea desde la UI sin re-procesar la tabla.
     const reglasDb = await loadReglas();
+    // Conjunto de proveedor_normalizado con alguna regla activa y
+    // forzar_visible=TRUE. Estos slices nunca son absorbidos por
+    // "Proveedores Menores" ni por el cap top-N — garantía de
+    // visibilidad para reclasificaciones manuales.
+    const proveedoresForzados = new Set(
+      reglasDb.filter((r) => r.forzar_visible).map((r) => r.proveedor_normalizado)
+    );
 
     // Agrupar por proveedor normalizado, excluyendo intra-grupo.
     // Precedencia: ab_movimientos.proveedor_normalizado > regla DB > normalizarProveedor().
@@ -550,6 +557,7 @@ router.get('/proveedores', async (req, res) => {
     let rollup1 = null;
     {
       const r = colapsarEnMenores(proveedoresFinal, (p) =>
+        !proveedoresForzados.has(p.proveedor) &&
         p.num_transacciones < minTx && p.total_importe < minEur
       );
       proveedoresFinal = r.lista;
@@ -562,7 +570,9 @@ router.get('/proveedores', async (req, res) => {
       const sortDesc = [...proveedoresFinal].sort((a, b) => b.total_importe - a.total_importe);
       const cutOff = sortDesc[maxGrupos - 2]?.total_importe ?? 0; // (-2 porque uno es Menores)
       const r = colapsarEnMenores(proveedoresFinal, (p) =>
-        p.proveedor !== 'Proveedores Menores' && p.total_importe < cutOff
+        p.proveedor !== 'Proveedores Menores' &&
+        !proveedoresForzados.has(p.proveedor) &&
+        p.total_importe < cutOff
       );
       proveedoresFinal = r.lista;
       rollup2 = r.rollup;
@@ -1207,9 +1217,13 @@ router.post('/reclasificar', express.json(), async (req, res) => {
       // el caso típico (mismo extracto futuro). Si el usuario pasa `patron`
       // explícito (ej. substring corto), respetamos.
       const pat = patron || concepto;
+      // forzar_visible=TRUE: reclasificación manual desde el sidebar →
+      // garantiza que el slice del nuevo proveedor sea visible en el
+      // donut aunque su importe sea pequeño (no cae en Proveedores
+      // Menores ni en el cap top-N).
       const ins = await one(
-        `INSERT INTO ab_reglas_normalizacion (patron, tipo_match, categoria, proveedor_normalizado, prioridad)
-         VALUES ($1, $2, $3, $4, 100)
+        `INSERT INTO ab_reglas_normalizacion (patron, tipo_match, categoria, proveedor_normalizado, prioridad, forzar_visible)
+         VALUES ($1, $2, $3, $4, 100, TRUE)
          RETURNING id`,
         [pat, tipo, categoria_nueva, proveedor_nuevo]
       );

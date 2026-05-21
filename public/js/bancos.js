@@ -1361,15 +1361,20 @@ async function confirmReclasificar(i) {
       method: 'POST',
       body: JSON.stringify({ concepto, categoria_nueva, proveedor_nuevo, guardar_regla }),
     });
-    const reglaMsg = (guardar_regla && j.regla_id)
-      ? ` · <strong>✓ Regla guardada</strong> — se aplicará a futuros extractos (regla #${j.regla_id})`
-      : '';
-    _setRcFeedback(i, true, `✓ ${j.affected} fila${j.affected === 1 ? '' : 's'} reclasificada${j.affected === 1 ? '' : 's'} → <code>${categoria_nueva}</code> / <strong>${proveedor_nuevo}</strong>${reglaMsg}`);
+    // Feedback intermedio: el UPDATE ya pasó pero el donut todavía no
+    // refleja el cambio. Mostramos "Actualizando donut..." mientras se
+    // refrescan los datos para que el usuario tenga señal inmediata de
+    // que la operación fue exitosa y el render del slice está en curso.
+    _setRcFeedback(i, true, '✓ Reclasificado. Actualizando donut...');
     Api.pill(`Reclasificadas: ${j.affected}` + (j.regla_id ? ' · regla creada' : ''));
     // Invalidar cache porque el set de nombres normalizados cambió.
     _rcNombresAllCache = null;
     // Refresh donut + ranking, y el sidebar con el nuevo nombre si cambió.
     await loadProvRanking();
+    const reglaMsg = (guardar_regla && j.regla_id)
+      ? ` · <strong>✓ Regla guardada</strong> — se aplicará a futuros extractos (regla #${j.regla_id}, slice forzado visible)`
+      : '';
+    _setRcFeedback(i, true, `✓ ${j.affected} fila${j.affected === 1 ? '' : 's'} reclasificada${j.affected === 1 ? '' : 's'} → <code>${categoria_nueva}</code> / <strong>${proveedor_nuevo}</strong>${reglaMsg}`);
     // Si cambió el nombre canónico, cerramos el sidebar tras 1.5s para
     // dejar leer el feedback. Si no cambió, recargamos el sidebar.
     if (proveedor_nuevo !== (state._sbData?.grupo || '')) {
