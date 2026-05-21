@@ -9,6 +9,7 @@ const { parseSantanderBuffer } = require('../lib/bank/parser-santander');
 const { parseGetnetBuffer } = require('../lib/bank/parser-getnet');
 const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
 const { CATEGORIAS_PROVEEDOR_OPERATIVO } = require('../lib/bank/categorizer');
+const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
 const bankDb = require('../lib/bank/db');
 
 // Vista efectiva según rol del usuario. Admin/socio ven todo; el resto sólo
@@ -51,6 +52,20 @@ router.post('/upload-extracto', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'no se encontró la fila de headers (Concepto/Importe)' });
     }
 
+    // Las reglas persistidas en ab_reglas_normalizacion (orden prioridad DESC)
+    // sobreescriben la categoría/proveedor que devolvió el categorizer/normalizer
+    // hardcodeado. Esto permite que el usuario aprenda al sistema desde la UI.
+    const reglasDb = await loadReglas();
+    let reglasAplicadas = 0;
+    for (const m of parsed.movimientos) {
+      const r = matchRegla(m.concepto, reglasDb);
+      if (r) {
+        m.categoria = r.categoria;
+        m.proveedor_normalizado = r.proveedor_normalizado;
+        reglasAplicadas++;
+      }
+    }
+
     const { inserted, duplicated } = await bankDb.insertMovimientos(parsed.movimientos);
     const periodos = Array.from(new Set(parsed.movimientos.map((m) => m.periodo)));
     for (const p of periodos) {
@@ -65,10 +80,12 @@ router.post('/upload-extracto', upload.single('file'), async (req, res) => {
       insertadas: inserted,
       duplicadas: duplicated,
       skipped: parsed.skipped,
+      reglas_db_aplicadas: reglasAplicadas,
       periodos,
       preview: parsed.movimientos.slice(0, 10).map((m) => ({
         fecha: m.fecha, concepto: m.concepto, importe: m.importe,
         categoria: m.categoria, codigo_banco: m.codigo_banco, local_id: m.local_id,
+        proveedor_normalizado: m.proveedor_normalizado || null,
       })),
     });
   } catch (e) {
@@ -277,13 +294,19 @@ router.get('/proveedores', async (req, res) => {
     }
 
     const rows = await many(
-      `SELECT concepto, categoria, importe::float8 AS importe, fecha::text AS fecha
+      `SELECT concepto, categoria, importe::float8 AS importe, fecha::text AS fecha, proveedor_normalizado
          FROM ab_movimientos
         WHERE ${where.join(' AND ')}`,
       vals
     );
 
+    // Reglas DB (orden prioridad DESC) sobreescriben categoría/proveedor del
+    // categorizer y normalizer en runtime, para que filas viejas reflejen
+    // las reglas que el usuario crea desde la UI sin re-procesar la tabla.
+    const reglasDb = await loadReglas();
+
     // Agrupar por proveedor normalizado, excluyendo intra-grupo.
+    // Precedencia: ab_movimientos.proveedor_normalizado > regla DB > normalizarProveedor().
     const agg = new Map(); // proveedor → { total, n, categorias: Map<cat, count>, ultima_fecha }
     let totalExcluido = 0;
     let nExcluido = 0;
@@ -293,7 +316,21 @@ router.get('/proveedores', async (req, res) => {
         nExcluido++;
         continue;
       }
-      const { proveedor, categoria } = normalizarProveedor(r.concepto, r.categoria);
+      let proveedor, categoria;
+      if (r.proveedor_normalizado) {
+        proveedor = r.proveedor_normalizado;
+        categoria = r.categoria;
+      } else {
+        const rule = matchRegla(r.concepto, reglasDb);
+        if (rule) {
+          proveedor = rule.proveedor_normalizado;
+          categoria = rule.categoria;
+        } else {
+          const n = normalizarProveedor(r.concepto, r.categoria);
+          proveedor = n.proveedor;
+          categoria = n.categoria;
+        }
+      }
       const k = proveedor;
       if (!agg.has(k)) agg.set(k, { total: 0, n: 0, cats: new Map(), ultima_fecha: null });
       const a = agg.get(k);
@@ -554,6 +591,163 @@ router.get('/periodos', async (req, res) => {
     res.json({ periodos: rows.map((r) => r.periodo) });
   } catch (e) {
     console.error('[bancos.periodos]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Detalle de los conceptos que componen un grupo (proveedor canónico).
+// Devuelve la lista con totales por concepto, ordenada por importe desc.
+// Usa la MISMA lógica de derivación de grupo que /proveedores
+// (proveedor_normalizado > regla DB > normalizarProveedor()).
+router.get('/grupo-detalle', async (req, res) => {
+  try {
+    const grupo = String(req.query.grupo || '').trim();
+    if (!grupo) return res.status(400).json({ error: 'grupo requerido' });
+    const sociedad_id = req.query.sociedad_id || null;
+    const periodo = req.query.periodo || null;
+    const periodo_desde = req.query.periodo_desde || null;
+    const periodo_hasta = req.query.periodo_hasta || null;
+
+    const where = ['importe < 0'];
+    const vals = [];
+    if (sociedad_id)   { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
+    if (periodo)       { where.push(`periodo=$${vals.length+1}`);     vals.push(periodo); }
+    if (periodo_desde) { where.push(`periodo>=$${vals.length+1}`);    vals.push(periodo_desde); }
+    if (periodo_hasta) { where.push(`periodo<=$${vals.length+1}`);    vals.push(periodo_hasta); }
+
+    const rows = await many(
+      `SELECT id, concepto, categoria, importe::float8 AS importe, fecha::text AS fecha,
+              proveedor_normalizado, periodo, sociedad_id
+         FROM ab_movimientos
+        WHERE ${where.join(' AND ')}`,
+      vals
+    );
+    const reglasDb = await loadReglas();
+
+    const porConcepto = new Map();
+    for (const r of rows) {
+      if (esIntraGrupo(r.concepto)) continue;
+      let proveedor, categoria;
+      if (r.proveedor_normalizado) {
+        proveedor = r.proveedor_normalizado;
+        categoria = r.categoria;
+      } else {
+        const rule = matchRegla(r.concepto, reglasDb);
+        if (rule) {
+          proveedor = rule.proveedor_normalizado;
+          categoria = rule.categoria;
+        } else {
+          const n = normalizarProveedor(r.concepto, r.categoria);
+          proveedor = n.proveedor;
+          categoria = n.categoria;
+        }
+      }
+      if (proveedor !== grupo) continue;
+      const k = r.concepto;
+      if (!porConcepto.has(k)) {
+        porConcepto.set(k, { concepto: r.concepto, total: 0, n: 0, categoria_actual: categoria, ultima_fecha: null, ids: [] });
+      }
+      const c = porConcepto.get(k);
+      c.total += Math.abs(+r.importe);
+      c.n += 1;
+      c.ids.push(r.id);
+      if (!c.ultima_fecha || r.fecha > c.ultima_fecha) c.ultima_fecha = r.fecha;
+    }
+
+    const conceptos = [...porConcepto.values()]
+      .map((c) => ({
+        concepto: c.concepto,
+        total_importe: c.total,
+        num_transacciones: c.n,
+        categoria_actual: c.categoria_actual,
+        ultima_fecha: c.ultima_fecha,
+        sample_ids: c.ids.slice(0, 5),
+      }))
+      .sort((a, b) => b.total_importe - a.total_importe);
+
+    const totalGrupo = conceptos.reduce((s, c) => s + c.total_importe, 0);
+    res.json({ grupo, total: totalGrupo, num_conceptos: conceptos.length, conceptos });
+  } catch (e) {
+    console.error('[bancos.grupo-detalle]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Reclasificar un concepto: UPDATE en ab_movimientos para todas las filas
+// con ese concepto exacto y, opcionalmente, guardar una regla persistente.
+router.post('/reclasificar', express.json(), async (req, res) => {
+  try {
+    const { concepto, categoria_nueva, proveedor_nuevo, guardar_regla, tipo_match, patron } = req.body || {};
+    if (!concepto || !categoria_nueva || !proveedor_nuevo) {
+      return res.status(400).json({ error: 'concepto, categoria_nueva y proveedor_nuevo requeridos' });
+    }
+    // 1) UPDATE ab_movimientos por concepto exacto.
+    const upd = await query(
+      `UPDATE ab_movimientos
+          SET categoria = $1,
+              proveedor_normalizado = $2
+        WHERE concepto = $3
+        RETURNING sociedad_id, periodo`,
+      [categoria_nueva, proveedor_nuevo, concepto]
+    );
+    const affected = upd.rowCount || 0;
+    const combos = new Set((upd.rows || []).map((r) => `${r.sociedad_id}|${r.periodo}`));
+
+    // 2) Si toggle "Aplicar a futuros extractos" → guardar regla.
+    let regla_id = null;
+    if (guardar_regla) {
+      const tipo = ['ilike', 'regex', 'exacto'].includes(tipo_match) ? tipo_match : 'ilike';
+      // Por default usamos el concepto completo como patrón ilike — captura
+      // el caso típico (mismo extracto futuro). Si el usuario pasa `patron`
+      // explícito (ej. substring corto), respetamos.
+      const pat = patron || concepto;
+      const ins = await one(
+        `INSERT INTO ab_reglas_normalizacion (patron, tipo_match, categoria, proveedor_normalizado, prioridad)
+         VALUES ($1, $2, $3, $4, 100)
+         RETURNING id`,
+        [pat, tipo, categoria_nueva, proveedor_nuevo]
+      );
+      regla_id = ins?.id || null;
+    }
+
+    // 3) Recalcular resumen mensual de cada (sociedad, periodo) afectado.
+    for (const combo of combos) {
+      const [sociedad_id, periodo] = combo.split('|');
+      try { await bankDb.recalcResumenMensual(sociedad_id, periodo); } catch (e) { /* tolerante */ }
+    }
+
+    res.json({ ok: true, affected, regla_id, combos: combos.size });
+  } catch (e) {
+    console.error('[bancos.reclasificar]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// Listado de reglas persistentes (activas e inactivas).
+router.get('/reglas-normalizacion', async (req, res) => {
+  try {
+    const rows = await many(
+      `SELECT id, patron, tipo_match, categoria, proveedor_normalizado,
+              prioridad, activo, creado_en
+         FROM ab_reglas_normalizacion
+        ORDER BY prioridad DESC, id ASC`
+    );
+    res.json({ reglas: rows });
+  } catch (e) {
+    console.error('[bancos.reglas.list]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Borrar regla (hard delete — no soft, para no acumular ruido).
+router.delete('/reglas-normalizacion/:id', async (req, res) => {
+  try {
+    const id = +req.params.id;
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'id inválido' });
+    const r = await query('DELETE FROM ab_reglas_normalizacion WHERE id=$1', [id]);
+    res.json({ ok: true, deleted: r.rowCount });
+  } catch (e) {
+    console.error('[bancos.reglas.delete]', e);
     res.status(500).json({ error: 'internal' });
   }
 });

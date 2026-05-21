@@ -436,7 +436,10 @@ function renderProvDonut() {
     const v = values[i];
     const p = tot > 0 ? (v / tot * 100).toFixed(1) : '0';
     const isOtros = !drillOpen && lab.startsWith('Otros (');
-    return `<div onclick="${isOtros ? 'enterDonutDrill()' : ''}" style="display:flex;align-items:center;gap:6px;padding:3px 0;${isOtros ? 'cursor:pointer;border-radius:6px' : ''}" ${isOtros ? 'onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"' : ''}>
+    const labEsc = lab.replace(/'/g, "\\'");
+    // Click en "Otros (N)" → drill. Click en cualquier otro grupo → sidebar de detalle.
+    const onClick = isOtros ? `enterDonutDrill()` : `openProvSidebar('${labEsc}')`;
+    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:pointer;border-radius:6px" onmouseover="this.style.background='var(--bg-secondary)'" onmouseout="this.style.background='transparent'">
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
       <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${lab}">${lab}${isOtros ? ' →' : ''}</span>
       <span style="font-size:11px;font-weight:500">${eur(v)}</span>
@@ -965,12 +968,138 @@ async function logout() {
   location.href = '/login';
 }
 
+// ─── Sidebar de detalle de grupo + reclasificación (Mejora A) ────────
+const CATEGORIAS_TODAS = [
+  'IMPUESTOS','SS_LABORAL','NOMINAS','ALQUILER',
+  'SUMINISTROS_LUZ','SUMINISTROS_GAS','SUMINISTROS_AGUA','TELECOMUNICACIONES',
+  'PROVEEDOR_CARNES','PROVEEDOR_PANADERIA','PROVEEDOR_FRITAS','PROVEEDOR_LACTEOS',
+  'PROVEEDOR_ACEITES','PROVEEDOR_BEBIDAS','PROVEEDOR_MAKRO','PROVEEDOR_LIMPIEZA',
+  'PROVEEDOR_PACKAGING','PROVEEDOR_OTROS',
+  'MANTENIMIENTO','SEGUROS','FINANCIERO','INTRAGRUPO','OTROS',
+  'PUBLICIDAD','SERVICIOS_PROF','DELIVERY',
+];
+
+function buildGrupoDetalleQuery() {
+  const params = new URLSearchParams();
+  const soc = $('prov-sociedad')?.value;
+  const desde = $('prov-periodo-desde')?.value;
+  const hasta = $('prov-periodo-hasta')?.value;
+  if (soc) params.set('sociedad_id', soc);
+  if (desde && hasta && desde === hasta) params.set('periodo', desde);
+  else {
+    if (desde) params.set('periodo_desde', desde);
+    if (hasta) params.set('periodo_hasta', hasta);
+  }
+  return params;
+}
+
+async function openProvSidebar(grupo) {
+  if (!grupo) return;
+  $('prov-sb-title').textContent = grupo;
+  $('prov-sb-meta').textContent = 'Cargando…';
+  $('prov-sb-body').innerHTML = '';
+  $('prov-sidebar-backdrop').style.display = '';
+  $('prov-sidebar').style.display = '';
+  try {
+    const params = buildGrupoDetalleQuery();
+    params.set('grupo', grupo);
+    const j = await api('/api/v1/bancos/grupo-detalle?' + params.toString());
+    state._sbData = j;
+    const tot = j.total || 0;
+    const totProvTab = state.prov.total || 1;
+    $('prov-sb-meta').textContent = `${eur2(tot)} · ${j.num_conceptos} conceptos · ${((tot/totProvTab)*100).toFixed(1)}% del gasto filtrado`;
+    renderProvSidebarRows(j.conceptos);
+  } catch (e) {
+    $('prov-sb-meta').textContent = 'Error: ' + e.message;
+  }
+}
+
+function closeProvSidebar() {
+  $('prov-sidebar').style.display = 'none';
+  $('prov-sidebar-backdrop').style.display = 'none';
+}
+
+function renderProvSidebarRows(conceptos) {
+  const body = $('prov-sb-body');
+  body.innerHTML = conceptos.map((c, i) => {
+    const conceptoEsc = (c.concepto || '').replace(/"/g, '&quot;');
+    return `<div data-row="${i}" style="border:.5px solid var(--border-3);border-radius:8px;padding:8px 10px;margin-bottom:8px">
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <div style="flex:1;min-width:0">
+          <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${conceptoEsc}">${c.concepto}</p>
+          <p style="font-size:10px;color:var(--text-2);margin-top:2px">
+            <strong style="color:#dc2626">${eur2(c.total_importe)}</strong> · ${c.num_transacciones} tx · cat. <code>${c.categoria_actual || '—'}</code>${c.ultima_fecha ? ' · últ. ' + c.ultima_fecha : ''}
+          </p>
+        </div>
+        <button onclick="toggleReclasificar(${i})" id="rc-btn-${i}" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px;flex-shrink:0">Reclasificar</button>
+      </div>
+      <div id="rc-form-${i}" style="display:none;margin-top:10px;padding-top:10px;border-top:.5px dashed var(--border-3)">
+        <div style="display:grid;grid-template-columns:140px 1fr;gap:6px 10px;align-items:center;font-size:11px">
+          <label>Categoría</label>
+          <select id="rc-cat-${i}" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
+            ${CATEGORIAS_TODAS.map((cat) => `<option value="${cat}" ${cat === c.categoria_actual ? 'selected' : ''}>${cat}</option>`).join('')}
+          </select>
+          <label>Nombre normalizado</label>
+          <input type="text" id="rc-name-${i}" value="${(state._sbData?.grupo || '').replace(/"/g, '&quot;')}" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
+          <label style="grid-column:1/-1;display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="rc-rule-${i}">
+            <span>Aplicar a futuros extractos (guardar regla)</span>
+          </label>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end">
+          <button onclick="toggleReclasificar(${i})" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Cancelar</button>
+          <button onclick="confirmReclasificar(${i})" style="padding:5px 12px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Confirmar</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleReclasificar(i) {
+  const form = $(`rc-form-${i}`);
+  if (!form) return;
+  const open = form.style.display !== 'none';
+  form.style.display = open ? 'none' : '';
+  const btn = $(`rc-btn-${i}`);
+  if (btn) btn.textContent = open ? 'Reclasificar' : 'Cerrar';
+}
+
+async function confirmReclasificar(i) {
+  const concepto = state._sbData?.conceptos?.[i]?.concepto;
+  if (!concepto) return;
+  const categoria_nueva = $(`rc-cat-${i}`)?.value;
+  const proveedor_nuevo = $(`rc-name-${i}`)?.value?.trim();
+  const guardar_regla = !!$(`rc-rule-${i}`)?.checked;
+  if (!categoria_nueva || !proveedor_nuevo) {
+    Api.pill('Categoría y nombre requeridos', true);
+    return;
+  }
+  try {
+    const j = await api('/api/v1/bancos/reclasificar', {
+      method: 'POST',
+      body: JSON.stringify({ concepto, categoria_nueva, proveedor_nuevo, guardar_regla }),
+    });
+    Api.pill(`Reclasificadas: ${j.affected}` + (j.regla_id ? ` · regla #${j.regla_id} creada` : ''));
+    // Refresh donut + ranking, y el sidebar con el nuevo nombre si cambió.
+    await loadProvRanking();
+    if (proveedor_nuevo !== (state._sbData?.grupo || '')) {
+      closeProvSidebar();
+    } else {
+      await openProvSidebar(proveedor_nuevo);
+    }
+  } catch (e) {
+    Api.pill('Error: ' + e.message, true);
+  }
+}
+
 Object.assign(window, {
   reload, showTab, toggleUpload, uploadExtracto, uploadCierres, loadMovs, changePage, exportCsv, logout,
   loadProvRanking, exportProveedoresCsv,
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
   setDonutThreshold, enterDonutDrill, exitDonutDrill,
+  // Sidebar de detalle / reclasificación
+  openProvSidebar, closeProvSidebar, toggleReclasificar, confirmReclasificar,
   // Evolución temporal
   loadEvolucion, evRenderSugerencias, evSeleccionar, evQuitar, evAplicarTopMatch,
 });
