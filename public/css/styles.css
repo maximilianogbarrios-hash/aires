@@ -77,6 +77,10 @@ input[type=number].real-inp{width:80px;text-align:right;font-size:12px;padding:3
 .ped-pagado-toggle input:checked + span{color:#16a34a;font-weight:500}
 .ped-pagado-toggle input:disabled{opacity:.4}
 .ped-pagado-ro{color:#16a34a;font-size:11px;font-weight:500;margin-top:1px}
+/* Mejora 9: input "text-number" sin flechas y con UX cómodo */
+.ped-hours-inp{text-align:right}
+.ped-hours-inp::-webkit-outer-spin-button,.ped-hours-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.ped-hours-inp[type=number]{-moz-appearance:textfield}
 .mix-grid-cell{padding:3px 4px;border-bottom:.5px solid var(--border-4)}
 .mix-sum-ok{color:#16a34a;font-weight:500}
 .mix-sum-bad{color:#dc2626;font-weight:500}

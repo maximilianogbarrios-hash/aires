@@ -322,31 +322,8 @@
     const items = pState.personal.items || [];
     const semanas = pState.personal.semanas || [];
 
-    let totalDisp = 0, totalCarg = 0, enRojo = 0;
-    const rows = items.map((it) => {
-      const cargadas = it.semanas.map((s) => {
-        const k = `${it.local_id}|${s.semana_iso}`;
-        const v = pState.personalCargado[k];
-        return v == null ? null : +v;
-      });
-      const totalCargLocal = cargadas.reduce((s, v) => s + (v || 0), 0);
-      const totalDispLocal = it.horas_disponibles_mes;
-      const varPct = totalDispLocal > 0 && cargadas.some((v) => v != null) ? (totalCargLocal - totalDispLocal) / totalDispLocal : null;
-      const sem = varPct == null ? 'sem-x'
-        : Math.abs(varPct) <= 0.05 ? 'sem-v'
-        : Math.abs(varPct) <= 0.12 ? 'sem-a' : 'sem-r';
-      if (sem === 'sem-r') enRojo++;
-      totalDisp += totalDispLocal;
-      totalCarg += totalCargLocal;
-      return { it, cargadas, totalDispLocal, totalCargLocal, varPct, sem };
-    });
-
-    $('ped-pk-disp').textContent = n1(totalDisp) + ' h';
-    $('ped-pk-carg').textContent = n1(totalCarg) + ' h';
-    $('ped-pk-util').textContent = totalDisp > 0 ? pct((totalCarg / totalDisp) * 100) : '—';
-    $('ped-pk-rojo').textContent = enRojo;
-
     const semHdr = semanas.map((w) => `<th style="text-align:right" title="${w.fecha_lunes} a ${w.fecha_domingo}">S${w.semana_iso}<br><span style="font-size:9px;color:var(--text-2);font-weight:400">${rangoSemana(w.fecha_lunes, w.fecha_domingo)}</span></th>`).join('');
+
     const html = `
       <table>
         <thead><tr>
@@ -357,41 +334,157 @@
           <th style="text-align:right">€/h</th>
           <th style="text-align:right">Horas/mes</th>
           ${semHdr}
-          <th style="text-align:right">H. cargadas</th>
+          <th style="text-align:right" id="ped-pers-h-carg-h">H. cargadas</th>
           <th style="text-align:right">Var %</th>
           <th style="text-align:center">●</th>
         </tr></thead>
         <tbody>
-          ${rows.map(({ it, cargadas, totalDispLocal, totalCargLocal, varPct, sem }) => `
-            <tr>
+          ${items.map((it) => `
+            <tr id="ped-row-${it.local_id}">
               <td style="font-weight:500">${it.nombre}</td>
               <td><span class="bdg b${it.dani_only ? 'E' : it.grupo}" style="font-size:9px">${it.grupo}</span></td>
               <td style="text-align:right">${eur(it.fac_presup_mes)}</td>
               <td style="text-align:right">${it.pct_personal.toFixed(1).replace('.', ',')}%</td>
               <td style="text-align:right">${eur(it.budget_personal)}</td>
               <td style="text-align:right">${it.euro_hora.toFixed(2).replace('.', ',')}</td>
-              <td style="text-align:right;font-weight:500">${n1(it.horas_disponibles_mes)}</td>
-              ${it.semanas.map((s, i) => {
-                const disp = s.horas_disponibles;
-                const cargVal = cargadas[i] == null ? '' : cargadas[i];
-                return `<td style="text-align:right"><span style="font-size:10px;color:var(--text-2)">d:${n1(disp)}</span><br>
-                  <input class="ped-cell-inp" type="number" min="0" step="0.5" placeholder="${n1(disp)}" value="${cargVal}" onchange="pedSetHoras('${it.local_id}',${s.semana_iso},this.value)"></td>`;
+              <td style="text-align:right;font-weight:500" id="ped-disp-${it.local_id}">${n1(it.horas_disponibles_mes)}</td>
+              ${it.semanas.map((s) => {
+                const k = `${it.local_id}|${s.semana_iso}`;
+                const v = pState.personalCargado[k];
+                const display = v == null ? '' : String(v).replace('.', ',');
+                return `<td style="text-align:right"><span style="font-size:10px;color:var(--text-2)">d:${n1(s.horas_disponibles)}</span><br>
+                  <input class="ped-cell-inp ped-hours-inp" type="text" inputmode="decimal"
+                    data-loc="${it.local_id}" data-week="${s.semana_iso}"
+                    placeholder="${n1(s.horas_disponibles)}" value="${display}"
+                    autocomplete="off" spellcheck="false"
+                    onfocus="this.select()"
+                    oninput="pedHoursInput(this)"
+                    onkeydown="pedHoursKey(event, this)"></td>`;
               }).join('')}
-              <td style="text-align:right;font-weight:500">${cargadas.some((v) => v != null) ? n1(totalCargLocal) : '—'}</td>
-              <td style="text-align:right;color:${varPct == null ? 'var(--text-2)' : varPct < 0 ? '#16a34a' : '#dc2626'}">${varPct == null ? '—' : ((varPct >= 0 ? '+' : '') + (varPct * 100).toFixed(1).replace('.', ',') + '%')}</td>
-              <td style="text-align:center"><span class="sem ${sem}"></span></td>
+              <td style="text-align:right;font-weight:500" id="ped-carg-${it.local_id}">—</td>
+              <td style="text-align:right" id="ped-var-${it.local_id}">—</td>
+              <td style="text-align:center" id="ped-sem-${it.local_id}"><span class="sem sem-x"></span></td>
             </tr>
           `).join('')}
         </tbody>
       </table>`;
     $('ped-personal-table').innerHTML = html;
+
+    // Render inicial de totales por fila + KPIs.
+    items.forEach((it) => recalcPersonalRow(it.local_id));
+    recalcAllPersonalKPIs();
   }
 
-  window.pedSetHoras = function (localId, semIso, val) {
-    const k = `${localId}|${semIso}`;
-    if (val === '' || val == null) delete pState.personalCargado[k];
-    else pState.personalCargado[k] = Math.max(0, +val || 0);
-    renderPersonal();
+  // Recalcula los tds de una fila (H. cargadas, Var %, semáforo) sin
+  // tocar los inputs — evita perder el foco durante typing.
+  function recalcPersonalRow(localId) {
+    const it = (pState.personal?.items || []).find((x) => x.local_id === localId);
+    if (!it) return;
+    const cargadas = it.semanas.map((s) => {
+      const v = pState.personalCargado[`${it.local_id}|${s.semana_iso}`];
+      return v == null ? null : +v;
+    });
+    const totalCargLocal = cargadas.reduce((s, v) => s + (v || 0), 0);
+    const totalDispLocal = it.horas_disponibles_mes;
+    const varPct = totalDispLocal > 0 && cargadas.some((v) => v != null)
+      ? (totalCargLocal - totalDispLocal) / totalDispLocal : null;
+    const sem = varPct == null ? 'sem-x'
+      : Math.abs(varPct) <= 0.05 ? 'sem-v'
+      : Math.abs(varPct) <= 0.12 ? 'sem-a' : 'sem-r';
+    const carg = document.getElementById('ped-carg-' + localId);
+    const vEl  = document.getElementById('ped-var-'  + localId);
+    const sEl  = document.getElementById('ped-sem-'  + localId);
+    if (carg) carg.textContent = cargadas.some((v) => v != null) ? n1(totalCargLocal) : '—';
+    if (vEl) {
+      vEl.textContent = varPct == null ? '—' : ((varPct >= 0 ? '+' : '') + (varPct * 100).toFixed(1).replace('.', ',') + '%');
+      vEl.style.color = varPct == null ? 'var(--text-2)' : varPct < 0 ? '#16a34a' : '#dc2626';
+    }
+    if (sEl) sEl.innerHTML = `<span class="sem ${sem}"></span>`;
+    return { totalCargLocal, totalDispLocal, sem };
+  }
+
+  function recalcAllPersonalKPIs() {
+    const items = pState.personal?.items || [];
+    let totalDisp = 0, totalCarg = 0, enRojo = 0;
+    for (const it of items) {
+      const r = recalcPersonalRow(it.local_id);
+      if (!r) continue;
+      totalDisp += r.totalDispLocal;
+      totalCarg += r.totalCargLocal;
+      if (r.sem === 'sem-r') enRojo++;
+    }
+    if ($('ped-pk-disp')) $('ped-pk-disp').textContent = n1(totalDisp) + ' h';
+    if ($('ped-pk-carg')) $('ped-pk-carg').textContent = n1(totalCarg) + ' h';
+    if ($('ped-pk-util')) $('ped-pk-util').textContent = totalDisp > 0 ? pct((totalCarg / totalDisp) * 100) : '—';
+    if ($('ped-pk-rojo')) $('ped-pk-rojo').textContent = enRojo;
+  }
+
+  // Sanitiza y guarda en memoria. Debounce 800ms para refrescar KPIs/totales.
+  let _hoursTimer = null;
+  let _hoursPendingLocs = new Set();
+  function scheduleHoursRefresh(localId) {
+    _hoursPendingLocs.add(localId);
+    clearTimeout(_hoursTimer);
+    _hoursTimer = setTimeout(() => {
+      for (const id of _hoursPendingLocs) recalcPersonalRow(id);
+      _hoursPendingLocs.clear();
+      recalcAllPersonalKPIs();
+    }, 800);
+  }
+
+  function sanitizeHoursValue(raw) {
+    // Acepta dígitos y un único separador decimal (coma o punto).
+    let s = String(raw || '').replace(/[^0-9.,]/g, '');
+    // Colapsa múltiples separadores: deja sólo el primero.
+    let seen = false;
+    let out = '';
+    for (const ch of s) {
+      if (ch === '.' || ch === ',') {
+        if (seen) continue;
+        seen = true;
+        out += ','; // Display siempre con coma (locale es)
+      } else {
+        out += ch;
+      }
+    }
+    return out;
+  }
+
+  window.pedHoursInput = function (inp) {
+    const sanitized = sanitizeHoursValue(inp.value);
+    if (sanitized !== inp.value) {
+      const pos = inp.selectionStart;
+      inp.value = sanitized;
+      try { inp.setSelectionRange(pos, pos); } catch {}
+    }
+    const num = sanitized === '' ? null : Math.max(0, +sanitized.replace(',', '.') || 0);
+    const k = `${inp.dataset.loc}|${inp.dataset.week}`;
+    if (num == null) delete pState.personalCargado[k];
+    else pState.personalCargado[k] = num;
+    scheduleHoursRefresh(inp.dataset.loc);
+  };
+
+  window.pedHoursKey = function (ev, inp) {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      // Flush inmediato del debounce y luego mover foco.
+      clearTimeout(_hoursTimer);
+      for (const id of _hoursPendingLocs) recalcPersonalRow(id);
+      _hoursPendingLocs.clear();
+      recalcAllPersonalKPIs();
+      const week = inp.dataset.week;
+      const all = [...document.querySelectorAll(`.ped-hours-inp[data-week="${week}"]`)];
+      const idx = all.indexOf(inp);
+      if (idx >= 0 && idx + 1 < all.length) {
+        const next = all[idx + 1];
+        next.focus();
+        next.select();
+      } else {
+        inp.blur();
+      }
+    }
+    // Tab: comportamiento nativo del browser (siguiente input en DOM,
+    // que es la siguiente semana de la misma fila por como armamos el HTML).
   };
 
   // ─── MIX ──────────────────────────────────────────────────────────────

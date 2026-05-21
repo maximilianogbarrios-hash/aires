@@ -22,6 +22,29 @@ está separado en [recategorizacion-log.md](recategorizacion-log.md).
 
 **Decisión**: el endpoint NO devuelve líneas por defecto si no hay selección — el front no llama a la API en ese caso. Esto evita queries pesadas innecesarias.
 
+## Mejora 9 — UX inputs de horas en Personal
+
+**Cambios en `renderPersonal` de `public/js/pedidos.js`**
+- Inputs de horas cargadas pasan de `type="number"` a `type="text"` con
+  `inputmode="decimal"`. Esto elimina las flechitas spinner y permite
+  controlar el sanitizado en JS (acepta dígitos, una sola coma/punto).
+- `onfocus="this.select()"` selecciona todo el contenido al entrar.
+- `Enter`: hace flush del debounce, recalcula totales y mueve foco al
+  mismo `data-week` de la siguiente fila (saltea el input si es el último).
+- `Tab`: deja el comportamiento nativo del browser (siguiente input en DOM,
+  que es la siguiente semana de la misma fila).
+- Debounce 800ms: `pState.personalCargado` se actualiza en cada keystroke
+  pero el recálculo de totales/KPIs ocurre 800ms después de la última
+  tecla. Esto evita perder el foco durante el typing.
+- Recalc parcial: en vez de re-renderizar toda la tabla (lo cual
+  destruía el input y perdía el foco), `recalcPersonalRow(localId)`
+  actualiza in-place los tds de "H. cargadas", "Var %", y el semáforo
+  por fila, y `recalcAllPersonalRows()` actualiza los 4 KPIs superiores.
+
+**Decisión**: el formato visual es con coma (formato locale-es), pero el
+valor numérico se guarda con punto internamente. La sanitización colapsa
+múltiples puntos/comas en uno solo y descarta caracteres no numéricos.
+
 ## Mejora 8 — Control granular de pestañas por rol
 
 **Permisos centralizados** en `lib/roles.js`:
