@@ -88,17 +88,28 @@ function setUserUI() {
   if (!ctx.user) return;
   $('tb-user').textContent = `${ctx.user.email} (${ctx.user.role})`;
   if (ctx.user.role === 'admin') $('tb-admin-link').style.display = '';
-  // Mejora 6: el panel de Parámetros sólo se muestra a admin y socio.
-  const esAdminSocio = ['admin', 'socio'].includes(ctx.user.role);
-  const panel = $('params-panel');
-  if (panel) panel.style.display = esAdminSocio ? '' : 'none';
-  // Botón Imprimir del topbar: visible sólo para admin y socio. Para otros
-  // roles queda oculto (gating de exportación a nivel UI).
-  const btnPrint = $('tb-imprimir');
-  if (btnPrint) btnPrint.style.display = esAdminSocio ? '' : 'none';
-
-  // Mejora 8: visibilidad granular.
+  // Permisos via flags del backend (single source of truth, lib/roles.js).
   const flags = ctx.flags || {};
+  // Panel de Parámetros visible para admin/socio/gerente (flag config_w).
+  // Gerente puede editar pero cada cambio queda en ab_parametros_historial.
+  const panel = $('params-panel');
+  if (panel) panel.style.display = flags.config_w ? '' : 'none';
+  // Botón Imprimir del topbar: admin y socio (flag print_w).
+  const btnPrint = $('tb-imprimir');
+  if (btnPrint) btnPrint.style.display = flags.print_w ? '' : 'none';
+  // Aviso visual cuando gerente edita parámetros (queda registrado).
+  if (panel && flags.config_w_log_only) {
+    const avisoExistente = document.getElementById('params-audit-notice');
+    if (!avisoExistente) {
+      const div = document.createElement('div');
+      div.id = 'params-audit-notice';
+      div.style.cssText = 'margin:.5rem 0 0;padding:8px 12px;background:#FEF3C7;border-left:3px solid #D97706;border-radius:6px;font-size:11px;color:#78350F';
+      div.textContent = 'Tus cambios al panel de parámetros quedan registrados en el historial de auditoría.';
+      panel.appendChild(div);
+    }
+  }
+
+  // Visibilidad granular (matriz dashboard).
   // KPIs financieros globales (g4 + hdr-fac/mg)
   if ($('kpis-top'))        $('kpis-top').style.display        = flags.dashboard_kpis ? '' : 'none';
   if ($('hdr-financiero'))  $('hdr-financiero').style.display  = flags.dashboard_kpis ? '' : 'none';
