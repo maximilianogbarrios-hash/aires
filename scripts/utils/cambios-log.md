@@ -22,6 +22,38 @@ está separado en [recategorizacion-log.md](recategorizacion-log.md).
 
 **Decisión**: el endpoint NO devuelve líneas por defecto si no hay selección — el front no llama a la API en ese caso. Esto evita queries pesadas innecesarias.
 
+## Mejora 7 — Confirmar pedido con importe real + toggle Pagado + cruce bancos
+
+**Permisos**
+- Nuevo perm `pedidos_pagar_w` → admin y administrativo (no socio ni gerente).
+
+**Backend**
+- `PUT /api/v1/pedidos/marcar-pagado` cambia estado a 'recibido' (o vuelve a
+  'enviado' si `pagado=false`) y cruza con ab_movimientos en el rango
+  lunes-domingo de la semana ISO, sumando importes del mismo proveedor
+  canónico. Devuelve `pagado_banco`, `diferencia`, `ratio_diff`, `ok_match`
+  (true si la diferencia ≤ 5%).
+- `GET /api/v1/pedidos/materia-prima` ahora también calcula `pagado_banco`
+  y un flag `mismatch_banco` por celda para los pedidos en estado 'recibido'.
+  Reutiliza el mismo cruce.
+- Decisión: como ab_movimientos no tiene local_id asociado a pagos a
+  proveedores, el pagado banco de un proveedor se **distribuye a todos los
+  locales** que lo marcaron como recibido en esa semana. Esto puede
+  exagerar el match — alternativa más conservadora sería distribuirlo
+  proporcionalmente al importe real, pero el usuario verá el total
+  bancario "tal cual" cobrado en la semana y lo interpretará bien.
+
+**Frontend (Pedidos → Materia Prima)**
+- Cada celda de proveedor ahora muestra:
+  - input `Confirmado €` (editable por todos los roles con `pedidos_w`)
+  - sugerido como label gris debajo
+  - toggle `pagar` (sólo visible para roles con `pedidos_pagar_w`)
+  - badge `banco: NNNN€` (debajo) cuando ya está marcado como pagado, en
+    rojo con ⚠ si difiere del confirmado en > 5%
+- `pedSetReal` ahora promueve el estado a 'enviado' cuando se ingresa un
+  importe real (sin pisar 'recibido' si ya estaba pagado). Si el usuario
+  borra el importe, vuelve a 'pendiente'.
+
 ## Mejora 6 — Ocultar Parámetros según rol
 
 - Card "⚙ Parámetros" del dashboard ahora arranca con `display:none` y

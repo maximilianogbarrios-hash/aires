@@ -15,9 +15,10 @@
     const role = window.ctx?.user?.role;
     if (!role) return false;
     const map = {
-      pedidos_view:  ['admin','socio','gerente','administrativo','pedidos'],
-      pedidos_w:     ['admin','socio','gerente','administrativo','pedidos'],
-      pedidos_mix_w: ['admin','socio'],
+      pedidos_view:    ['admin','socio','gerente','administrativo','pedidos'],
+      pedidos_w:       ['admin','socio','gerente','administrativo','pedidos'],
+      pedidos_mix_w:   ['admin','socio'],
+      pedidos_pagar_w: ['admin','administrativo'],
     };
     return (map[perm] || []).includes(role);
   }
@@ -185,6 +186,39 @@
     }
 
     const canWrite = hasPerm('pedidos_w');
+    const canPagar = hasPerm('pedidos_pagar_w');
+
+    function renderCelda(it, p) {
+      const semClass = p.semaforo === 'verde' ? 'sem-cell-v' : p.semaforo === 'amarillo' ? 'sem-cell-a' : p.semaforo === 'rojo' ? 'sem-cell-r' : '';
+      const mismatchClass = p.mismatch_banco ? 'sem-cell-r' : '';
+      const realVal = p.importe_real == null ? '' : p.importe_real;
+      const idCell = `${it.local_id}|${p.proveedor}|${p.categoria}`.replace(/'/g, '&#39;');
+      const sugLbl = `<span style="font-size:9px;color:var(--text-2)" title="Sugerido por mix × budget MP semana">≈${eur(p.importe_sugerido)}</span>`;
+      const inpConf = canWrite
+        ? `<input class="ped-cell-inp" type="number" min="0" step="10" placeholder="${Math.round(p.importe_sugerido)}" value="${realVal}" onchange="pedSetReal('${it.local_id}','${p.proveedor.replace(/'/g, '&#39;')}','${p.categoria}',this.value,${p.importe_sugerido})" title="Confirmado €">`
+        : `<span style="font-size:11px">${eur(p.importe_real)}</span>`;
+      // Toggle pagado
+      const isPagado = p.estado === 'recibido';
+      const pagadoUI = canPagar
+        ? `<label class="ped-pagado-toggle" title="${isPagado ? 'Marcar como pendiente de pago' : 'Marcar pagado y cruzar con bancos'}">
+            <input type="checkbox" ${isPagado ? 'checked' : ''} ${p.importe_real == null ? 'disabled' : ''} onchange="pedTogglePagado('${it.local_id}','${p.proveedor.replace(/'/g, '&#39;')}',this.checked)">
+            <span>${isPagado ? '✓ pag.' : 'pagar'}</span>
+          </label>`
+        : isPagado ? '<span class="ped-pagado-ro" title="Pagado">✓</span>' : '';
+      // Pagado banco vs real (badge si está recibido)
+      const bancoBadge = (isPagado && p.pagado_banco != null)
+        ? `<div style="font-size:9px;color:${p.mismatch_banco ? '#dc2626' : 'var(--text-2)'}" title="Sumado de ab_movimientos esta semana">banco: ${eur(p.pagado_banco)}${p.mismatch_banco ? ' ⚠' : ''}</div>`
+        : '';
+      return `<td class="${semClass} ${mismatchClass}" style="text-align:right;vertical-align:top">
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:1px">
+            ${inpConf}
+            ${sugLbl}
+            ${pagadoUI}
+            ${bancoBadge}
+          </div>
+        </td>`;
+    }
+
     const html = `
       <table>
         <thead><tr>
@@ -201,25 +235,19 @@
           ${items.map((it) => {
             const provMap = new Map(it.proveedores.map((p) => [p.proveedor, p]));
             return `<tr>
-              <td style="font-weight:500">${it.nombre}<br><span class="bdg b${it.dani_only ? 'E' : it.grupo}" style="font-size:9px">${it.grupo}</span></td>
-              <td style="text-align:right">${eur(it.fac_estimada_semana)}</td>
-              <td style="text-align:right">${it.pct_mp.toFixed(1).replace('.', ',')}%</td>
-              <td style="text-align:right;font-weight:500">${eur(it.budget_mp_semana)}</td>
+              <td style="font-weight:500;vertical-align:top">${it.nombre}<br><span class="bdg b${it.dani_only ? 'E' : it.grupo}" style="font-size:9px">${it.grupo}</span></td>
+              <td style="text-align:right;vertical-align:top">${eur(it.fac_estimada_semana)}</td>
+              <td style="text-align:right;vertical-align:top">${it.pct_mp.toFixed(1).replace('.', ',')}%</td>
+              <td style="text-align:right;font-weight:500;vertical-align:top">${eur(it.budget_mp_semana)}</td>
               ${provList.map((pname) => {
                 const p = provMap.get(pname);
                 if (!p) return '<td style="text-align:right;color:var(--text-2)">—</td>';
-                const semClass = p.semaforo === 'verde' ? 'sem-cell-v' : p.semaforo === 'amarillo' ? 'sem-cell-a' : p.semaforo === 'rojo' ? 'sem-cell-r' : '';
-                const realVal = p.importe_real == null ? '' : p.importe_real;
-                const sugTxt = `<span style="font-size:10px;color:var(--text-2)" title="Sugerido">${eur(p.importe_sugerido)}</span>`;
-                const inp = canWrite
-                  ? `<input class="ped-cell-inp" type="number" min="0" step="10" placeholder="${Math.round(p.importe_sugerido)}" value="${realVal}" onchange="pedSetReal('${it.local_id}','${pname.replace(/'/g, '&#39;')}','${p.categoria}',this.value,${p.importe_sugerido})">`
-                  : `<span style="font-size:11px">${eur(p.importe_real)}</span>`;
-                return `<td class="${semClass}" style="text-align:right">${inp}<br>${sugTxt}</td>`;
+                return renderCelda(it, p);
               }).join('')}
-              <td style="text-align:right;font-weight:500">${eur(it.total_pedido)}</td>
-              <td style="text-align:center"><span class="ped-estado ${it.estado_local}">${it.estado_local}</span></td>
-              <td class="no-print">${canWrite && it.estado_local !== 'enviado' && it.proveedores.length
-                ? `<button class="tgl" onclick="pedConfirmar('${it.local_id}')">Confirmar</button>`
+              <td style="text-align:right;font-weight:500;vertical-align:top">${eur(it.total_pedido)}</td>
+              <td style="text-align:center;vertical-align:top"><span class="ped-estado ${it.estado_local}">${it.estado_local}</span></td>
+              <td class="no-print" style="vertical-align:top">${canWrite && it.estado_local !== 'enviado' && it.proveedores.length
+                ? `<button class="tgl" onclick="pedConfirmar('${it.local_id}')">Confirmar todo</button>`
                 : ''}</td>
             </tr>`;
           }).join('')}
@@ -228,15 +256,47 @@
     $('ped-mp-table').innerHTML = html;
   }
 
+  window.pedTogglePagado = async function (localId, proveedor, pagado) {
+    try {
+      const r = await Api.pedidosMarcarPagado({
+        local_id: localId,
+        anio: pState.week.anio, semana_iso: pState.week.semana_iso,
+        proveedor, pagado,
+      });
+      if (pagado) {
+        const okTxt = r.ok_match ? '✓ banco coincide' : '⚠ diferencia con banco';
+        Api.pill(`Pagado · ${okTxt} (banco: ${r.pagado_banco}€, dif ${r.diferencia}€)`, !r.ok_match);
+      } else {
+        Api.pill('Marcado como pendiente de pago');
+      }
+      await renderMP();
+    } catch (e) {
+      Api.pill('Error: ' + e.message, true);
+    }
+  };
+
   window.pedSetReal = async function (localId, proveedor, categoria, val, sugerido) {
     const real = val === '' || val == null ? null : Math.max(0, +val || 0);
+    // Si el pedido ya estaba enviado o recibido lo mantenemos; si era
+    // pendiente o nuevo, al guardar Confirmado € pasa a 'enviado'.
+    let estadoActual = 'pendiente';
+    if (pState.mp?.items) {
+      for (const it of pState.mp.items) {
+        if (it.local_id !== localId) continue;
+        const p = it.proveedores.find((x) => x.proveedor === proveedor && x.categoria === categoria);
+        if (p) { estadoActual = p.estado; break; }
+      }
+    }
+    const nuevoEstado = (real == null || real === 0)
+      ? 'pendiente'
+      : (estadoActual === 'recibido' ? 'recibido' : 'enviado');
     try {
       await Api.pedidosSavePedido({
         local_id: localId, anio: pState.week.anio, semana_iso: pState.week.semana_iso,
         proveedor, categoria, importe_sugerido: sugerido, importe_real: real,
-        estado: 'pendiente',
+        estado: nuevoEstado,
       });
-      Api.pill('Guardado');
+      Api.pill(nuevoEstado === 'enviado' ? 'Confirmado · enviado' : 'Guardado');
       await renderMP();
     } catch (e) {
       Api.pill('Error: ' + e.message, true);

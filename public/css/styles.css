@@ -72,6 +72,11 @@ input[type=number].real-inp{width:80px;text-align:right;font-size:12px;padding:3
 .ped-estado.sin_mix{background:var(--bg-secondary);color:var(--text-2)}
 .ped-cell-inp{width:78px;text-align:right;font-size:11px;padding:2px 4px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-secondary);color:var(--text)}
 .ped-cell-inp:focus{background:#E8F5E9;color:#1B5E20;outline:1px solid #16a34a}
+.ped-pagado-toggle{display:inline-flex;align-items:center;gap:3px;font-size:9px;color:var(--text-2);cursor:pointer;padding:0;margin-top:1px}
+.ped-pagado-toggle input{margin:0;width:11px;height:11px;cursor:pointer;accent-color:#16a34a}
+.ped-pagado-toggle input:checked + span{color:#16a34a;font-weight:500}
+.ped-pagado-toggle input:disabled{opacity:.4}
+.ped-pagado-ro{color:#16a34a;font-size:11px;font-weight:500;margin-top:1px}
 .mix-grid-cell{padding:3px 4px;border-bottom:.5px solid var(--border-4)}
 .mix-sum-ok{color:#16a34a;font-weight:500}
 .mix-sum-bad{color:#dc2626;font-weight:500}

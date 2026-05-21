@@ -106,6 +106,9 @@ window.Api = (function () {
   const pedidosConfirmar = (payload) => jsonFetch('/api/v1/pedidos/confirmar-semana', {
     method: 'POST', body: JSON.stringify(payload),
   });
+  const pedidosMarcarPagado = (payload) => jsonFetch('/api/v1/pedidos/marcar-pagado', {
+    method: 'PUT', body: JSON.stringify(payload),
+  });
   const pedidosCmpBancos = (q = {}) => {
     const qs = new URLSearchParams(q).toString();
     return jsonFetch('/api/v1/pedidos/comparativa-bancos' + (qs ? '?' + qs : ''));
@@ -124,7 +127,7 @@ window.Api = (function () {
     saveFacturacionSemanal, getFacturacionSemanal,
     pedidosBootstrap, pedidosMP, pedidosPersonal,
     pedidosMix, pedidosMixSave, pedidosMixCopy, pedidosMixImport,
-    pedidosSavePedido, pedidosConfirmar, pedidosCmpBancos,
+    pedidosSavePedido, pedidosConfirmar, pedidosMarcarPagado, pedidosCmpBancos,
     pedidosHistorial, pedidosRanking,
     logout, debouncedSave, pill,
   };

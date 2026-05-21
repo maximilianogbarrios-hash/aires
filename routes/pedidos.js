@@ -12,6 +12,7 @@ const express = require('express');
 const { query, one, many, tx } = require('../lib/db');
 const { requireAuth, requirePerm } = require('../lib/auth');
 const { weeksInMonth, mondayOfIsoWeek, isoStr, addDays } = require('../lib/iso-weeks');
+const { normalizarProveedor, esIntraGrupo } = require('../lib/bank/normalizers');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -348,6 +349,36 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
     const pedByKey = new Map();
     for (const r of pedRows) pedByKey.set(`${r.local_id}|${r.proveedor}|${r.categoria}`, r);
 
+    // Cruce con ab_movimientos: para los pedidos en estado 'recibido',
+    // sumamos pagos del mismo proveedor en la semana ISO completa
+    // (lunes-domingo). Eso permite mostrar la verificación banco vs real.
+    const provsRecibidos = new Set(
+      pedRows.filter((p) => p.estado === 'recibido').map((p) => p.proveedor)
+    );
+    const pagadoPorProv = new Map(); // 'local|proveedor' -> total pagado banco
+    if (provsRecibidos.size > 0) {
+      const movRows = await many(
+        `SELECT concepto, categoria, importe::float8 AS importe
+           FROM ab_movimientos
+          WHERE importe < 0 AND fecha BETWEEN $1 AND $2`,
+        [week.fecha_lunes, week.fecha_domingo]
+      );
+      for (const m of movRows) {
+        if (esIntraGrupo(m.concepto)) continue;
+        const { proveedor: prov } = normalizarProveedor(m.concepto, m.categoria);
+        if (!provsRecibidos.has(prov)) continue;
+        // Sin asignación de local_id en movimientos: distribuimos el match
+        // por proveedor a TODOS los locales que lo tienen marcado recibido.
+        const abs = Math.abs(+m.importe);
+        for (const ped of pedRows) {
+          if (ped.estado === 'recibido' && ped.proveedor === prov) {
+            const k = `${ped.local_id}|${ped.proveedor}`;
+            pagadoPorProv.set(k, (pagadoPorProv.get(k) || 0) + abs);
+          }
+        }
+      }
+    }
+
     // Componer respuesta por local.
     const items = locales.map((l) => {
       const facSem = facSemanaPorLocal(l.id);
@@ -362,6 +393,11 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
           : Math.abs(variacion) <= 0.10 ? 'verde'
           : Math.abs(variacion) <= 0.20 ? 'amarillo'
           : 'rojo';
+        const pagado_banco = pagadoPorProv.get(`${l.id}|${m.proveedor}`) || null;
+        // Alerta de mismatch banco vs real (>5% diff sólo si está marcado recibido)
+        const mismatch_banco = (ped?.estado === 'recibido' && real != null && pagado_banco != null)
+          ? Math.abs(pagado_banco - real) / Math.max(real, 1) > 0.05
+          : false;
         return {
           proveedor: m.proveedor,
           categoria: m.categoria,
@@ -372,6 +408,8 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
           notas: ped?.notas || null,
           variacion_pct: variacion == null ? null : Math.round(variacion * 10000) / 100,
           semaforo,
+          pagado_banco: pagado_banco != null ? Math.round(pagado_banco * 100) / 100 : null,
+          mismatch_banco,
           updated_at: ped?.updated_at || null,
         };
       });
@@ -474,6 +512,77 @@ router.put('/pedido', requirePerm('pedidos_w'), async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error('[pedidos.pedido.put]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// PUT /pedidos/marcar-pagado { local_id, anio, semana_iso, proveedor, pagado: true|false }
+// Marca como 'recibido' (o vuelve a 'enviado') y cruza con ab_movimientos
+// para detectar si el pago bancario del mismo proveedor en esa semana
+// coincide con el importe_real cargado.
+router.put('/marcar-pagado', requirePerm('pedidos_pagar_w'), async (req, res) => {
+  try {
+    const { local_id, anio, semana_iso, proveedor } = req.body || {};
+    const pagado = req.body.pagado !== false; // default true
+    if (!local_id || !anio || !semana_iso || !proveedor) {
+      return res.status(400).json({ error: 'local_id, anio, semana_iso, proveedor requeridos' });
+    }
+    // Actualizar estado.
+    const userId = req.session?.user?.id || null;
+    const nuevoEstado = pagado ? 'recibido' : 'enviado';
+    const updated = await query(
+      `UPDATE ab_pedidos_semana
+          SET estado=$1,
+              updated_at=NOW(),
+              confirmado_en  = CASE WHEN $1<>'pendiente' AND confirmado_en IS NULL THEN NOW() ELSE confirmado_en END,
+              confirmado_por = CASE WHEN $1<>'pendiente' AND confirmado_por IS NULL THEN $6 ELSE confirmado_por END
+        WHERE local_id=$2 AND anio=$3 AND semana_iso=$4 AND proveedor=$5
+        RETURNING importe_real::float8 AS importe_real, importe_sugerido::float8 AS importe_sugerido`,
+      [nuevoEstado, local_id, +anio, +semana_iso, proveedor, userId]
+    );
+    if (!updated.rowCount) return res.status(404).json({ error: 'pedido no encontrado — confirmá importe primero' });
+    const fila = updated.rows[0];
+    const importeReal = fila.importe_real ?? fila.importe_sugerido ?? 0;
+
+    // Cruce con ab_movimientos: rango lunes-domingo de la semana ISO.
+    const monday = mondayOfIsoWeek(+anio, +semana_iso);
+    const sunday = addDays(monday, 6);
+    const desde = isoStr(monday);
+    const hasta = isoStr(sunday);
+    const movs = await many(
+      `SELECT concepto, categoria, importe::float8 AS importe, fecha::text AS fecha
+         FROM ab_movimientos
+        WHERE importe < 0
+          AND fecha BETWEEN $1 AND $2`,
+      [desde, hasta]
+    );
+    let pagado_banco = 0;
+    const matches = [];
+    for (const r of movs) {
+      if (esIntraGrupo(r.concepto)) continue;
+      const { proveedor: prov } = normalizarProveedor(r.concepto, r.categoria);
+      if (prov === proveedor) {
+        const abs = Math.abs(+r.importe);
+        pagado_banco += abs;
+        matches.push({ fecha: r.fecha, importe: abs, concepto: r.concepto.slice(0, 80) });
+      }
+    }
+    const diferencia = pagado_banco - importeReal;
+    const ratio = importeReal > 0 ? Math.abs(diferencia) / importeReal : null;
+    const ok_match = ratio == null ? false : ratio <= 0.05;
+
+    res.json({
+      ok: true, estado: nuevoEstado,
+      semana: { desde, hasta },
+      importe_real: importeReal,
+      pagado_banco: Math.round(pagado_banco * 100) / 100,
+      diferencia: Math.round(diferencia * 100) / 100,
+      ratio_diff: ratio,
+      ok_match,
+      matches: matches.slice(0, 8),
+    });
+  } catch (e) {
+    console.error('[pedidos.marcar-pagado]', e);
     res.status(500).json({ error: 'internal' });
   }
 });
