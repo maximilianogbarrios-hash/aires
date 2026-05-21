@@ -157,16 +157,24 @@ async function main() {
   md += `\n`;
 
   md += `## Decisiones tomadas\n\n`;
+  md += `### Ronda 1 (taxonomía v2 inicial)\n\n`;
   md += `- **INTRAGRUPO** se aplica antes que cualquier otra regla: cualquier transferencia con "Aires Burger Bar Murcia", "Aires Burger Bar Benidorm", "Aires Alicante", "Smart Aires", "Grupo Hostelero Aires", "Aires Murcia" o "Aires Benidorm" en el concepto queda como INTRAGRUPO.\n`;
   md += `- **Naturgy** → SUMINISTROS_GAS por convención (la empresa comercializa ambos; el usuario listó Naturgy en GAS).\n`;
   md += `- **Campoluz** y **Acesur** → PROVEEDOR_LACTEOS por instrucción explícita del usuario, aunque Campoluz comercializa también energía.\n`;
   md += `- **Entrepinares** → PROVEEDOR_CARNES por instrucción explícita del usuario, aunque su core es queso.\n`;
-  md += `- **NOMINAS** se infiere sólo cuando el concepto matchea \`^TRANSFERENCIA [INMEDIATA]? A {Nombre Apellido…}\` con 2-5 tokens estilo nombre, sin sufijos legales (SL, SA, SLU, GMBH, etc.) y sin keywords como "Factura", "Alquiler", "Fianza", "Recibo".\n`;
-  md += `- **GASTO_PRESTAMO_INTERGRUPO** (categoría vieja) se reclasifica como **INTRAGRUPO** si el destinatario es del grupo, o **FINANCIERO** si es préstamo bancario externo.\n`;
-  md += `- **Leroy Merlin / Bricomart / Conduce Revel / Muebles Rosillo / Sklum / GGM Gastro / Bolsemack** → MANTENIMIENTO (compras de obra/equipamiento/reparaciones).\n`;
-  md += `- **Restaurant Consulting Group, Yalt Business, Europreven, Distribuciones Batoy, Elan Foods, Gardoy, OCIOBAR** → PROVEEDOR_OTROS (proveedores reales sin encaje en categoría de MP específica).\n`;
-  md += `- **Silicius, Concepción Orive, Overlease, Dialque** → ALQUILER (real estate / SOCIMI / arrendamientos).\n`;
+  md += `- **NOMINAS (heurística)** se infiere cuando el concepto matchea \`^TRANSFERENCIA [INMEDIATA]? A {Nombre Apellido…}\` con 2-5 tokens estilo nombre, sin sufijos legales (SL, SA, SLU, GMBH, etc.) y sin keywords como "Factura", "Alquiler", "Fianza", "Recibo".\n`;
+  md += `- **Silicius, Concepción Orive, Overlease** → ALQUILER (real estate / SOCIMI).\n`;
   md += `- Fallback: si un concepto matchea patrón de "operación comercial" (Transferencia, Recibo, Compra) pero ninguna regla específica, va a **PROVEEDOR_OTROS**. Si no parece operación comercial (devoluciones, regularizaciones, traspasos internos sin destinatario claro), va a **OTROS**.\n\n`;
+  md += `### Ronda 2 (recategorización de huérfanos)\n\n`;
+  md += `- **NOMINAS explícita**: ahora se prioriza la palabra "nomina/salario/sueldo" presente en el concepto antes de aplicar fiscales/mantenimiento. Esto recupera "NOMINA A YANINA", "Traspaso: Nomina Daniel", "Concepto: Nomina Leonardo Rodriguez" que antes caían en OTROS o PROVEEDOR_OTROS.\n`;
+  md += `- **Dialque / TGT Dialque** → ALQUILER (arrendamiento de centros comerciales y franquicia hostelera, identificados manualmente como alquiler).\n`;
+  md += `- **Aigües / Sanejament / Servicio Agua** → SUMINISTROS_AGUA (Aigües i Sanejament d'Elx y similares).\n`;
+  md += `- **Ayuntamiento / Excmo. Ayto.** → IMPUESTOS (tasas municipales).\n`;
+  md += `- **GGM Gastro, Bolsemack, IKEA, Media Markt, Worten, Materiales Cano, Maquinas Febal, Ecoclima, Fibraclim, Decoraciones Decomaber, Inox Levante, Escoda Elche, Argent3D, Temu/PayPal Temu, Alcomar Herrega** → MANTENIMIENTO (equipamiento, mobiliario, climatización, electrodomésticos, decoración).\n`;
+  md += `- **Google Ads, JobToday, Mundo Franquicia Consulting, TOT-Digital, Societat Valenciana Fira, Soluciones Host, AVIMED, 4Shine, Etihad/Emirates** → PROVEEDOR_OTROS (servicios no MP; sin categoría dedicada para preservar la convención de 22 categorías).\n`;
+  md += `- **Landfood** ahora también matchea \`land\\s+food\` (sin guion).\n`;
+  md += `- **Brico Depot** ahora matchea con y sin espacio (\`\\bbrico\\s*depot\\b\`).\n`;
+  md += `- **Embargo judicial** → OTROS (no es proveedor ni gasto recurrente).\n\n`;
 
   fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
   fs.writeFileSync(LOG_PATH, md, 'utf8');

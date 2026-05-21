@@ -197,7 +197,15 @@
   </div>
 
   <div class="card" style="margin-bottom:1rem">
-    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Distribución de gasto (top 15 + Otros)</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.5rem">
+      <p style="font-size:13px;font-weight:500">Distribución de gasto <span id="prov-donut-mode" style="color:var(--text-2);font-weight:400">(top 15 + Otros)</span></p>
+      <div style="display:flex;gap:6px">
+        <button class="tgl on" id="btn-donut-top" onclick="setDonutMode('top')">Top 15</button>
+        <button class="tgl" id="btn-donut-all" onclick="setDonutMode('all')">Ver todos</button>
+        <button class="tgl" id="btn-donut-back" onclick="exitDonutDrill()" style="display:none">← Volver</button>
+      </div>
+    </div>
+    <p id="prov-donut-hint" style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Click sobre el segmento "Otros (N)" para hacer drill-down y ver los proveedores agrupados.</p>
     <div style="display:grid;grid-template-columns:320px 1fr;gap:1.5rem;align-items:center">
       <div style="position:relative;height:300px"><canvas id="prov-donut"></canvas></div>
       <div id="prov-legend" style="display:grid;grid-template-columns:1fr;gap:4px;max-height:300px;overflow-y:auto"></div>
@@ -205,15 +213,23 @@
   </div>
 
   <div class="card">
-    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Ranking completo</p>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+      <p style="font-size:13px;font-weight:500">Ranking completo <span id="prov-tabla-counter" style="color:var(--text-2);font-weight:400"></span></p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        <input type="text" id="prov-tabla-q" placeholder="🔎 Buscar proveedor…" oninput="renderProvTabla()" style="padding:5px 9px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px;width:200px">
+        <select id="prov-tabla-cat" onchange="renderProvTabla()" style="padding:5px 9px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"><option value="">— Todas las categorías —</option></select>
+        <button class="tgl" onclick="resetProvTablaFiltros()" id="btn-prov-reset" style="display:none">✕ Limpiar filtros</button>
+      </div>
+    </div>
     <div style="overflow-x:auto"><table>
       <thead><tr>
         <th>#</th>
-        <th>Proveedor</th>
-        <th>Categoría</th>
-        <th style="text-align:right">Total €</th>
-        <th style="text-align:right">% gasto</th>
-        <th style="text-align:right">Nº transacciones</th>
+        <th onclick="sortProvTabla('proveedor')">Proveedor<span id="srt-prov-proveedor"> ⇕</span></th>
+        <th onclick="sortProvTabla('categoria')">Categoría<span id="srt-prov-categoria"> ⇕</span></th>
+        <th style="text-align:right" onclick="sortProvTabla('total_importe')">Total €<span id="srt-prov-total_importe"> ⇕</span></th>
+        <th style="text-align:right" onclick="sortProvTabla('porcentaje')">% gasto<span id="srt-prov-porcentaje"> ⇕</span></th>
+        <th style="text-align:right" onclick="sortProvTabla('num_transacciones')">Nº transacciones<span id="srt-prov-num_transacciones"> ⇕</span></th>
+        <th style="text-align:right" id="th-prov-extra"></th>
       </tr></thead>
       <tbody id="tb-proveedores"></tbody>
     </table></div>

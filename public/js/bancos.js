@@ -11,7 +11,12 @@ const state = {
   current_sociedad: null, current_periodo: null,
   resumen: [], cruces: [], proveedores: [],
   movs: { total: 0, rows: [] }, mov_offset: 0, mov_limit: 50,
-  prov: { rows: [], total: 0, intra: 0, n_intra: 0, loaded: false, vista: null },
+  prov: {
+    rows: [], total: 0, intra: 0, n_intra: 0, loaded: false, vista: null,
+    sort: { col: 'total_importe', dir: -1 },     // -1 desc, +1 asc
+    donutMode: 'top',                              // 'top' | 'all' | 'drill'
+    drillRows: null,                               // filas del drill-down "Otros"
+  },
   user: null,
 };
 
@@ -356,75 +361,189 @@ function renderProvKpis() {
 function renderProvDonut() {
   if (!chProvDonut) return;
   const rows = state.prov.rows;
-  const top = rows.slice(0, 15);
-  const rest = rows.slice(15);
-  const restTotal = rest.reduce((s, r) => s + r.total_importe, 0);
-  const restCount = rest.reduce((s, r) => s + r.num_transacciones, 0);
-  const labels = top.map((r) => r.proveedor);
-  const values = top.map((r) => r.total_importe);
-  const counts = top.map((r) => r.num_transacciones);
-  if (rest.length > 0) {
-    labels.push(`Otros (${rest.length})`);
-    values.push(restTotal);
-    counts.push(restCount);
+  const mode = state.prov.donutMode;
+  let labels = [], values = [], counts = [], drillOpen = false;
+  let modeLbl = '';
+
+  if (mode === 'drill' && state.prov.drillRows) {
+    const drill = state.prov.drillRows;
+    labels = drill.map((r) => r.proveedor);
+    values = drill.map((r) => r.total_importe);
+    counts = drill.map((r) => r.num_transacciones);
+    drillOpen = true;
+    modeLbl = `(drill: ${drill.length} proveedores agrupados como "Otros")`;
+  } else if (mode === 'all') {
+    labels = rows.map((r) => r.proveedor);
+    values = rows.map((r) => r.total_importe);
+    counts = rows.map((r) => r.num_transacciones);
+    modeLbl = `(${rows.length} proveedores, completo)`;
+  } else {
+    const top = rows.slice(0, 15);
+    const rest = rows.slice(15);
+    const restTotal = rest.reduce((s, r) => s + r.total_importe, 0);
+    const restCount = rest.reduce((s, r) => s + r.num_transacciones, 0);
+    labels = top.map((r) => r.proveedor);
+    values = top.map((r) => r.total_importe);
+    counts = top.map((r) => r.num_transacciones);
+    if (rest.length > 0) {
+      labels.push(`Otros (${rest.length})`);
+      values.push(restTotal);
+      counts.push(restCount);
+    }
+    modeLbl = '(top 15 + Otros)';
   }
+
   const colors = labels.map((_, i) => COLORS_CAT[i % COLORS_CAT.length]);
   chProvDonut.data.labels = labels;
   chProvDonut.data.datasets[0].data = values;
   chProvDonut.data.datasets[0].backgroundColor = colors;
   chProvDonut._ntx = counts;
   chProvDonut.update();
+
+  $('prov-donut-mode').textContent = modeLbl;
+  $('btn-donut-top').classList.toggle('on', mode === 'top' && !drillOpen);
+  $('btn-donut-all').classList.toggle('on', mode === 'all' && !drillOpen);
+  $('btn-donut-back').style.display = drillOpen ? '' : 'none';
+  $('prov-donut-hint').textContent = drillOpen
+    ? `Drill-down activo: estos son los ${state.prov.drillRows?.length || 0} proveedores que sumaban "Otros".`
+    : 'Click sobre el segmento "Otros (N)" para hacer drill-down y ver los proveedores agrupados.';
+
   const tot = state.prov.total;
   $('prov-legend').innerHTML = labels.map((lab, i) => {
     const v = values[i];
     const p = tot > 0 ? (v / tot * 100).toFixed(1) : '0';
-    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0">
+    const isOtros = !drillOpen && lab.startsWith('Otros (');
+    return `<div onclick="${isOtros ? 'enterDonutDrill()' : ''}" style="display:flex;align-items:center;gap:6px;padding:3px 0;${isOtros ? 'cursor:pointer;border-radius:6px' : ''}" ${isOtros ? 'onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"' : ''}>
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
-      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${lab}">${lab}</span>
+      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${lab}">${lab}${isOtros ? ' →' : ''}</span>
       <span style="font-size:11px;font-weight:500">${eur(v)}</span>
       <span style="font-size:11px;color:var(--text-2);min-width:40px;text-align:right">${p}%</span>
     </div>`;
   }).join('');
 }
 
-function renderProvTabla() {
+function setDonutMode(mode) {
+  state.prov.donutMode = mode;
+  state.prov.drillRows = null;
+  renderProvDonut();
+}
+
+function enterDonutDrill() {
+  // Replicar la lógica de "Otros (N)" pero como dataset propio.
   const rows = state.prov.rows;
-  const operativo = state.prov.vista === 'operativo';
-  // Header dinámico — añadir columnas extra en vista operativa.
-  const head = document.querySelector('#sect-proveedores table thead tr');
-  if (head) {
-    head.innerHTML = operativo
-      ? `<th>#</th><th>Proveedor</th><th>Categoría</th>
-         <th style="text-align:right">Total €</th>
-         <th style="text-align:right">% gasto MP</th>
-         <th style="text-align:right">Nº pedidos</th>
-         <th>Último pedido</th>`
-      : `<th>#</th><th>Proveedor</th><th>Categoría</th>
-         <th style="text-align:right">Total €</th>
-         <th style="text-align:right">% gasto</th>
-         <th style="text-align:right">Nº transacciones</th>`;
+  const rest = rows.slice(15);
+  if (!rest.length) return;
+  state.prov.donutMode = 'drill';
+  state.prov.drillRows = rest;
+  renderProvDonut();
+}
+
+function exitDonutDrill() {
+  state.prov.donutMode = 'top';
+  state.prov.drillRows = null;
+  renderProvDonut();
+}
+
+function refreshProvCatSelect() {
+  // Poblar el selector de categorías con las únicas presentes en las filas.
+  const sel = $('prov-tabla-cat');
+  if (!sel) return;
+  const cats = [...new Set(state.prov.rows.map((r) => r.categoria).filter(Boolean))].sort();
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— Todas las categorías —</option>'
+    + cats.map((c) => `<option value="${c}" ${c === cur ? 'selected' : ''}>${c}</option>`).join('');
+}
+
+function sortProvTabla(col) {
+  const s = state.prov.sort;
+  if (s.col === col) s.dir = -s.dir;
+  else {
+    s.col = col;
+    // Por defecto: texto asc, numérico desc.
+    s.dir = (col === 'proveedor' || col === 'categoria') ? 1 : -1;
   }
+  renderProvTabla();
+}
+
+function applyProvFiltros(rows) {
+  const q = ($('prov-tabla-q')?.value || '').trim().toLowerCase();
+  const cat = $('prov-tabla-cat')?.value || '';
+  let out = rows;
+  if (q)   out = out.filter((r) => (r.proveedor || '').toLowerCase().includes(q));
+  if (cat) out = out.filter((r) => r.categoria === cat);
+  return out;
+}
+
+function renderProvTabla() {
+  refreshProvCatSelect();
+  const operativo = state.prov.vista === 'operativo';
+  const allRows = state.prov.rows;
+  let rows = applyProvFiltros(allRows);
+
+  // Sort
+  const { col, dir } = state.prov.sort;
+  rows = [...rows].sort((a, b) => {
+    const av = a[col], bv = b[col];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'string') return dir * av.localeCompare(bv);
+    return dir * (av < bv ? 1 : av > bv ? -1 : 0) * -1;
+  });
+
+  // Indicadores ↑↓ en headers
+  ['proveedor','categoria','total_importe','porcentaje','num_transacciones'].forEach((c) => {
+    const el = document.getElementById('srt-prov-' + c);
+    if (el) el.textContent = c === col ? (dir === -1 ? ' ↓' : ' ↑') : ' ⇕';
+  });
+
+  // Contador / botón reset
+  const counter = $('prov-tabla-counter');
+  if (counter) {
+    counter.textContent = rows.length === allRows.length
+      ? `· ${rows.length} proveedores`
+      : `· ${rows.length} de ${allRows.length} proveedores (filtrado)`;
+  }
+  const hasFilter = (rows.length !== allRows.length);
+  const btn = $('btn-prov-reset'); if (btn) btn.style.display = hasFilter ? '' : 'none';
+
+  // Header extra para vista operativa
+  const thExtra = $('th-prov-extra');
+  if (thExtra) {
+    thExtra.textContent = operativo ? 'Nº pedidos / Último' : '';
+    thExtra.style.display = operativo ? '' : 'none';
+  }
+
   $('tb-proveedores').innerHTML = rows.map((p, i) => {
-    if (operativo) {
-      return `<tr>
-        <td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
-        <td style="font-weight:500;font-size:12px">${p.proveedor}</td>
-        <td style="font-size:11px;color:var(--text-2)">${(p.categoria || '').replace('PROVEEDOR_', '')}</td>
-        <td style="text-align:right;color:#dc2626">${eur2(p.total_importe)}</td>
-        <td style="text-align:right">${(p.porcentaje * 100).toFixed(2)}%</td>
-        <td style="text-align:right">${p.num_pedidos || 0}</td>
-        <td style="font-size:11px;color:var(--text-2)">${(p.ultimo_pedido || '').slice(0, 10) || '—'}</td>
-      </tr>`;
-    }
-    return `<tr>
-      <td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
+    const catTxt = p.categoria || '';
+    const catChip = `<span class="cat-chip" onclick="filterByCategoria('${catTxt.replace(/'/g, "&#39;")}')" style="font-size:11px;color:var(--text-2);cursor:pointer;text-decoration:underline dotted" title="Filtrar por esta categoría">${(catTxt || '').replace('PROVEEDOR_', '')}</span>`;
+    const base = `<td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
       <td style="font-weight:500;font-size:12px">${p.proveedor}</td>
-      <td style="font-size:11px;color:var(--text-2)">${p.categoria || ''}</td>
+      <td>${catChip}</td>
       <td style="text-align:right;color:#dc2626">${eur2(p.total_importe)}</td>
       <td style="text-align:right">${(p.porcentaje * 100).toFixed(2)}%</td>
-      <td style="text-align:right">${p.num_transacciones}</td>
-    </tr>`;
+      <td style="text-align:right">${p.num_transacciones}</td>`;
+    if (operativo) {
+      const last = (p.ultimo_pedido || '').slice(0, 10);
+      return `<tr>${base}
+        <td style="text-align:right;font-size:11px;color:var(--text-2)">${p.num_pedidos || 0}${last ? ' · ' + last : ''}</td>
+      </tr>`;
+    }
+    return `<tr>${base}<td></td></tr>`;
   }).join('');
+}
+
+function filterByCategoria(cat) {
+  if (!cat) return;
+  $('prov-tabla-cat').value = cat;
+  renderProvTabla();
+  document.querySelector('#sect-proveedores .card:last-child')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function resetProvTablaFiltros() {
+  if ($('prov-tabla-q'))   $('prov-tabla-q').value = '';
+  if ($('prov-tabla-cat')) $('prov-tabla-cat').value = '';
+  renderProvTabla();
 }
 
 function exportProveedoresCsv() {
@@ -627,5 +746,11 @@ async function logout() {
   location.href = '/login';
 }
 
-Object.assign(window, { reload, showTab, toggleUpload, uploadExtracto, uploadCierres, loadMovs, changePage, exportCsv, logout, loadProvRanking, exportProveedoresCsv });
+Object.assign(window, {
+  reload, showTab, toggleUpload, uploadExtracto, uploadCierres, loadMovs, changePage, exportCsv, logout,
+  loadProvRanking, exportProveedoresCsv,
+  // Pestaña Proveedores
+  sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
+  setDonutMode, enterDonutDrill, exitDonutDrill,
+});
 boot();
