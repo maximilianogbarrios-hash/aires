@@ -70,10 +70,13 @@ router.post('/upload-extracto', upload.single('file'), async (req, res) => {
 
     // Las reglas persistidas en ab_reglas_normalizacion (orden prioridad DESC)
     // sobreescriben la categoría/proveedor que devolvió el categorizer/normalizer
-    // hardcodeado. Esto permite que el usuario aprenda al sistema desde la UI.
+    // hardcodeado. NUNCA sobre INTRAGRUPO — los traspasos internos del grupo
+    // tienen precedencia absoluta sobre cualquier regla (evita que una regla
+    // genérica de 'prestamo' o 'transferencia' pise un Aires→Aires).
     const reglasDb = await loadReglas();
     let reglasAplicadas = 0;
     for (const m of parsed.movimientos) {
+      if (m.categoria === 'INTRAGRUPO') continue;
       const r = matchRegla(m.concepto, reglasDb);
       if (r) {
         m.categoria = r.categoria;

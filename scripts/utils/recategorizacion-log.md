@@ -114,3 +114,94 @@ Objetivo: bajar PROVEEDOR_OTROS y OTROS reagrupando los conceptos más frecuente
 - **Brico Depot** ahora matchea con y sin espacio (`\bbrico\s*depot\b`).
 - **Embargo judicial** → OTROS (no es proveedor ni gasto recurrente).
 
+### Ronda 5 (correcciones puntuales + 4 categorías nuevas, 2026-05-21)
+
+**Categorías nuevas en `CATEGORIAS_GASTO`:**
+
+- `NOMINAS_DIRECCION` — sueldos de socios/directivos separados de NOMINAS.
+- `EQUIPAMIENTO` — herramientas, mobiliario y equipo separados de MANTENIMIENTO (este último queda con Leroy/Bricomart/Obramat y obra real).
+- `PRESTAMOS` — cuotas de préstamos bancarios separadas de FINANCIERO (este queda con comisiones y operaciones).
+- `OTROS_GASTOS` — gastos de servicios externos identificables que no encajan en proveedor operativo (Radius, etc.).
+
+**Reglas DB persistidas** (todas en `ab_reglas_normalizacion`, prioridad indicada). Las reglas se insertaron mediante `scripts/utils/ronda5-recategorizar.js`. La protección INTRAGRUPO en el handler de `/upload-extracto` se reforzó: `if (m.categoria === 'INTRAGRUPO') continue` antes de aplicar reglas DB — los traspasos internos del grupo (Aires↔Aires) tienen precedencia absoluta.
+
+| nombre canónico         | patrón ILIKE                                         | categoría          | prio |
+|---|---|---|---:|
+| Sueldos Dirección       | `maximiliano (g/gaston) barrios`, `daniel (oscar) romero`, `yanina (paola) barrios` | NOMINAS_DIRECCION | 120 |
+| Dialque SAU             | `dialque`                                           | PROVEEDOR_LACTEOS | 110 |
+| TGT                     | `TGT` (excluye conceptos con `dialque`)             | PROVEEDOR_LACTEOS | 110 |
+| Entrepinares            | `entrepinares`                                       | PROVEEDOR_LACTEOS | 110 |
+| Campoluz                | `campoluz`, `campo luz`                              | PROVEEDOR_LACTEOS | 110 |
+| GGM Gastro              | `GGM`                                                | EQUIPAMIENTO      | 110 |
+| Amazon                  | `amazon`, `AMZ`                                      | EQUIPAMIENTO      | 110 |
+| IKEA                    | `ikea`                                               | EQUIPAMIENTO      | 110 |
+| Viveros                 | `vivero`                                             | EQUIPAMIENTO      | 110 |
+| Maquinas Febal          | `febal`                                              | EQUIPAMIENTO      | 110 |
+| Argent 3D               | `argent` (excluye `argentina`), `argen `             | EQUIPAMIENTO      | 110 |
+| Arrolas                 | `arrolas`                                            | PROVEEDOR_OTROS   | 110 |
+| Carnicas Mulas SL       | `carnicas mulas`                                     | PROVEEDOR_CARNES  | 110 |
+| Radius                  | `radius`                                             | OTROS_GASTOS      | 110 |
+| Préstamos Bancarios     | `liquidacion periodica (prestamo)`, `cuota prestamo`, `amortizaci(ó)n` | PRESTAMOS | 110 |
+
+**UPDATE retroactivo:** **1 313 filas actualizadas** sobre las 5 sociedades × 12 períodos. Se preservó `INTRAGRUPO` (286 filas) en todos los casos. Recálculo de `ab_resumen_mensual`: 60 combos × 0 errores.
+
+**Transiciones más relevantes:**
+
+| categoría origen → destino                            | filas | importe   |
+|---|---:|---:|
+| ALQUILER → PROVEEDOR_LACTEOS (Dialque)                | 423   | 93 281€   |
+| SUMINISTROS_ENERGIA → PROVEEDOR_LACTEOS (Campoluz)    | 229   | 97 390€   |
+| Resto → PROVEEDOR_LACTEOS (Entrepinares + TGT)        | 112   | 50 267€   |
+| MANTENIMIENTO → EQUIPAMIENTO (Amazon + IKEA + GGM + ...) | 177 | 44 021€   |
+| NOMINAS → NOMINAS_DIRECCION (Sueldos Dirección)       | 29    | 40 265€   |
+| FINANCIERO → PRESTAMOS (Préstamos Bancarios)          | 28    | 36 316€   |
+| SUMINISTROS_ENERGIA → OTROS_GASTOS (Radius)           | 72    | 6 734€    |
+| PROVEEDOR_CARNES (proveedor_normalizado solo)         | 244   | —         |
+
+**Distribución final (gastos)** vs Ronda 4:
+
+| categoría              | mov     | total       | delta vs ronda 4 |
+|---|---:|---:|---|
+| INTRAGRUPO             | 286     | 1 084 885€  | (sin cambios)    |
+| PROVEEDOR_CARNES       | 469     |   518 546€  | (sin cambios)    |
+| SS_LABORAL             | 140     |   438 099€  | (sin cambios)    |
+| NOMINAS                | 356     |   417 816€  | −33 mov / −53k   |
+| ALQUILER               | 206     |   405 815€  | −423 mov / −93k  |
+| PROVEEDOR_OTROS        | 2 173   |   392 187€  | −56 mov / −4k    |
+| PROVEEDOR_LACTEOS      | **764** |  **240 937€** | +667 mov / +192k |
+| IMPUESTOS              | 142     |   225 048€  | (sin cambios)    |
+| SUMINISTROS_ENERGIA    | 286     |   199 077€  | −301 mov / −104k |
+| PROVEEDOR_MAKRO        | 660     |   197 561€  | (sin cambios)    |
+| MANTENIMIENTO          | 666     |   174 952€  | −125 mov / −39k  |
+| **EQUIPAMIENTO**       | **176** |  **44 021€** | nueva            |
+| **NOMINAS_DIRECCION**  | **29**  |  **40 265€** | nueva            |
+| **PRESTAMOS**          | **28**  |  **36 316€** | nueva            |
+| FINANCIERO             | 2 026   |    22 843€  | −31 mov / −38k   |
+| **OTROS_GASTOS**       | **72**  |   **6 734€** | nueva            |
+
+**Punto 8 — "Proveedores Menores muestra 0€":** la query del usuario devolvía 0 resultados porque `proveedor_normalizado` estaba NULL en casi todos los movimientos. Tras la Ronda 5 (1 313 filas tienen nombre canónico) la query devuelve 1 caso real: Viveros (3 tx, 1 272€, total<2 000€ AND count<5). El endpoint `/proveedores` ya agrupa correctamente: el slice "Proveedores Menores" muestra **355 185€ en 2 206 tx** (no 0€). El bug original era de datos (columna NULL), no de lógica del endpoint. Se conservó el rollup automático actual.
+
+**Punto 10 — Grupo Lácteos en el donut:** los 4 proveedores aparecen como slices individuales cuando el umbral lo permite (con `max_grupos≥125` o vista expandida). Cada uno con `categoria=PROVEEDOR_LACTEOS`:
+
+| proveedor       | total      | tx  |
+|---|---:|---:|
+| Campoluz        | 97 390€    | 229 |
+| Dialque SAU     | 93 281€    | 423 |
+| Entrepinares    | 48 383€    |  97 |
+| TGT             |  1 884€    |  15 |
+
+**Reversibilidad:**
+
+```bash
+# DRY-RUN para ver qué cambiaría:
+node scripts/utils/ronda5-recategorizar.js --dry-run
+
+# APPLY:
+node scripts/utils/ronda5-recategorizar.js
+
+# Si necesitás borrar las 29 reglas de Ronda 5:
+#   DELETE FROM ab_reglas_normalizacion WHERE prioridad IN (110, 120);
+# Después correr scripts/utils/recategorize-movimientos.js para
+# regenerar las categorías desde el categorizer hardcoded.
+```
+
