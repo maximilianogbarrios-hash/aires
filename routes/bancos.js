@@ -621,13 +621,14 @@ router.get('/periodos', async (req, res) => {
 // Autocompletado para el campo "Nombre normalizado" del sidebar de
 // reclasificación. Devuelve los proveedor_normalizado únicos ya
 // presentes en ab_movimientos, opcionalmente filtrados por categoría
-// y/o texto. Ordenado por frecuencia (count) DESC para que los más
-// usados aparezcan primero.
+// y/o texto. Ordenado por total DESC (los grupos más grandes primero,
+// que son los candidatos más probables de reasignación) y luego por
+// nombre ASC para estabilidad.
 router.get('/proveedores-normalizados', async (req, res) => {
   try {
     const categoria = req.query.categoria || null;
     const q = (req.query.q || '').trim();
-    const limit = Math.min(+req.query.limit || 50, 200);
+    const limit = Math.min(+req.query.limit || 200, 500);
 
     const where = ['importe < 0', 'proveedor_normalizado IS NOT NULL'];
     const vals = [];
@@ -636,13 +637,13 @@ router.get('/proveedores-normalizados', async (req, res) => {
 
     const rows = await many(
       `SELECT proveedor_normalizado AS nombre,
-              COUNT(*)::int       AS n,
-              SUM(ABS(importe))::float8 AS total,
-              MAX(categoria)      AS categoria_top
+              COUNT(*)::int             AS n,
+              SUM(ABS(importe))::float8 AS total_importe,
+              MAX(categoria)            AS categoria_top
          FROM ab_movimientos
         WHERE ${where.join(' AND ')}
         GROUP BY proveedor_normalizado
-        ORDER BY n DESC, nombre ASC
+        ORDER BY total_importe DESC, nombre ASC
         LIMIT $${vals.length + 1}`,
       [...vals, limit]
     );

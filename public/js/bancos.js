@@ -1067,17 +1067,17 @@ function renderProvSidebarRows(conceptos) {
       <div id="rc-form-${i}" style="display:none;margin-top:10px;padding-top:10px;border-top:.5px dashed var(--border-3)">
         <div style="display:grid;grid-template-columns:140px 1fr;gap:6px 10px;align-items:center;font-size:11px">
           <label>Categoría</label>
-          <select id="rc-cat-${i}" onchange="rcRefreshNombres(${i})" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
+          <select id="rc-cat-${i}" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
             ${CATEGORIAS_TODAS.map((cat) => `<option value="${cat}" ${cat === c.categoria_actual ? 'selected' : ''}>${cat}</option>`).join('')}
           </select>
           <label>Nombre normalizado</label>
           <div style="position:relative">
             <input type="text" id="rc-name-${i}" autocomplete="off" list="rc-names-${i}"
               value="${(state._sbData?.grupo || '').replace(/"/g, '&quot;')}"
-              placeholder="Escribí para buscar o crear uno nuevo"
+              placeholder="Escribí para buscar uno existente o crear uno nuevo"
               style="width:100%;padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
             <datalist id="rc-names-${i}"></datalist>
-            <p id="rc-name-hint-${i}" style="font-size:9px;color:var(--text-2);margin-top:2px">Sugerencias filtradas por la categoría seleccionada · escribí para crear uno nuevo</p>
+            <p id="rc-name-hint-${i}" style="font-size:9px;color:var(--text-2);margin-top:2px">Todos los grupos existentes (cualquier categoría) · si el nombre que escribís no está, se crea como slice nuevo en el donut</p>
           </div>
           <label style="grid-column:1/-1;display:flex;align-items:center;gap:6px;cursor:pointer">
             <input type="checkbox" id="rc-rule-${i}">
@@ -1101,38 +1101,43 @@ function toggleReclasificar(i) {
   form.style.display = open ? 'none' : '';
   const btn = $(`rc-btn-${i}`);
   if (btn) btn.textContent = open ? 'Reclasificar' : 'Cerrar';
-  // Al abrir: poblar el datalist según la categoría inicial seleccionada.
+  // Al abrir: poblar el datalist con TODOS los nombres normalizados
+  // existentes (cualquier categoría) ordenados alfabéticamente.
   if (!open) rcRefreshNombres(i);
 }
 
-// Reglas que el frontend cachea por categoría para evitar pegarle a la
-// red en cada apertura del form. Se invalida cuando el endpoint
-// devuelve un nuevo resultset (sin caching agresivo: TTL implícita por
-// recarga del sidebar).
-const _rcNombresCache = new Map();
+// Cache global de la lista completa de nombres normalizados — se
+// invalida al confirmar una reclasificación porque el set puede cambiar.
+let _rcNombresAllCache = null;
 
 async function rcRefreshNombres(i) {
-  const cat = $(`rc-cat-${i}`)?.value || '';
   const dl = $(`rc-names-${i}`);
   const hint = $(`rc-name-hint-${i}`);
   if (!dl) return;
-  let list = _rcNombresCache.get(cat);
-  if (!list) {
+  if (!_rcNombresAllCache) {
     try {
-      const j = await api('/api/v1/bancos/proveedores-normalizados?' + new URLSearchParams({ categoria: cat, limit: 100 }));
-      list = j.proveedores || [];
-      _rcNombresCache.set(cat, list);
+      const j = await api('/api/v1/bancos/proveedores-normalizados?limit=500');
+      _rcNombresAllCache = j.proveedores || [];
     } catch (e) {
-      list = [];
+      _rcNombresAllCache = [];
     }
   }
-  dl.innerHTML = list
-    .map((r) => `<option value="${(r.nombre || '').replace(/"/g, '&quot;')}">${r.n} tx · ${eur(r.total)}</option>`)
+  // Endpoint devuelve por total DESC; el dropdown se muestra alfabético
+  // para que sea fácil de scanear visualmente. El label de cada opción
+  // incluye el importe total para identificar de un vistazo qué grupo es.
+  const sorted = [..._rcNombresAllCache].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  dl.innerHTML = sorted
+    .map((r) => {
+      const nombreEsc = (r.nombre || '').replace(/"/g, '&quot;');
+      // value: lo que el input recibe al seleccionar (sólo el nombre).
+      // label/text: lo que el browser muestra como sugerencia (nombre + total).
+      return `<option value="${nombreEsc}" label="${nombreEsc} · ${eur(r.total_importe)}">${nombreEsc} · ${eur(r.total_importe)}</option>`;
+    })
     .join('');
   if (hint) {
-    hint.textContent = list.length
-      ? `${list.length} nombres existentes para ${cat} · escribí para filtrar o crear uno nuevo`
-      : `Sin nombres normalizados todavía en ${cat} · escribí uno nuevo`;
+    hint.textContent = sorted.length
+      ? `${sorted.length} grupos existentes (todas las categorías) · escribí para filtrar; si no está, se crea como slice nuevo`
+      : 'No hay grupos normalizados todavía · escribí uno nuevo';
   }
 }
 
@@ -1166,7 +1171,7 @@ async function confirmReclasificar(i) {
     _setRcFeedback(i, true, `✓ ${j.affected} fila${j.affected === 1 ? '' : 's'} reclasificada${j.affected === 1 ? '' : 's'} → <code>${categoria_nueva}</code> / <strong>${proveedor_nuevo}</strong>${reglaMsg}`);
     Api.pill(`Reclasificadas: ${j.affected}` + (j.regla_id ? ' · regla creada' : ''));
     // Invalidar cache porque el set de nombres normalizados cambió.
-    _rcNombresCache.clear();
+    _rcNombresAllCache = null;
     // Refresh donut + ranking, y el sidebar con el nuevo nombre si cambió.
     await loadProvRanking();
     // Si cambió el nombre canónico, cerramos el sidebar tras 1.5s para
