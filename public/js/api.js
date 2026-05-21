@@ -72,6 +72,14 @@ window.Api = (function () {
     return jsonFetch(`/api/v1/facturacion/semanal?${qs}`);
   };
 
+  // Horas cargadas en la sub-pestaña Personal del módulo Pedidos —
+  // persisten en ab_facturacion_semanal.horas (migration 8).
+  const saveHorasSemanal = ({ local_id, anio, semana_iso, horas }) =>
+    jsonFetch('/api/v1/facturacion/semanal', {
+      method: 'POST',
+      body: JSON.stringify({ local_id, anio, semana_iso, horas, fuente_horas: 'manual_pedidos' }),
+    });
+
   const logout = () => jsonFetch('/api/v1/auth/logout', { method: 'POST' });
 
   // ─── Módulo Pedidos ───────────────────────────────────────────────────
@@ -124,7 +132,7 @@ window.Api = (function () {
 
   return {
     bootstrap, saveConfig, saveLocal, savePresupuesto, presupuestoContexto,
-    saveFacturacionSemanal, getFacturacionSemanal,
+    saveFacturacionSemanal, getFacturacionSemanal, saveHorasSemanal,
     pedidosBootstrap, pedidosMP, pedidosPersonal,
     pedidosMix, pedidosMixSave, pedidosMixCopy, pedidosMixImport,
     pedidosSavePedido, pedidosConfirmar, pedidosMarcarPagado, pedidosCmpBancos,

@@ -695,29 +695,44 @@ router.get('/personal', requirePerm('pedidos_view'), async (req, res) => {
     );
     const presMap = new Map(presRows.map((r) => [r.local_id, +r.fac || 0]));
 
-    // Reales semanales cargados (ab_facturacion_semanal sirve como proxy de
-    // horas cargadas? No — necesitamos una tabla distinta de horas reales.
-    // Por simplicidad, reusamos ab_facturacion_semanal SOLO si la fuente
-    // tiene un campo extra; pero NO existe. Devolvemos null en horas_cargadas
-    // y dejamos al front editarlas localmente. El POST queda para una v2 si
-    // se quieren persistir.
     // Semanas ISO que tocan el mes.
     const semanas = weeksInMonth(anio, mes);
     const totalDiasMes = semanas.reduce((s, w) => s + w.dias_en_mes, 0);
+
+    // Horas cargadas persistidas — leen de ab_facturacion_semanal.horas
+    // (extendido por migration 8). Una sola query para todos los locales.
+    const isoWeeksList = semanas.map((s) => s.semana_iso);
+    const horasRows = await many(
+      `SELECT local_id, semana_iso, horas::float8 AS horas, fuente_horas
+         FROM ab_facturacion_semanal
+        WHERE local_id = ANY($1::text[])
+          AND anio=$2
+          AND semana_iso = ANY($3::int[])
+          AND horas IS NOT NULL`,
+      [localIds, anio, isoWeeksList]
+    );
+    const horasMap = new Map(); // 'local|semana' -> {horas, fuente}
+    for (const r of horasRows) {
+      horasMap.set(`${r.local_id}|${r.semana_iso}`, { horas: +r.horas, fuente: r.fuente_horas });
+    }
 
     const items = locales.map((l) => {
       const fac = presMap.get(l.id) || 0;
       const budgetPers = fac * pctPers;
       const horasMes = euroHora > 0 ? budgetPers / euroHora : 0;
       const pesos = normalizeWeights(DEFAULT_WEEK_WEIGHTS, semanas.length);
-      const horasPorSemana = semanas.map((w, i) => ({
-        semana_iso: w.semana_iso,
-        fecha_lunes: w.fecha_lunes,
-        fecha_domingo: w.fecha_domingo,
-        dias_en_mes: w.dias_en_mes,
-        horas_disponibles: Math.round(horasMes * pesos[i] * 10) / 10,
-        horas_cargadas: null, // editable en front (no persistido aún)
-      }));
+      const horasPorSemana = semanas.map((w, i) => {
+        const hk = horasMap.get(`${l.id}|${w.semana_iso}`);
+        return {
+          semana_iso: w.semana_iso,
+          fecha_lunes: w.fecha_lunes,
+          fecha_domingo: w.fecha_domingo,
+          dias_en_mes: w.dias_en_mes,
+          horas_disponibles: Math.round(horasMes * pesos[i] * 10) / 10,
+          horas_cargadas: hk ? Math.round(hk.horas * 10) / 10 : null,
+          fuente_horas: hk?.fuente || null,
+        };
+      });
       return {
         local_id: l.id, nombre: l.nombre_display, short: l.short_name,
         grupo: l.grupo, dani_only: !!l.dani_only,
@@ -732,15 +747,27 @@ router.get('/personal', requirePerm('pedidos_view'), async (req, res) => {
     });
 
     const totalDisp = items.reduce((s, it) => s + it.horas_disponibles_mes, 0);
+    let totalCargado = 0;
+    let enRojo = 0;
+    for (const it of items) {
+      const cargs = it.semanas.map((s) => s.horas_cargadas).filter((v) => v != null);
+      if (!cargs.length) continue;
+      const sum = cargs.reduce((s, v) => s + v, 0);
+      totalCargado += sum;
+      if (it.horas_disponibles_mes > 0) {
+        const v = Math.abs((sum - it.horas_disponibles_mes) / it.horas_disponibles_mes);
+        if (v > 0.12) enRojo++;
+      }
+    }
     res.json({
       anio, mes,
       semanas: semanas.map((w) => ({ semana_iso: w.semana_iso, fecha_lunes: w.fecha_lunes, fecha_domingo: w.fecha_domingo, dias_en_mes: w.dias_en_mes })),
       items,
       kpis: {
         total_disp: Math.round(totalDisp * 10) / 10,
-        total_cargado: 0,
-        pct_utilizacion: 0,
-        locales_en_rojo: 0,
+        total_cargado: Math.round(totalCargado * 10) / 10,
+        pct_utilizacion: totalDisp > 0 ? Math.round((totalCargado / totalDisp) * 1000) / 10 : 0,
+        locales_en_rojo: enRojo,
       },
     });
   } catch (e) {

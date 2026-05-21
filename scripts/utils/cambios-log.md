@@ -22,6 +22,47 @@ está separado en [recategorizacion-log.md](recategorizacion-log.md).
 
 **Decisión**: el endpoint NO devuelve líneas por defecto si no hay selección — el front no llama a la API en ese caso. Esto evita queries pesadas innecesarias.
 
+## Mejora 9b — Persistencia de horas cargadas en Personal
+
+**Decisión de esquema**: en lugar de crear una tabla nueva, se extiende
+`ab_facturacion_semanal` (migration 8) con dos columnas nulas (`horas`,
+`fuente_horas`) y se hace `importe` nullable. Una fila puede tener
+facturación, horas, o ambas — mismo grano semanal por local.
+
+Alternativa descartada: tabla `ab_horas_semanal` separada. Se prefirió la
+extensión porque el usuario pidió "que persistan en ab_facturacion_semanal"
+y porque la clave primaria `(local_id, anio, semana_iso)` calza exacto.
+
+**Backend**
+- Migration 8 (`facturacion_semanal_horas`): `ALTER COLUMN importe DROP NOT NULL`
+  + agrega `horas NUMERIC(8,2) NULL` y `fuente_horas VARCHAR(20) NULL`.
+- `POST /api/v1/facturacion/semanal` ahora acepta `{ importe?, horas?,
+  fuente_horas? }`. Al menos uno de los dos (importe u horas) es requerido.
+  UPSERT con CASE WHEN — no pisa con NULL los campos que no vinieron.
+- La agregación a `ab_historial` (`maybeAggregateToHistorial`) sigue
+  funcionando: ahora filtra `WHERE importe IS NOT NULL` para no contar
+  filas que sólo tienen horas. Sólo se dispara cuando el POST trae importe.
+- `GET /api/v1/facturacion/semanal` devuelve también `horas` y `fuente_horas`.
+- `GET /api/v1/pedidos/personal` hace lookup de `horas` por (local, semana)
+  y devuelve `horas_cargadas` poblado para las filas con valor en DB. Los
+  KPIs `total_cargado`, `pct_utilizacion` y `locales_en_rojo` ahora se
+  calculan en backend desde estos valores.
+
+**Frontend**
+- `Api.saveHorasSemanal({ local_id, anio, semana_iso, horas })` envuelve el
+  POST con `fuente_horas='manual_pedidos'`.
+- `renderPersonal()` hidrata `pState.personalCargado` desde la respuesta
+  del backend cada vez que se entra al sub-tab (sobreescribe edits locales
+  no guardados aún).
+- El debounce de 800ms ya existente ahora hace dos cosas: (1) recalcular
+  totales por fila y KPIs in-place, (2) llamar `flushHoursToDB()` para
+  persistir las claves marcadas dirty. Pequeña cola `_hoursDirty` evita
+  perder cambios si el usuario sigue tecleando durante un flush en curso.
+- `Enter` dispara flush inmediato antes de mover foco.
+
+**Smoke test post-migración**: insert/select/delete de fila con `importe=NULL`
+y `horas=42.5` OK. Schema verificado.
+
 ## Mejora 9 — UX inputs de horas en Personal
 
 **Cambios en `renderPersonal` de `public/js/pedidos.js`**

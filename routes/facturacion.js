@@ -25,14 +25,27 @@ function authHybrid(req, res, next) {
 
 router.post('/semanal', express.json(), authHybrid, async (req, res) => {
   try {
-    const { local_id, anio, semana_iso, importe } = req.body || {};
-    let { fecha_lunes, fecha_domingo, fuente } = req.body || {};
-    if (!local_id || !anio || !semana_iso || importe == null) {
-      return res.status(400).json({ error: 'local_id, anio, semana_iso, importe requeridos' });
+    const { local_id, anio, semana_iso, importe, horas } = req.body || {};
+    let { fecha_lunes, fecha_domingo, fuente, fuente_horas } = req.body || {};
+    if (!local_id || !anio || !semana_iso) {
+      return res.status(400).json({ error: 'local_id, anio, semana_iso requeridos' });
     }
-    const imp = Number(importe);
-    if (!Number.isFinite(imp) || imp < 0) {
-      return res.status(400).json({ error: 'importe debe ser un número >= 0' });
+    if (importe == null && horas == null) {
+      return res.status(400).json({ error: 'al menos uno de importe u horas requerido' });
+    }
+    let imp = null;
+    if (importe != null) {
+      imp = Number(importe);
+      if (!Number.isFinite(imp) || imp < 0) {
+        return res.status(400).json({ error: 'importe debe ser un número >= 0' });
+      }
+    }
+    let hrs = null;
+    if (horas != null) {
+      hrs = Number(horas);
+      if (!Number.isFinite(hrs) || hrs < 0) {
+        return res.status(400).json({ error: 'horas debe ser un número >= 0' });
+      }
     }
     if (!fecha_lunes || !fecha_domingo) {
       const monday = mondayOfIsoWeek(+anio, +semana_iso);
@@ -40,36 +53,52 @@ router.post('/semanal', express.json(), authHybrid, async (req, res) => {
       fecha_domingo = isoStr(addDays(monday, 6));
     }
     const fnt = req._apiAuth ? 'api_sistema' : (fuente || 'manual');
+    const fntHoras = fuente_horas || (req._apiAuth ? 'api_sistema' : 'manual');
 
+    // UPSERT: si vienen ambos campos los actualiza; si viene sólo uno,
+    // mantiene el otro (COALESCE-style con CASE para evitar pisar con NULL
+    // los campos que el caller no envió).
     await query(
       `INSERT INTO ab_facturacion_semanal
-         (local_id, anio, semana_iso, fecha_lunes, fecha_domingo, importe, fuente)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+         (local_id, anio, semana_iso, fecha_lunes, fecha_domingo,
+          importe, fuente, horas, fuente_horas)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (local_id, anio, semana_iso) DO UPDATE
-         SET importe = EXCLUDED.importe,
-             fuente = EXCLUDED.fuente,
-             fecha_lunes = EXCLUDED.fecha_lunes,
+         SET importe       = CASE WHEN $6::numeric IS NOT NULL THEN EXCLUDED.importe       ELSE ab_facturacion_semanal.importe END,
+             fuente        = CASE WHEN $6::numeric IS NOT NULL THEN EXCLUDED.fuente        ELSE ab_facturacion_semanal.fuente END,
+             horas         = CASE WHEN $8::numeric IS NOT NULL THEN EXCLUDED.horas         ELSE ab_facturacion_semanal.horas END,
+             fuente_horas  = CASE WHEN $8::numeric IS NOT NULL THEN EXCLUDED.fuente_horas  ELSE ab_facturacion_semanal.fuente_horas END,
+             fecha_lunes   = EXCLUDED.fecha_lunes,
              fecha_domingo = EXCLUDED.fecha_domingo,
-             creado_en = NOW()`,
-      [local_id, +anio, +semana_iso, fecha_lunes, fecha_domingo, imp, fnt]
+             creado_en     = NOW()`,
+      [local_id, +anio, +semana_iso, fecha_lunes, fecha_domingo, imp, fnt, hrs, fntHoras]
     );
 
     // Para cada mes que la semana toque, intentar agregar a ab_historial
     // si todas las semanas del mes ya tienen real cargado.
-    const monthsTouched = new Set();
-    const lun = fromIso(fecha_lunes);
-    for (let i = 0; i < 7; i++) {
-      const day = addDays(lun, i);
-      monthsTouched.add(`${day.getUTCFullYear()}-${day.getUTCMonth() + 1}`);
-    }
+    // Sólo se dispara si se actualizó facturación (no por horas sueltas).
     const aggregated = [];
-    for (const key of monthsTouched) {
-      const [a, mm] = key.split('-').map(Number);
-      const ag = await maybeAggregateToHistorial(local_id, a, mm);
-      if (ag) aggregated.push(ag);
+    if (imp != null) {
+      const monthsTouched = new Set();
+      const lun = fromIso(fecha_lunes);
+      for (let i = 0; i < 7; i++) {
+        const day = addDays(lun, i);
+        monthsTouched.add(`${day.getUTCFullYear()}-${day.getUTCMonth() + 1}`);
+      }
+      for (const key of monthsTouched) {
+        const [a, mm] = key.split('-').map(Number);
+        const ag = await maybeAggregateToHistorial(local_id, a, mm);
+        if (ag) aggregated.push(ag);
+      }
     }
 
-    res.json({ ok: true, local_id, anio: +anio, semana_iso: +semana_iso, fuente: fnt, aggregated_to_historial: aggregated });
+    res.json({
+      ok: true,
+      local_id, anio: +anio, semana_iso: +semana_iso,
+      saved: { importe: imp, horas: hrs },
+      fuente: fnt, fuente_horas: fntHoras,
+      aggregated_to_historial: aggregated,
+    });
   } catch (e) {
     console.error('[facturacion.semanal.post]', e);
     res.status(500).json({ error: e.message || 'internal' });
@@ -93,7 +122,8 @@ router.get('/semanal', requireAuth, async (req, res) => {
                       fecha_lunes::text  AS fecha_lunes,
                       fecha_domingo::text AS fecha_domingo,
                       importe::float8    AS importe,
-                      fuente,
+                      horas::float8      AS horas,
+                      fuente, fuente_horas,
                       creado_en
                FROM ab_facturacion_semanal
               WHERE anio=$1 AND semana_iso = ANY($2::int[])`;
@@ -146,13 +176,16 @@ router.get('/semanal', requireAuth, async (req, res) => {
 
 // Cuando todas las semanas que tocan un mes están cargadas, escribimos
 // el total prorrateado en ab_historial con fuente='manual_semanal'.
+// Sólo cuentan filas con importe IS NOT NULL — las filas con sólo horas
+// (sin facturación) NO bloquean la agregación pero tampoco la disparan.
 async function maybeAggregateToHistorial(local_id, anio, mes) {
   const semanas = weeksInMonth(anio, mes);
   const isoWeeksList = semanas.map((s) => s.semana_iso);
   const rows = await many(
     `SELECT semana_iso, importe::float8 AS importe
        FROM ab_facturacion_semanal
-      WHERE local_id=$1 AND anio=$2 AND semana_iso = ANY($3::int[])`,
+      WHERE local_id=$1 AND anio=$2 AND semana_iso = ANY($3::int[])
+        AND importe IS NOT NULL`,
     [local_id, anio, isoWeeksList]
   );
   if (rows.length !== semanas.length) return null;

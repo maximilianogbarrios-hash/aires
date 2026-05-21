@@ -322,6 +322,18 @@
     const items = pState.personal.items || [];
     const semanas = pState.personal.semanas || [];
 
+    // Hidratar pState.personalCargado desde DB (sobreescribe edits locales no
+    // guardados al recargar). El backend ya devuelve horas_cargadas poblado
+    // para las filas que tienen valor persistido en ab_facturacion_semanal.
+    for (const it of items) {
+      for (const s of it.semanas) {
+        const k = `${it.local_id}|${s.semana_iso}`;
+        if (s.horas_cargadas != null) {
+          pState.personalCargado[k] = s.horas_cargadas;
+        }
+      }
+    }
+
     const semHdr = semanas.map((w) => `<th style="text-align:right" title="${w.fecha_lunes} a ${w.fecha_domingo}">S${w.semana_iso}<br><span style="font-size:9px;color:var(--text-2);font-weight:400">${rangoSemana(w.fecha_lunes, w.fecha_domingo)}</span></th>`).join('');
 
     const html = `
@@ -419,18 +431,58 @@
     if ($('ped-pk-rojo')) $('ped-pk-rojo').textContent = enRojo;
   }
 
-  // Sanitiza y guarda en memoria. Debounce 800ms para refrescar KPIs/totales.
+  // Sanitiza y guarda en memoria. Debounce 800ms para refrescar KPIs/totales
+  // y persistir la fila editada vía POST /api/v1/facturacion/semanal.
   let _hoursTimer = null;
-  let _hoursPendingLocs = new Set();
-  function scheduleHoursRefresh(localId) {
+  let _hoursPendingLocs = new Set();      // locales con totales por recalcular
+  const _hoursDirty = new Map();          // 'loc|sem' -> value pending guardado
+  let _hoursSaveInflight = false;
+  function scheduleHoursRefresh(localId, dirtyKey) {
     _hoursPendingLocs.add(localId);
+    if (dirtyKey != null) _hoursDirty.set(dirtyKey, pState.personalCargado[dirtyKey] ?? null);
     clearTimeout(_hoursTimer);
     _hoursTimer = setTimeout(() => {
       for (const id of _hoursPendingLocs) recalcPersonalRow(id);
       _hoursPendingLocs.clear();
       recalcAllPersonalKPIs();
+      flushHoursToDB();
     }, 800);
   }
+  async function flushHoursToDB() {
+    if (_hoursSaveInflight) return;
+    if (!_hoursDirty.size) return;
+    const snapshot = new Map(_hoursDirty);
+    _hoursDirty.clear();
+    _hoursSaveInflight = true;
+    try {
+      // Serial — pocas claves típicamente (1-5).
+      for (const [k, v] of snapshot.entries()) {
+        const [localId, semIso] = k.split('|');
+        try {
+          await Api.saveHorasSemanal({
+            local_id: localId,
+            anio: pState.mes.anio,
+            semana_iso: +semIso,
+            horas: v == null ? 0 : v,
+          });
+        } catch (e) {
+          // Re-encolar para próxima descarga.
+          _hoursDirty.set(k, v);
+          throw e;
+        }
+      }
+      Api.pill('Horas guardadas');
+    } catch (e) {
+      Api.pill('Error guardando horas: ' + e.message, true);
+    } finally {
+      _hoursSaveInflight = false;
+      // Si quedaron pendientes nuevos durante el flush, reprogramar.
+      if (_hoursDirty.size) setTimeout(flushHoursToDB, 200);
+    }
+  }
+  // Exponer para que el handler de salida pueda forzar flush (no usado
+  // actualmente, queda como hook).
+  window.pedFlushHoras = flushHoursToDB;
 
   function sanitizeHoursValue(raw) {
     // Acepta dígitos y un único separador decimal (coma o punto).
@@ -461,17 +513,18 @@
     const k = `${inp.dataset.loc}|${inp.dataset.week}`;
     if (num == null) delete pState.personalCargado[k];
     else pState.personalCargado[k] = num;
-    scheduleHoursRefresh(inp.dataset.loc);
+    scheduleHoursRefresh(inp.dataset.loc, k);
   };
 
   window.pedHoursKey = function (ev, inp) {
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      // Flush inmediato del debounce y luego mover foco.
+      // Flush inmediato del debounce: recalcular y persistir lo pendiente.
       clearTimeout(_hoursTimer);
       for (const id of _hoursPendingLocs) recalcPersonalRow(id);
       _hoursPendingLocs.clear();
       recalcAllPersonalKPIs();
+      flushHoursToDB();
       const week = inp.dataset.week;
       const all = [...document.querySelectorAll(`.ped-hours-inp[data-week="${week}"]`)];
       const idx = all.indexOf(inp);
