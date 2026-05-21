@@ -127,6 +127,27 @@ window.Engine = (function () {
     });
   }
 
+  // Devuelve los rows de presupuesto para los locales dani_only (Elche)
+  // — para mostrar en sección separada cuando modoSociedad está activo
+  // pero el spec pide que igual aparezcan con todas sus columnas.
+  function calcBudgetElche(ctx, monthIdx) {
+    const elches = ctx.locales.filter((l) => l.dani_only);
+    if (!elches.length) return [];
+    // Cálculo con TODOS los locales (no excluye, para que pool de producción etc. den coherente)
+    const facMap = Object.fromEntries(ctx.locales.map((l) => {
+      const presVal = (ctx.presupuestoMap?.[l.id]?.fac_presupuestada);
+      const hist = ctx.h25?.[l.id]?.[monthIdx];
+      const v = presVal != null ? presVal : (hist != null ? hist : (+l.fac_mi_analisis || 0));
+      return [l.id, +v];
+    }));
+    return elches.map((l) => {
+      const r = calcOne(l, facMap[l.id], ctx, facMap);
+      r.real = ctx.presupuestoMap?.[l.id]?.fac_real ?? null;
+      r.presBase = facMap[l.id];
+      return r;
+    });
+  }
+
   function grpSum(R, gs) {
     const sub = R.filter((r) => gs.includes(r.g));
     const f = sub.reduce((s, r) => s + r.fac, 0);
@@ -136,5 +157,5 @@ window.Engine = (function () {
     return { f, tG, mg, mgP: f > 0 ? mg / f : 0, n: sub.length, hT };
   }
 
-  return { calcOne, calcAll, calcElche, calcBudget, grpSum };
+  return { calcOne, calcAll, calcElche, calcBudget, calcBudgetElche, grpSum };
 })();

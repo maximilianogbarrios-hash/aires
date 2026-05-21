@@ -934,6 +934,45 @@ function updPresupuesto() {
     html += `<tr class="tr-sub" style="color:${grpColors[g]}"><td colspan="5">Subtotal ${g}</td><td style="text-align:right">${eur(sf)}</td><td style="text-align:right">${hasR ? eur(sReal) : '—'}</td><td colspan="5"></td></tr>`;
   });
   html += `<tr class="tr-tot"><td colspan="5">TOTAL</td><td style="text-align:right">${eur(totalPF)}</td><td style="text-align:right;color:#1B5E20">${hasReal ? eur(totalReal) : '—'}</td><td style="text-align:right;color:${varPctG != null ? clrG(varPctG) : ''}">${varPctG != null ? pctSigned(varPctG) : '—'}</td><td colspan="4"></td></tr>`;
+
+  // Bloque 4 — Elche separado en modo Sociedad (siempre visible con todas las columnas).
+  if (ctx.config.modoSociedad && E.calcBudgetElche) {
+    const REch = E.calcBudgetElche(ctx, monthIdx);
+    if (REch.length) {
+      html += `<tr><td colspan="12" style="background:#FAF5FF;border-top:2px dashed #D8B4FE;color:#7E22CE;font-weight:500;padding:8px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.8px">⌁ Grupo Hostelero Aires (separado del modo Sociedad)</td></tr>`;
+      REch.forEach((r) => {
+        const c = ctxPres[r.id] || {};
+        const facAnt = c.fac_mismo_mes_anio_anterior;
+        const tend3m = trend3mPct(c.fac_3meses_este_anio, c.fac_3meses_anio_anterior);
+        const varUlt = pairPct(c.fac_ultimo_mes_este_anio, c.fac_ultimo_mes_anio_anterior);
+        const local = locById(r.id);
+        const crec = local ? crecNecesarioPctMg15(local, facAnt) : null;
+        const semColor = semaforoColor(tend3m);
+        const presVal = r.presBase;
+        const realVal = r.real;
+        const varRow = realVal != null && presVal > 0 ? (realVal - presVal) / presVal : null;
+        const expanded = !!(uiState.presExpand && uiState.presExpand[r.id]);
+        html += `<tr data-pres-row="${r.id}" style="background:#FEF9F0">
+          <td style="font-weight:500">${r.n}</td>
+          <td><span class="bdg bE">E</span></td>
+          <td style="text-align:right">${facAnt != null ? eur(facAnt) : '—'}</td>
+          <td style="text-align:right;color:${tend3m != null ? clrG(tend3m) : ''}">${tend3m != null ? `${arrowFor(tend3m)} ${pctSigned(tend3m)}` : '—'}</td>
+          <td style="text-align:right;color:${varUlt != null ? clrG(varUlt) : ''}">${varUlt != null ? pctSigned(varUlt) : '—'}</td>
+          <td style="text-align:right"><input class="num-inp" style="width:90px" type="number" value="${presVal}" min="0" step="500" onchange="updPresFac('${r.id}',this.value)"></td>
+          <td style="text-align:right"><input type="number" class="real-inp" style="width:90px" value="${realVal != null ? realVal : ''}" placeholder="—" min="0" step="500" onchange="updPresReal('${r.id}',this.value)"></td>
+          <td style="text-align:right;font-weight:500;color:${varRow != null ? clrG(varRow) : ''}">${varRow != null ? pctSigned(varRow) : '—'}</td>
+          <td style="text-align:right">${crec != null ? pctSigned(crec) : '—'}</td>
+          <td style="text-align:right">${pct(r.mgP)}</td>
+          <td style="text-align:center">${semColor ? `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${semColor}"></span>` : '<span style="color:var(--text-2)">—</span>'}</td>
+          <td style="text-align:center"><button type="button" onclick="togglePresWeek('${r.id}')" style="background:transparent;border:none;cursor:pointer;font-size:14px;color:var(--text-2)">${expanded ? '▾' : '▸'}</button></td>
+        </tr>`;
+        if (expanded) {
+          html += `<tr data-pres-week="${r.id}"><td colspan="12" style="padding:0;background:var(--bg-secondary)">${renderWeekRow(r, c)}</td></tr>`;
+        }
+      });
+    }
+  }
+
   $('tb-pres').innerHTML = html;
 }
 
