@@ -205,3 +205,58 @@ node scripts/utils/ronda5-recategorizar.js
 # regenerar las categorías desde el categorizer hardcoded.
 ```
 
+### Ronda 6 (correcciones puntuales sobre Ronda 5, 2026-05-21)
+
+**Categorías nuevas en `CATEGORIAS_GASTO`:**
+
+- `GASTOS_DIRECCION` — gastos personales/operativos de la dirección
+  (Revel, Créditos Dirección, etc.).
+- `GASTOS_VEHICULOS` — Stellantis, leasing, renting, antes "Vehículos
+  y Leasing" → separados de FINANCIERO.
+
+**Reglas DB Ronda 6** (insertadas vía `scripts/utils/ronda6-recategorizar.js`):
+
+| nombre canónico       | patrón ILIKE                    | categoría         | prio | nota |
+|---|---|---|---:|---|
+| TGT                   | `TGT`, `T.G.T`                  | PROVEEDOR_LACTEOS | **120** | sube de 110 → 120 (gana sobre Dialque excluido por `extraWhere`) |
+| Revel                 | `revel`, `conduce revel`        | GASTOS_DIRECCION  | 110  |  |
+| Créditos Dirección    | `credito`, `crédito`            | GASTOS_DIRECCION  | 110  | `extraWhere: AND categoria <> 'NOMINAS_DIRECCION'` para no pisar sueldos |
+| Gastos Vehículos      | `stellantis`, `leasing`, `renting` | GASTOS_VEHICULOS | 110  |  |
+
+**UPDATE retroactivo:** **78 filas** actualizadas. 19 combos sociedad×periodo recalculados, 0 errores.
+
+| transición                                         | filas | importe   |
+|---|---:|---:|
+| FINANCIERO → GASTOS_VEHICULOS (Stellantis+leasing+renting) | 66 | 14 908€ |
+| MANTENIMIENTO → GASTOS_DIRECCION (Revel/Conduce Revel)     | 12 | 13 164€ |
+
+**Distribución final** (cambios vs Ronda 5):
+
+- MANTENIMIENTO: 666 → 654 mov (−12 a GASTOS_DIRECCION)
+- FINANCIERO:    2 026 → 1 960 mov (−66 a GASTOS_VEHICULOS)
+- GASTOS_VEHICULOS: 66 mov / 14 908€ (NUEVA)
+- GASTOS_DIRECCION: 12 mov / 13 164€ (NUEVA)
+
+**Verificación de slices independientes** en `/proveedores?max_grupos=200`:
+
+| proveedor       | total    | tx  | categoría         |
+|---|---:|---:|---|
+| Campoluz        | 97 390€  | 229 | PROVEEDOR_LACTEOS |
+| Dialque SAU     | 93 281€  | 423 | PROVEEDOR_LACTEOS |
+| Entrepinares    | 48 383€  |  97 | PROVEEDOR_LACTEOS |
+| **TGT**         |  1 884€  |  15 | PROVEEDOR_LACTEOS |
+| Gastos Vehículos| 14 908€  |  66 | GASTOS_VEHICULOS  |
+| Revel           | 13 164€  |  12 | GASTOS_DIRECCION  |
+
+"Créditos Dirección" no aparece porque los 2 hits actuales con concepto que contiene "crédito" caen en `Sueldos Dirección` (NOMINAS_DIRECCION, prio 120). La regla existe en DB para uploads futuros que sí matcheen.
+
+**Reversibilidad:**
+
+```bash
+# DRY-RUN para preview:
+node scripts/utils/ronda6-recategorizar.js --dry-run
+# APPLY:
+node scripts/utils/ronda6-recategorizar.js
+```
+
+
