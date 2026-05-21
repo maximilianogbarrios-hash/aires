@@ -334,13 +334,83 @@ router.get('/proveedores', async (req, res) => {
       };
     }).sort((a, b) => b.total_importe - a.total_importe);
 
+    // Ronda 4: rollup de proveedores menores en "Proveedores Menores".
+    // Dos pasadas:
+    //  1) Threshold del usuario: count<5 AND total<2000€ (lo indiscutible).
+    //  2) Cap final: si tras la pasada 1 siguen quedando >maxGrupos visibles,
+    //     se mantienen los TOP-(maxGrupos-1) por total y el resto va al bucket.
+    // El cap garantiza ≤maxGrupos (default 30). Ambos thresholds son query-configurables.
+    const minTx = req.query.menores_min_tx ? +req.query.menores_min_tx : 5;
+    const minEur = req.query.menores_min_eur ? +req.query.menores_min_eur : 2000;
+    const maxGrupos = req.query.max_grupos ? +req.query.max_grupos : 30;
+
+    function colapsarEnMenores(lista, predicate) {
+      const grandes = lista.filter((p) => !predicate(p));
+      const menores = lista.filter(predicate);
+      if (menores.length <= 1) return { lista, rollup: null };
+      const totalMenores = menores.reduce((s, p) => s + p.total_importe, 0);
+      const txMenores = menores.reduce((s, p) => s + p.num_transacciones, 0);
+      const existente = grandes.find((p) => p.proveedor === 'Proveedores Menores');
+      if (existente) {
+        existente.total_importe += totalMenores;
+        existente.num_transacciones += txMenores;
+        existente._miembros = (existente._miembros || 0) + menores.length;
+        return { lista: grandes.sort((a, b) => b.total_importe - a.total_importe), rollup: { absorbidos: menores.length, total: totalMenores } };
+      }
+      grandes.push({
+        proveedor: 'Proveedores Menores',
+        total_importe: totalMenores,
+        porcentaje: totalGasto > 0 ? totalMenores / totalGasto : 0,
+        num_transacciones: txMenores,
+        categoria: 'PROVEEDOR_OTROS',
+        ultima_fecha: menores.reduce((d, p) => (p.ultima_fecha > (d || '')) ? p.ultima_fecha : d, null),
+        num_pedidos: 0, ultimo_pedido: null,
+        _es_rollup: true, _miembros: menores.length,
+      });
+      return {
+        lista: grandes.sort((a, b) => b.total_importe - a.total_importe),
+        rollup: { absorbidos: menores.length, total: totalMenores },
+      };
+    }
+
+    // Pasada 1: threshold AND (spec del user)
+    let proveedoresFinal = proveedores;
+    let rollup1 = null;
+    {
+      const r = colapsarEnMenores(proveedoresFinal, (p) =>
+        p.num_transacciones < minTx && p.total_importe < minEur
+      );
+      proveedoresFinal = r.lista;
+      rollup1 = r.rollup;
+    }
+
+    // Pasada 2: cap top-N (garantiza ≤maxGrupos)
+    let rollup2 = null;
+    if (proveedoresFinal.length > maxGrupos) {
+      const sortDesc = [...proveedoresFinal].sort((a, b) => b.total_importe - a.total_importe);
+      const cutOff = sortDesc[maxGrupos - 2]?.total_importe ?? 0; // (-2 porque uno es Menores)
+      const r = colapsarEnMenores(proveedoresFinal, (p) =>
+        p.proveedor !== 'Proveedores Menores' && p.total_importe < cutOff
+      );
+      proveedoresFinal = r.lista;
+      rollup2 = r.rollup;
+    }
+
+    const rollup_menores = (rollup1 || rollup2) ? {
+      pasada_threshold: rollup1,
+      pasada_cap_top: rollup2,
+      thresholds: { min_tx: minTx, min_eur: minEur, max_grupos: maxGrupos },
+    } : null;
+
     res.json({
       filtros: { sociedad_id, periodo, periodo_desde, periodo_hasta, vista },
       vista_efectiva: vista,
       total_gasto: totalGasto,
       total_excluido_intra_grupo: totalExcluido,
       n_excluido_intra_grupo: nExcluido,
-      proveedores,
+      n_grupos_finales: proveedoresFinal.length,
+      rollup_menores,
+      proveedores: proveedoresFinal,
     });
   } catch (e) {
     console.error('[bancos.proveedores]', e);

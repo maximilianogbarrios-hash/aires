@@ -1,6 +1,6 @@
 # Log de recategorización de `ab_movimientos`
 
-Última ejecución: **2026-05-21T09:18:51.966Z** — modo: **APPLY**
+Última ejecución: **2026-05-21T09:37:51.938Z** — modo: **APPLY**
 
 Total movimientos procesados (importe<0): **9921**
 - Cambios de categoría: **0**
@@ -11,23 +11,24 @@ Total movimientos procesados (importe<0): **9921**
 
 | Categoría | Nº movs | Total € |
 |---|---:|---:|
-| `INTRAGRUPO` | 1688 | 1.087.738 € |
-| `PROVEEDOR_CARNES` | 566 | 566.929 € |
+| `INTRAGRUPO` | 286 | 1.084.885 € |
+| `PROVEEDOR_CARNES` | 469 | 518.546 € |
 | `ALQUILER` | 629 | 499.095 € |
-| `NOMINAS` | 390 | 459.111 € |
+| `NOMINAS` | 389 | 458.576 € |
 | `SS_LABORAL` | 140 | 438.099 € |
-| `PROVEEDOR_OTROS` | 2367 | 436.094 € |
-| `SUMINISTROS_LUZ` | 556 | 302.840 € |
+| `PROVEEDOR_OTROS` | 2229 | 396.397 € |
+| `SUMINISTROS_ENERGIA` | 587 | 303.200 € |
 | `IMPUESTOS` | 142 | 225.048 € |
-| `MANTENIMIENTO` | 771 | 197.574 € |
+| `MANTENIMIENTO` | 791 | 213.819 € |
 | `PROVEEDOR_MAKRO` | 660 | 197.561 € |
 | `PROVEEDOR_PANADERIA` | 76 | 137.945 € |
 | `PROVEEDOR_FRITAS` | 125 | 127.068 € |
 | `PROVEEDOR_BEBIDAS` | 245 | 95.800 € |
 | `PROVEEDOR_ACEITES` | 229 | 88.460 € |
+| `SERVICIOS_PROF` | 235 | 84.525 € |
 | `PROVEEDOR_PACKAGING` | 181 | 66.632 € |
-| `SERVICIOS_PROF` | 147 | 60.900 € |
-| `FINANCIERO` | 655 | 58.471 € |
+| `FINANCIERO` | 2057 | 61.324 € |
+| `PROVEEDOR_LACTEOS` | 97 | 48.383 € |
 | `SEGUROS` | 48 | 28.395 € |
 | `PUBLICIDAD` | 136 | 26.852 € |
 | `SUMINISTROS_AGUA` | 50 | 15.474 € |
@@ -51,6 +52,40 @@ Total movimientos procesados (importe<0): **9921**
 - **NOMINAS (heurística)** se infiere cuando el concepto matchea `^TRANSFERENCIA [INMEDIATA]? A {Nombre Apellido…}` con 2-5 tokens estilo nombre, sin sufijos legales (SL, SA, SLU, GMBH, etc.) y sin keywords como "Factura", "Alquiler", "Fianza", "Recibo".
 - **Silicius, Concepción Orive, Overlease** → ALQUILER (real estate / SOCIMI).
 - Fallback: si un concepto matchea patrón de "operación comercial" (Transferencia, Recibo, Compra) pero ninguna regla específica, va a **PROVEEDOR_OTROS**. Si no parece operación comercial (devoluciones, regularizaciones, traspasos internos sin destinatario claro), va a **OTROS**.
+
+### Ronda 4 — objetivo ≤30 grupos
+
+Objetivo del usuario: máximo 30 grupos visibles en la pestaña Proveedores.
+
+**Bug fix crítico**: la regla `^Comisiones \d{10}` fallaba porque las "COMISIONES 0354... AIRES BURGER BAR MURCIA" caían primero en INTRAGRUPO (la regla de intra-grupo se evaluaba antes y matcheaba por el nombre de la sociedad). Se agregó un check pre-INTRAGRUPO (`REGEX_COMISIONES_BANCARIAS = /^\s*comisi[oó]nes?\s+\d{4,}/i`) que enruta esas filas a FINANCIERO antes de chequear intra-grupo.
+
+**Nueva categoría SUMINISTROS_ENERGIA**: unifica SUMINISTROS_LUZ + SUMINISTROS_GAS en un único bucket (las dos categorías legacy quedan en CATEGORIAS_GASTO por back-compat pero no se asignan más). Incluye Iberdrola, Endesa, ENDESAX, i-DE, Naturgy, Repsol Gas, Fox Energia, TotalEnergies, EDP, ACC Green Energy, **Fons Energia**, **Viesgo**, Campo Luz, Radius Business.
+
+**Colapso a nombres canónicos genéricos** (Ronda 4):
+- Iberdrola/Endesa/Naturgy/etc. → `Energía y Gas` (categoria SUMINISTROS_ENERGIA).
+- Leroy Merlin/IKEA/Worten/Media Markt/Argent3D/RROS IMAGEN/TIMBRADOS/Amazon → `Mantenimiento y Equipamiento` (MANTENIMIENTO).
+- Adobe/Google One/Microsoft/Promotty/Hostinger/OCIOBAR/Restaurant Consulting/Yalt/Mundofranquicia/Alcomar/Angel Linares/Societat Valenciana/Europreven/JobToday/Asesorías → `Servicios Profesionales` (SERVICIOS_PROF).
+- Préstamos/Comisiones/BBVA/CaixaBank/Sabadell/Santander Consumer/Renting → `Banco - Operaciones` (FINANCIERO).
+- TGSS/S.SOCIALE/SS//Seguridad Social → `Seguridad Social` (SS_LABORAL).
+- Mapfre/AXA/Allianz/Generali/cualquier seguro → `Seguros` (SEGUROS).
+- Google Ads/Meta Ads/Facebk/TikTok/LinkedIn Ads → `Publicidad Online` (PUBLICIDAD).
+- Hidraqua/EMUASA/AMAEM/Aigües → `Aigües / Servicio Agua` (SUMINISTROS_AGUA).
+- **ALQUILER** colapsado completo: cualquier movimiento con `categoria='ALQUILER'` (Silicius, Dialque, Innovestment, Concepción Orive, Bernardo Ortega, todos los arrendadores persona física) → `Alquileres y Arrendamientos`. Necesario para llegar a ≤30 grupos porque había 25+ arrendadores individuales.
+
+**Movido entre categorías**:
+- **Entrepinares** de PROVEEDOR_CARNES → **PROVEEDOR_LACTEOS** (es queso; corrección del usuario).
+- **Alcomar** de MANTENIMIENTO → SERVICIOS_PROF (era Alcomar Herrega SL; el user lo lista como servicios prof).
+
+**Proveedores específicos preservados** (mantienen nombre individual porque el módulo Pedidos los necesita por nombre canónico para el mix MP): Carnicas Mulas, Don Hamgus, Carnicas Garcia, Makro, Eurofrits, Coca-Cola, Aceites Millas, Europastry, Brioche de Juanito, Landfood, Kauapack, Diversey, Ecolab, Mahou, Heineken, Distribuciones Batoy, Elan Foods, Avimed, Gardoy, Entrepinares.
+
+**Rollup en endpoint /api/v1/bancos/proveedores** (`Proveedores Menores`):
+- Pasada 1 — threshold del usuario: `count<5 AND total<2000€` → bucket "Proveedores Menores".
+- Pasada 2 — cap top-N (`max_grupos` default 30): si tras la pasada 1 siguen >30 grupos, se mantienen los top-29 por total y el resto va al bucket. Garantía dura ≤30 grupos visibles en la UI.
+- Ambos thresholds son configurables vía query params (`menores_min_tx`, `menores_min_eur`, `max_grupos`).
+
+**Decisión tomada sin preguntar**: el spec del usuario menciona thresholds 5/2000 con AND. Con esos thresholds quedaban 115 grupos visibles (lejos del objetivo ≤30). Por eso se agregó una segunda pasada cap top-N. La pasada del usuario sigue aplicándose primero (criterio explícito), y la cap top-N actúa sólo si es necesaria. Documentado para que el operador entienda que el cap visual NO modifica la DB ni la granularidad de normalizarProveedor (sigue devolviendo los nombres específicos cuando se consume desde otros endpoints como Pedidos/mix).
+
+**Resultado**: 2194 movimientos reclasificados, 60 resúmenes mensuales recalculados.
 
 ### Ronda 3 (comisiones bancarias + nóminas con stopwords + SaaS + Facebook Ads)
 
