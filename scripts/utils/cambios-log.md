@@ -510,3 +510,130 @@ de enero 2026 en adelante. admin/socio sin restricción.
 **Defense in depth**: el filtro UI oculta las opciones; el backend
 clampea (o devuelve vacío) en los 3 endpoints aunque el cliente
 intente saltarse el selector via URL/herramienta externa.
+
+
+## 5 bloques — Personal pestaña + parámetros con confirmación + Resumen/Presupuesto Elche + 2FA obligatorio
+
+Refactor coordinado mayo 2026 que toca matriz de permisos, UX
+de parámetros, Resumen, Presupuesto y enforcement de 2FA.
+
+### Bloque 1 — Personal como pestaña principal + matriz tabs ajustada
+
+**Backend (`lib/roles.js`):**
+
+- `TABS_DASHBOARD` agrega `personal` entre `seguimiento` y `pedidos`
+  (orden final: `resumen·ranking·costos·presupuesto·seguimiento·personal·pedidos·evolucion·traspasos`).
+- Se elimina `personal` de `SUB_TABS_PEDIDOS` (ya no es sub-pestaña).
+- `evolucion` ahora incluye `gerente` además de admin/socio.
+
+**Frontend:**
+
+- `public/dashboard/index.html`: nuevo `<button data-tab='personal'>` +
+  `<div id='sect-personal'>` con KPIs Disponibles/Cargadas/Util%/Rojo y
+  tabla `#ped-personal-table`. Se quita el sub-botón Personal en
+  Pedidos.
+- `public/js/main.js#showTab()`: si `name === 'personal'` invoca
+  `window.pedEnterPersonal()`.
+- `public/js/pedidos.js`: nueva función `pedEnterPersonal()` que
+  renderiza el selector año/mes y llama `renderPersonal()`. Antes era
+  ejecutado por `enterPedidosTab()` cuando `sub === 'personal'`.
+
+### Bloque 2 — Parámetros con confirmación explícita + historial auditoría
+
+**Backend:**
+
+- `routes/aires.js` PUT `/api/v1/aires/config` ahora loguea **todos**
+  los roles en `ab_parametros_historial` (antes solo gerente).
+  `debeLoguear` pasa a `true` siempre.
+- Nuevo `GET /api/v1/aires/parametros/last-mod` que devuelve último
+  registro (`updated_at`, `email`, campos modificados).
+- Migration 11 `ab_parametros_historial` ya estaba en `lib/migrations.js`
+  (se mantuvo el id 11 porque el 10 estaba ocupado por
+  `gastos_direccion_overrides`).
+
+**Frontend:**
+
+- `public/js/api.js`: nuevo wrapper `lastParamsMod()`.
+- `public/js/main.js`:
+  - Snapshot `_paramsOriginal` al boot.
+  - `_paramsTienenCambios()` compara estado actual vs snapshot.
+  - `_showParamsConfirmBar()` muestra/oculta la barra y marca sliders
+    sucios con clase `.param-dirty`.
+  - `syncSlider()` **ya no auto-guarda**: solo refresca display y
+    activa barra de confirmación.
+  - Nuevas funciones `confirmParams()` (guarda + recarga
+    `fetchLastParamsMod`) y `discardParams()` (restaura snapshot).
+  - `updLocalField()` (servicios) ahora bufferea en `_srvDirty`,
+    pinta celdas con `.srv-cell-dirty` + ✏️ y muestra `#srv-confirm-bar`.
+  - `confirmSrv()` / `discardSrv()` análogos a parámetros.
+  - `beforeunload` listener: avisa si hay cambios sin guardar en
+    ninguno de los dos buffers.
+- `public/dashboard/index.html`:
+  - Sliders nuevos rangos: MP `0-60`, Personal `0-50`,
+    Impuestos `0-15`, Publicidad `0-10`, €/hora `8-20`.
+  - `<div id="params-confirm-bar">` con botones Confirmar/Descartar
+    + `<p id="params-last-mod">` ("Última modificación: dd/mm hh:mm por email@…").
+  - `<div id="srv-confirm-bar">` dentro de la sección Servicios.
+- `public/css/styles.css`:
+  - `input[type=range].param-dirty` con accent naranja + track
+    amarillo.
+  - `.srv-cell-dirty{background:#FEF3C7!important}`.
+
+### Bloque 3 — Resumen: aclaratorio + Elche separado en Vista Sociedad
+
+**Frontend `public/js/main.js`:**
+
+- `rKPIs()` calcula margen total rojo (incluye Elche siempre) **y**
+  margen de vista actual. Si difieren, muestra `<p id="mg-comparativa">`
+  con la comparativa.
+- `elcheCard()` cuando `modoSociedad` está activo, envuelve la card
+  con un divisor visual (línea + título violeta
+  `⌁ Grupo Hostelero Aires (separado del modo Sociedad)`) para
+  enfatizar que Elche está fuera del agregado de sociedad.
+- Filtros A/B y por grupos disponibles para gerente (no solo admin/socio).
+
+### Bloque 4 — Presupuesto: Elche siempre visible
+
+**Backend (`public/js/engine.js`):**
+
+- Nueva función `calcBudgetElche(ctx, monthIdx)` exportada en el
+  return del IIFE. Devuelve filas de Elche con misma estructura que
+  `calcBudget()` (incluye `presBase`, `real`, todas las columnas).
+  No se afecta por `modoSociedad`.
+
+**Frontend `public/js/main.js#updPresupuesto()`:**
+
+- Después de la fila TOTAL, si `modoSociedad` está activo, inserta:
+  - Separador visual violeta.
+  - Subtítulo "Presupuesto Elche (Hostelero, separado de Sociedad)".
+  - Filas de `calcBudgetElche()` con todas las columnas (Fac. año
+    anterior, Tend. 3M, Var. último mes, Fac. presup., Fac. real,
+    etc.).
+
+### Bloque 5 — 2FA obligatorio (verificación)
+
+Ya implementado en commit `f21090b`. Se verifica que sigue activo:
+
+- `lib/auth.js#requireAuth()`:
+  - Si `req.session.user.totp_enabled === false` y la ruta no está en
+    la whitelist → redirige a `/account?msg=2fa-required`.
+  - Para endpoints `/api/*` devuelve 403 con
+    `{error: '2fa_required', message, redirect}`.
+- `pathPermitidoSin2FA(path)` whitelistea `/account` y todo
+  `/api/v1/auth/*` (login, logout, me, 2fa/setup, 2fa/confirm,
+  2fa/status) para que un usuario nuevo pueda completar el setup
+  sin redirect loop.
+- `req.session.user.totp_enabled` se setea en login y se actualiza
+  tras `/2fa/confirm` y `/2fa/disable`.
+
+**Commits:**
+
+```
+1fe2c6f feat(roles): Personal pestaña principal + matriz tabs ajustada (Bloque 1)
+6254583 feat(params): confirmación explícita + historial auditoría + rangos sliders (Bloque 2)
+f70c4d0 fix(resumen): margen aclaratorio + Elche separado con divisor visual (Bloque 3)
+1d9cc44 fix(presupuesto): Elche siempre visible en sección separada (Bloque 4)
+```
+
+(Bloque 5 sin commit nuevo — solo verificación de `f21090b` ya
+desplegado.)
