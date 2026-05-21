@@ -38,6 +38,21 @@ function vistaEfectivaParaRol(rol, vistaQuery) {
   return 'operativo';
 }
 
+// Fusión de grupos sensibles para roles no-admin. Los movimientos
+// con estas categorías se colapsan en un único slice "Gastos Dirección"
+// con total sumado — gerente / administrativo / pedidos / personal no
+// ven el detalle de nóminas dirección, gastos dirección, préstamos
+// bancarios ni financiero.
+const ROLES_ADMIN = new Set(['admin', 'socio']);
+const CATEGORIAS_DIRECCION_FUSE = new Set([
+  'NOMINAS_DIRECCION', 'GASTOS_DIRECCION', 'PRESTAMOS', 'FINANCIERO',
+]);
+const FUSE_PROVEEDOR = 'Gastos Dirección';
+
+function esAdminLike(req) {
+  return ROLES_ADMIN.has(req.session?.user?.role);
+}
+
 const router = express.Router();
 router.use(requireAuth);
 
@@ -309,10 +324,18 @@ router.get('/proveedores', async (req, res) => {
     if (periodo)          { where.push(`periodo=$${vals.length+1}`);  vals.push(periodo); }
     if (periodo_desde)    { where.push(`periodo>=$${vals.length+1}`); vals.push(periodo_desde); }
     if (periodo_hasta)    { where.push(`periodo<=$${vals.length+1}`); vals.push(periodo_hasta); }
-    // Vista operativa: sólo categorías de proveedor real (PROVEEDOR_* + MANTENIMIENTO).
+    // Vista operativa: sólo categorías de proveedor real (PROVEEDOR_* +
+    // MANTENIMIENTO). Para roles no-admin INCLUIMOS también las
+    // categorías sensibles (NOMINAS_DIRECCION/GASTOS_DIRECCION/
+    // PRESTAMOS/FINANCIERO) en el filtro, porque después las
+    // fusionamos en un único slice "Gastos Dirección" (no se
+    // exponen individualmente, pero el total sí debe aparecer).
     if (vista === 'operativo') {
+      const catsPermitidas = esAdminLike(req)
+        ? CATEGORIAS_PROVEEDOR_OPERATIVO
+        : [...CATEGORIAS_PROVEEDOR_OPERATIVO, ...CATEGORIAS_DIRECCION_FUSE];
       where.push(`categoria = ANY($${vals.length+1}::text[])`);
-      vals.push(CATEGORIAS_PROVEEDOR_OPERATIVO);
+      vals.push(catsPermitidas);
     }
 
     const rows = await many(
@@ -377,7 +400,7 @@ router.get('/proveedores', async (req, res) => {
 
     // Categoría más frecuente por proveedor.
     const totalGasto = [...agg.values()].reduce((s, v) => s + v.total, 0);
-    const proveedores = [...agg.entries()].map(([proveedor, a]) => {
+    let proveedores = [...agg.entries()].map(([proveedor, a]) => {
       let topCat = null, topCnt = 0;
       for (const [c, n] of a.cats.entries()) if (n > topCnt) { topCnt = n; topCat = c; }
       const ped = pedidosInfo.get(proveedor);
@@ -392,6 +415,36 @@ router.get('/proveedores', async (req, res) => {
         ultimo_pedido: ped?.ultimo || null,
       };
     }).sort((a, b) => b.total_importe - a.total_importe);
+
+    // Fusión de grupos sensibles para roles no-admin (Ronda 9): los
+    // proveedores con categoría NOMINAS_DIRECCION / GASTOS_DIRECCION /
+    // PRESTAMOS / FINANCIERO se colapsan en un único slice "Gastos
+    // Dirección". Se aplica ANTES del rollup de "Proveedores Menores"
+    // para que el fusionado quede como un slice principal y no caiga
+    // en el bucket de menores por casualidad.
+    let fusionados = 0;
+    if (!esAdminLike(req)) {
+      const sensibles = proveedores.filter((p) => CATEGORIAS_DIRECCION_FUSE.has(p.categoria));
+      const restantes = proveedores.filter((p) => !CATEGORIAS_DIRECCION_FUSE.has(p.categoria));
+      if (sensibles.length) {
+        const tot = sensibles.reduce((s, p) => s + p.total_importe, 0);
+        const tx = sensibles.reduce((s, p) => s + p.num_transacciones, 0);
+        const ultimaFecha = sensibles.reduce((d, p) => (p.ultima_fecha > (d || '')) ? p.ultima_fecha : d, null);
+        restantes.push({
+          proveedor: FUSE_PROVEEDOR,
+          total_importe: tot,
+          porcentaje: totalGasto > 0 ? tot / totalGasto : 0,
+          num_transacciones: tx,
+          categoria: 'GASTOS_DIRECCION',
+          ultima_fecha: ultimaFecha,
+          num_pedidos: 0, ultimo_pedido: null,
+          _es_fusion_direccion: true,
+          _miembros: sensibles.length,
+        });
+        fusionados = sensibles.length;
+      }
+      proveedores = restantes.sort((a, b) => b.total_importe - a.total_importe);
+    }
 
     // Ronda 4: rollup de proveedores menores en "Proveedores Menores".
     // Dos pasadas:
@@ -471,6 +524,10 @@ router.get('/proveedores', async (req, res) => {
       n_excluido_intra_grupo: nExcluido,
       n_grupos_finales: proveedoresFinal.length,
       rollup_menores,
+      // Si el rol no es admin/socio, indica cuántos proveedores
+      // se fusionaron en el slice "Gastos Dirección". Permite al
+      // frontend desactivar drill-down sobre ese slice.
+      fusion_direccion: fusionados > 0 ? { proveedor: FUSE_PROVEEDOR, miembros: fusionados } : null,
       proveedores: proveedoresFinal,
     });
   } catch (e) {
@@ -514,6 +571,22 @@ router.get('/proveedor-evolucion', async (req, res) => {
     const mesesRango = buildMeses(desde, hasta);
     const mesesYoy = yoy ? mesesRango.map((p) => shiftYear(p, -1)) : [];
 
+    // Para roles no-admin: las series sobre categorías sensibles
+    // (NOMINAS_DIRECCION/GASTOS_DIRECCION/PRESTAMOS/FINANCIERO) se
+    // fusionan en una serie única "Gastos Dirección". Si el cliente
+    // pide individualmente una de las 4, la silenciamos. Si pide
+    // "Gastos Dirección" como proveedor, le devolvemos la suma de las 4.
+    const noAdmin = !esAdminLike(req);
+    const pideFusion = noAdmin && proveedores.includes(FUSE_PROVEEDOR);
+    // Filtramos las categorías sensibles que pudieran venir como
+    // categorias[] explícitas (para no exponerlas como series propias).
+    const categoriasFiltradas = noAdmin
+      ? categorias.filter((c) => !CATEGORIAS_DIRECCION_FUSE.has(c))
+      : categorias;
+    // También quitamos los proveedores individuales si su nombre coincide
+    // con uno de los que cae en categorías sensibles. Lo resolvemos
+    // en runtime (al iterar rows, descartamos los matches).
+
     async function fetchSeries(mesesArr) {
       if (!mesesArr.length) return { byProv: new Map(), byCat: new Map() };
       const params = [mesesArr];
@@ -521,7 +594,7 @@ router.get('/proveedor-evolucion', async (req, res) => {
       const socCl = buildSociedadClause(sociedad_id, params.length + 1);
       if (socCl) { where += ` AND ${socCl.sql}`; params.push(...socCl.vals); }
       const rows = await many(
-        `SELECT concepto, categoria, periodo, importe::float8 AS importe
+        `SELECT concepto, categoria, periodo, importe::float8 AS importe, proveedor_normalizado
            FROM ab_movimientos
           WHERE ${where}`,
         params
@@ -534,13 +607,25 @@ router.get('/proveedor-evolucion', async (req, res) => {
         const { proveedor, categoria } = normalizarProveedor(r.concepto, r.categoria);
         const cat = categoria || r.categoria;
         const abs = Math.abs(+r.importe);
+        const esSensible = noAdmin && CATEGORIAS_DIRECCION_FUSE.has(r.categoria);
+
+        if (esSensible) {
+          // Suma silenciosa bajo "Gastos Dirección" si fue solicitada.
+          if (pideFusion) {
+            if (!byProv.has(FUSE_PROVEEDOR)) byProv.set(FUSE_PROVEEDOR, new Map());
+            const m = byProv.get(FUSE_PROVEEDOR);
+            m.set(r.periodo, (m.get(r.periodo) || 0) + abs);
+          }
+          // Nunca exponer la categoria/proveedor individual.
+          continue;
+        }
         // Por proveedor
         if (proveedores.includes(proveedor)) {
           if (!byProv.has(proveedor)) byProv.set(proveedor, new Map());
           byProv.get(proveedor).set(r.periodo, (byProv.get(proveedor).get(r.periodo) || 0) + abs);
         }
         // Por categoría
-        if (categorias.includes(cat)) {
+        if (categoriasFiltradas.includes(cat)) {
           if (!byCat.has(cat)) byCat.set(cat, new Map());
           byCat.get(cat).set(r.periodo, (byCat.get(cat).get(r.periodo) || 0) + abs);
         }
@@ -668,6 +753,24 @@ router.get('/grupo-detalle', async (req, res) => {
     const periodo = req.query.periodo || null;
     const periodo_desde = req.query.periodo_desde || null;
     const periodo_hasta = req.query.periodo_hasta || null;
+
+    // Bloqueo de drill-down sobre grupos sensibles para roles no-admin.
+    // El slice "Gastos Dirección" (fusión de NOMINAS_DIRECCION /
+    // GASTOS_DIRECCION / PRESTAMOS / FINANCIERO) no se expande, y
+    // tampoco se permite acceder por URL a los proveedores individuales
+    // que pertenecen a esas categorías sensibles.
+    if (!esAdminLike(req)) {
+      if (grupo === FUSE_PROVEEDOR) {
+        return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
+      }
+      const cat = await one(
+        'SELECT MAX(categoria) AS cat FROM ab_movimientos WHERE proveedor_normalizado = $1',
+        [grupo]
+      );
+      if (cat?.cat && CATEGORIAS_DIRECCION_FUSE.has(cat.cat)) {
+        return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
+      }
+    }
 
     const where = ['importe < 0'];
     const vals = [];

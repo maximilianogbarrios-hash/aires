@@ -353,6 +353,10 @@ async function loadProvRanking() {
     n_intra: j.n_excluido_intra_grupo || 0,
     loaded: true,
     vista: j.vista_efectiva || (rolEsAdmin() ? 'admin' : 'operativo'),
+    // Backend devuelve { proveedor, miembros } cuando el rol no es
+    // admin/socio y hay categorías sensibles fusionadas en un único
+    // slice. Lo usamos en renderProvDonut para desactivar el click.
+    fusion_direccion: j.fusion_direccion || null,
   });
   // Defensa adicional: si por cualquier ruta el sort se hubiera perdido,
   // re-inicializarlo a su default.
@@ -440,16 +444,27 @@ function renderProvDonut() {
         : 'Proveedores por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down.');
 
   const tot = state.prov.total;
+  // El slice "Gastos Dirección" es el bucket fusionado para roles no
+  // admin/socio. No tiene drill-down — click no abre el sidebar.
+  const fusionGrupo = state.prov.fusion_direccion?.proveedor || null;
   $('prov-legend').innerHTML = labels.map((lab, i) => {
     const v = values[i];
     const p = tot > 0 ? (v / tot * 100).toFixed(1) : '0';
     const isOtros = !drillOpen && lab.startsWith('Otros (');
+    const esFusionRestringida = fusionGrupo && lab === fusionGrupo;
     const labEsc = lab.replace(/'/g, "\\'");
-    // Click en "Otros (N)" → drill. Click en cualquier otro grupo → sidebar de detalle.
-    const onClick = isOtros ? `enterDonutDrill()` : `openProvSidebar('${labEsc}')`;
-    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:pointer;border-radius:6px" onmouseover="this.style.background='var(--bg-secondary)'" onmouseout="this.style.background='transparent'">
+    // Click en "Otros (N)" → drill. "Gastos Dirección" para non-admin →
+    // sin click. Cualquier otro grupo → sidebar de detalle.
+    const onClick = esFusionRestringida
+      ? ''
+      : (isOtros ? `enterDonutDrill()` : `openProvSidebar('${labEsc}')`);
+    const cursor = esFusionRestringida ? 'default' : 'pointer';
+    const hover = esFusionRestringida ? '' : ' onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"';
+    const lockIcon = esFusionRestringida ? ' 🔒' : '';
+    const sufijo = isOtros ? ' →' : lockIcon;
+    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover}>
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
-      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${lab}">${lab}${isOtros ? ' →' : ''}</span>
+      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${lab}${esFusionRestringida ? ' — bucket fusionado, sin drill-down disponible' : ''}">${lab}${sufijo}</span>
       <span style="font-size:11px;font-weight:500">${eur(v)}</span>
       <span style="font-size:11px;color:var(--text-2);min-width:40px;text-align:right">${p}%</span>
     </div>`;
