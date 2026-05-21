@@ -667,13 +667,18 @@ router.get('/grupo-detalle', async (req, res) => {
       if (proveedor !== grupo) continue;
       const k = r.concepto;
       if (!porConcepto.has(k)) {
-        porConcepto.set(k, { concepto: r.concepto, total: 0, n: 0, categoria_actual: categoria, ultima_fecha: null, ids: [] });
+        porConcepto.set(k, { concepto: r.concepto, total: 0, n: 0, categoria_actual: categoria, ultima_fecha: null, ids: [], sociedades: new Map() });
       }
       const c = porConcepto.get(k);
       c.total += Math.abs(+r.importe);
       c.n += 1;
       c.ids.push(r.id);
       if (!c.ultima_fecha || r.fecha > c.ultima_fecha) c.ultima_fecha = r.fecha;
+      // Trackeamos qué sociedades aparecen en este concepto y con qué peso
+      // (en importe absoluto), para que el frontend muestre el badge 🏢XXX
+      // ordenado por relevancia cuando un mismo concepto cruza varias sociedades.
+      const abs = Math.abs(+r.importe);
+      c.sociedades.set(r.sociedad_id, (c.sociedades.get(r.sociedad_id) || 0) + abs);
     }
 
     const conceptos = [...porConcepto.values()]
@@ -684,6 +689,9 @@ router.get('/grupo-detalle', async (req, res) => {
         categoria_actual: c.categoria_actual,
         ultima_fecha: c.ultima_fecha,
         sample_ids: c.ids.slice(0, 5),
+        sociedades: [...c.sociedades.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([id, importe]) => ({ id, importe: Math.round(importe * 100) / 100 })),
       }))
       .sort((a, b) => b.total_importe - a.total_importe);
 

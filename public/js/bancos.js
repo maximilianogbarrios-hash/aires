@@ -1019,6 +1019,29 @@ function closeProvSidebar() {
   $('prov-sidebar-backdrop').style.display = 'none';
 }
 
+// Color de fondo / texto del badge 🏢 por sociedad. Tonos pastel suaves
+// para no competir con el resto del sidebar.
+const SOCIEDAD_BADGE = {
+  hostelero: { bg: '#FEF3C7', fg: '#92400E' }, // ámbar — Grupo Hostelero
+  alicante:  { bg: '#DBEAFE', fg: '#1E40AF' }, // azul — Aires Alicante
+  smart:     { bg: '#E0E7FF', fg: '#4338CA' }, // índigo — Smart Aires
+  murcia:    { bg: '#FCE7F3', fg: '#9D174D' }, // rosa — Aires Murcia
+  benidorm:  { bg: '#DCFCE7', fg: '#166534' }, // verde — Aires Benidorm
+};
+
+function renderSociedadesBadges(sociedades) {
+  if (!sociedades || !sociedades.length) return '';
+  return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">'
+    + sociedades.map((s) => {
+        const abbr = SOCIEDAD_ABBR[s.id] || (s.id || '').slice(0, 3).toUpperCase();
+        const col = SOCIEDAD_BADGE[s.id] || { bg: 'var(--bg-secondary)', fg: 'var(--text-2)' };
+        const totalCorto = eur(s.importe);
+        const titulo = `${s.id} · ${eur2(s.importe)}`;
+        return `<span title="${titulo}" style="display:inline-flex;align-items:center;gap:3px;background:${col.bg};color:${col.fg};border-radius:10px;padding:1px 7px;font-size:9px;font-weight:600;line-height:1.5">🏢 ${abbr}${sociedades.length > 1 ? ' ' + totalCorto : ''}</span>`;
+      }).join('')
+    + '</div>';
+}
+
 function renderProvSidebarRows(conceptos) {
   const body = $('prov-sb-body');
   body.innerHTML = conceptos.map((c, i) => {
@@ -1030,6 +1053,7 @@ function renderProvSidebarRows(conceptos) {
           <p style="font-size:10px;color:var(--text-2);margin-top:2px">
             <strong style="color:#dc2626">${eur2(c.total_importe)}</strong> · ${c.num_transacciones} tx · cat. <code>${c.categoria_actual || '—'}</code>${c.ultima_fecha ? ' · últ. ' + c.ultima_fecha : ''}
           </p>
+          ${renderSociedadesBadges(c.sociedades)}
         </div>
         <button onclick="toggleReclasificar(${i})" id="rc-btn-${i}" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px;flex-shrink:0">Reclasificar</button>
       </div>
