@@ -1254,11 +1254,16 @@ function _rcRenderList(i, q) {
   const exacto = qNorm && all.some((r) => (r.nombre || '').toLowerCase() === qNorm);
   const rows = cap.map((r) => {
     const nombreEsc = (r.nombre || '').replace(/"/g, '&quot;');
+    const esFusion = !!r._es_grupo_fusion;
+    const badge = esFusion
+      ? '<span style="font-size:9px;font-weight:500;color:#7E22CE;background:#F3E8FF;padding:1px 6px;border-radius:999px;flex-shrink:0">slice fusionado</span>'
+      : `<span style="color:var(--text-2);font-size:10px;flex-shrink:0">${eur(r.total_importe)}</span>`;
+    const bg = esFusion ? 'background:#FBF8FF;' : '';
     return `<div class="rc-list-item" data-val="${nombreEsc}"
         onmousedown="event.preventDefault()" onclick="rcPickList(${i}, this.dataset.val)"
-        style="padding:6px 10px;cursor:pointer;font-size:11px;border-bottom:.5px solid var(--border-3);display:flex;justify-content:space-between;align-items:center;gap:8px">
-      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.nombre}</span>
-      <span style="color:var(--text-2);font-size:10px;flex-shrink:0">${eur(r.total_importe)}</span>
+        style="${bg}padding:6px 10px;cursor:pointer;font-size:11px;border-bottom:.5px solid var(--border-3);display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap${esFusion ? ';font-weight:500;color:#7E22CE' : ''}">${r.nombre}</span>
+      ${badge}
     </div>`;
   }).join('');
   let createBlock = '';
@@ -1303,6 +1308,17 @@ window.rcFilterList = function (i) {
 window.rcPickList = function (i, val) {
   const inp = $(`rc-name-${i}`);
   if (inp) inp.value = val;
+  // Si el usuario eligió el slice fusionado "Gastos Dirección", forzamos
+  // la categoría a GASTOS_DIRECCION en el <select> para que el feedback
+  // sea coherente con lo que va a guardar el backend (que también lo
+  // fuerza por su cuenta como defense in depth).
+  if (val === 'Gastos Dirección') {
+    const cat = $(`rc-cat-${i}`);
+    if (cat) {
+      const opt = [...cat.options].find((o) => o.value === 'GASTOS_DIRECCION');
+      if (opt) cat.value = 'GASTOS_DIRECCION';
+    }
+  }
   rcCloseList(i);
   if (inp) inp.focus();
 };

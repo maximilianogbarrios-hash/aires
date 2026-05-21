@@ -811,7 +811,28 @@ router.get('/proveedores-normalizados', async (req, res) => {
         LIMIT $${vals.length + 1}`,
       [...vals, limit]
     );
-    res.json({ proveedores: rows });
+    // Prepend opción especial "Gastos Dirección" — slice fusionado virtual.
+    // No es un proveedor_normalizado tradicional sino un destino canónico
+    // para mandar conceptos al grupo protegido (categoria=GASTOS_DIRECCION).
+    // Dedupe si ya existe en la lista por reclasificaciones previas.
+    const qNorm = q.toLowerCase();
+    const matchesFilter = !qNorm || FUSE_PROVEEDOR.toLowerCase().includes(qNorm);
+    const matchesCategoria = !categoria || categoria === 'GASTOS_DIRECCION';
+    let proveedores = rows.filter((r) => r.nombre !== FUSE_PROVEEDOR);
+    if (matchesFilter && matchesCategoria) {
+      const existente = rows.find((r) => r.nombre === FUSE_PROVEEDOR);
+      proveedores = [
+        {
+          nombre: FUSE_PROVEEDOR,
+          n: existente?.n || 0,
+          total_importe: existente?.total_importe || 0,
+          categoria_top: 'GASTOS_DIRECCION',
+          _es_grupo_fusion: true,
+        },
+        ...proveedores,
+      ];
+    }
+    res.json({ proveedores });
   } catch (e) {
     console.error('[bancos.proveedores-normalizados]', e);
     res.status(500).json({ error: 'internal' });
@@ -1154,9 +1175,17 @@ router.delete('/gastos-direccion/override/:proveedor', requireAdminLike, async (
 // con ese concepto exacto y, opcionalmente, guardar una regla persistente.
 router.post('/reclasificar', express.json(), async (req, res) => {
   try {
-    const { concepto, categoria_nueva, proveedor_nuevo, guardar_regla, tipo_match, patron } = req.body || {};
+    const { concepto, proveedor_nuevo, guardar_regla, tipo_match, patron } = req.body || {};
+    let { categoria_nueva } = req.body || {};
     if (!concepto || !categoria_nueva || !proveedor_nuevo) {
       return res.status(400).json({ error: 'concepto, categoria_nueva y proveedor_nuevo requeridos' });
+    }
+    // "Gastos Dirección" es un destino canónico hacia el slice fusionado:
+    // forzamos categoria=GASTOS_DIRECCION para que el movimiento quede
+    // dentro del grupo protegido (default-by-category de la fusión),
+    // independientemente de la categoría que haya elegido la UI.
+    if (proveedor_nuevo === FUSE_PROVEEDOR) {
+      categoria_nueva = 'GASTOS_DIRECCION';
     }
     // 1) UPDATE ab_movimientos por concepto exacto.
     const upd = await query(

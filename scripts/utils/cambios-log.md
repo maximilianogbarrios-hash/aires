@@ -769,3 +769,59 @@ Whitelist (deben pasar):
 
 `qrcode 1.5.4` y `otplib 12.0.1` ya estaban instalados — sin cambios
 de dependencias.
+
+## Fix I — "Gastos Dirección" como destino canónico en reclasificación (2026-05-21)
+
+**Bug**: el dropdown "Nombre normalizado" del sidebar de
+reclasificación no incluía "Gastos Dirección" porque es un grupo
+fusionado virtual (default-by-category sobre 4 categorías) — no un
+`proveedor_normalizado` real en `ab_movimientos`. El SQL del endpoint
+filtra `proveedor_normalizado IS NOT NULL`, así que la fusionada nunca
+aparecía. El usuario no tenía cómo mandar un concepto al grupo
+protegido sin pasar por código.
+
+**Cambios backend** (`routes/bancos.js`):
+
+1. `GET /proveedores-normalizados`: prepende entrada sintética
+   `{ nombre: 'Gastos Dirección', categoria_top: 'GASTOS_DIRECCION',
+   _es_grupo_fusion: true, n, total_importe }` cuando el filtro de
+   búsqueda (`q`) y categoría (`categoria=null|GASTOS_DIRECCION`) lo
+   permiten. Dedupea contra cualquier fila pre-existente con ese
+   `proveedor_normalizado`.
+
+2. `POST /reclasificar`: si `proveedor_nuevo === 'Gastos Dirección'`
+   se fuerza server-side `categoria_nueva = 'GASTOS_DIRECCION'`
+   antes del UPDATE y antes del INSERT en
+   `ab_reglas_normalizacion`. Defense in depth — el front también
+   setea el `<select>` pero el server no confía. Garantiza que el
+   movimiento caiga en el slice fusionado vía la regla
+   default-by-category de la fusión.
+
+**Cambios frontend** (`public/js/bancos.js`):
+
+3. Dropdown render: si `r._es_grupo_fusion`, se pinta con badge
+   "slice fusionado" y color violeta, separando visualmente la
+   entrada virtual de los proveedores reales.
+
+4. `rcPickList(i, val)`: si `val === 'Gastos Dirección'` también
+   fuerza el `<select rc-cat-${i}>` a `GASTOS_DIRECCION` para que el
+   feedback visual sea coherente con lo que el backend va a
+   persistir.
+
+**E2E** (server reiniciado tras el deploy, admin + gerente con
+sesiones inyectadas):
+
+| Caso                                                    | Resultado |
+|---------------------------------------------------------|-----------|
+| A) `/proveedores-normalizados` (sin filtros)            | `[0]=Gastos Dirección` con `_es_grupo_fusion:true`; `[1]=Carnicas Mulas SL` |
+| B) `q=gastos`                                           | `['Gastos Dirección','Gastos Vehículos']` |
+| C) `categoria=ALQUILER`                                 | `['Dialque SAU','TGT']` — NO incluye Gastos Dirección |
+| D) `categoria=GASTOS_DIRECCION`                         | `['Gastos Dirección']` |
+| E) Reclasificar con cliente mintiendo `categoria=ALQUILER` y `proveedor_nuevo=Gastos Dirección` | fila persiste como `categoria=GASTOS_DIRECCION`; regla persiste con `categoria=GASTOS_DIRECCION`; gerente y admin ven `Gastos Dirección` con `+0.01€` y `+1 miembro` (fusionado correctamente) |
+| F) Rollback (restaurar categoría original + borrar regla) | OK |
+
+**Importante**: con el refactor reciente de vista unificada (admin y
+no-admin ven los mismos slices y totales — sólo admin/socio pueden
+hacer drill-down sobre el slice fusionado), tanto admin como gerente
+ven el movimiento dentro de `Gastos Dirección` con el mismo total y
+mismo `_miembros`. La diferencia es sólo el permiso de expansión.
