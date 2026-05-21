@@ -165,6 +165,17 @@ async function main() {
   md += `- **NOMINAS (heurística)** se infiere cuando el concepto matchea \`^TRANSFERENCIA [INMEDIATA]? A {Nombre Apellido…}\` con 2-5 tokens estilo nombre, sin sufijos legales (SL, SA, SLU, GMBH, etc.) y sin keywords como "Factura", "Alquiler", "Fianza", "Recibo".\n`;
   md += `- **Silicius, Concepción Orive, Overlease** → ALQUILER (real estate / SOCIMI).\n`;
   md += `- Fallback: si un concepto matchea patrón de "operación comercial" (Transferencia, Recibo, Compra) pero ninguna regla específica, va a **PROVEEDOR_OTROS**. Si no parece operación comercial (devoluciones, regularizaciones, traspasos internos sin destinatario claro), va a **OTROS**.\n\n`;
+  md += `### Ronda 3 (comisiones bancarias + nóminas con stopwords + SaaS + Facebook Ads)\n\n`;
+  md += `Objetivo: bajar PROVEEDOR_OTROS y OTROS reagrupando los conceptos más frecuentes que caían en el cubo genérico.\n\n`;
+  md += `- **Comisiones bancarias Sabadell**: regex \`^comisi[oó]nes?\\s+\\d{10}\` (formato "Comision XXXXXXXXXX 01/02 NombreSociedad XXXXXXXXX") → **FINANCIERO** / proveedor \`Comisiones Bancarias Sabadell\`. También \`^COMISIONES$\`, \`^COMISIÓN DIVISA NO EURO\`, \`^INTERESES Y/O COMISIONES CUENTA\` → FINANCIERO.\n`;
+  md += `- **Comisiones de TPV** (\`Comision Por Instalacion O Mantenimiento De Tpv 0049...\`) se MANTIENEN en MANTENIMIENTO porque la regex de financiero exige el dígito al **inicio** del concepto, no en medio.\n`;
+  md += `- **Nóminas — stopwords en nombres compuestos**: \`esTransferenciaPersonaFisica\` ahora acepta \`de\`, \`del\`, \`la\`, \`las\`, \`el\`, \`los\`, \`y\`, \`da\`, \`do\`, \`das\`, \`dos\` como filler entre tokens de nombre. Necesita ≥2 tokens con mayúscula (Title o TODO MAYUSCULAS). Recupera "Francisco de Asis Fernandez", "Joao da Silva", "Maria del Carmen" etc.\n`;
+  md += `- **IVA autoliquidación**: \`^\\d{0,4}\\s*iva\\s+autoliquidaci\` → IMPUESTOS / proveedor \`IVA Autoliquidación\`.\n`;
+  md += `- **DGT sanciones + Generalitat Valenciana** → IMPUESTOS.\n`;
+  md += `- **SERVICIOS_PROF** (SaaS / software / hosting): Adobe Systems, Google One/Workspace, Microsoft/Office 365, CapCut, Hostinger, Hello Ventures BV, App-Sorteos, 4Shine, Promotty, Soluciones Host, Helloprint, TOT-Digital, Yalt Business/Magical Insights.\n`;
+  md += `- **PUBLICIDAD** ahora matchea Facebook ads truncados en Sabadell: \`\\bfacebk\\b\`, \`fb.me/ads\` → proveedor \`Meta Ads (Facebook/Instagram)\`.\n`;
+  md += `- **MANTENIMIENTO** ampliado: New Matelsa, Maquinaria Hostelería TIE, Saniagua SL, TodoElectrico, Eléctricas Maisa, Obramat, Sumin Surec, Thomann, AliExpress, OBM Murcia, Viveros Carmaet, Coop. Eléctrica Benéfica San Francisco.\n\n`;
+  md += `**Resultado**: cambios=866. OTROS bajó de 645 a 88 movimientos. FINANCIERO captura 604 comisiones bancarias nuevas. SERVICIOS_PROF y PUBLICIDAD ya tienen contenido real (147 y 136 movs respectivamente). PROVEEDOR_OTROS baja de 2676 a 2367 movimientos.\n\n`;
   md += `### Ronda 2 (recategorización de huérfanos)\n\n`;
   md += `- **NOMINAS explícita**: ahora se prioriza la palabra "nomina/salario/sueldo" presente en el concepto antes de aplicar fiscales/mantenimiento. Esto recupera "NOMINA A YANINA", "Traspaso: Nomina Daniel", "Concepto: Nomina Leonardo Rodriguez" que antes caían en OTROS o PROVEEDOR_OTROS.\n`;
   md += `- **Dialque / TGT Dialque** → ALQUILER (arrendamiento de centros comerciales y franquicia hostelera, identificados manualmente como alquiler).\n`;
