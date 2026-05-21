@@ -49,6 +49,7 @@ async function boot() {
     ctx.locales = data.locales || [];
     ctx.user = data.user || null;
     ctx.tabs = data.tabs || null;
+    ctx.sub_tabs_pedidos = data.sub_tabs_pedidos || null;
     ctx.flags = data.flags || {};
     // Build h25 from historial
     ctx.h25 = {};
@@ -103,6 +104,23 @@ function setUserUI() {
   document.querySelectorAll('.tab[data-tab]').forEach((el) => {
     el.style.display = tabs.includes(el.dataset.tab) ? '' : 'none';
   });
+  // Sub-pestañas DENTRO de Pedidos: filtrar por matriz sub_tabs_pedidos[].
+  // Para rol 'pedidos' sólo queda visible "mp" (Materia Prima).
+  const subTabsPed = ctx.sub_tabs_pedidos;
+  if (Array.isArray(subTabsPed)) {
+    document.querySelectorAll('.sub-tab[data-sub]').forEach((el) => {
+      el.style.display = subTabsPed.includes(el.dataset.sub) ? '' : 'none';
+    });
+    // Asegurar que la sub-tab activa esté permitida; si no, marcar la primera visible.
+    const activeSub = document.querySelector('.sub-tab.on[data-sub]');
+    if (activeSub && activeSub.style.display === 'none') {
+      const firstVisible = document.querySelector('.sub-tab[data-sub]:not([style*="none"])');
+      if (firstVisible) {
+        document.querySelectorAll('.sub-tab').forEach((t) => t.classList.remove('on'));
+        firstVisible.classList.add('on');
+      }
+    }
+  }
   // Si la pestaña activa (resumen) por defecto no está permitida, abrir la primera permitida.
   const visible = [...document.querySelectorAll('.tab[data-tab]')].filter((el) => el.style.display !== 'none');
   const visibleNames = visible.map((el) => el.dataset.tab);
