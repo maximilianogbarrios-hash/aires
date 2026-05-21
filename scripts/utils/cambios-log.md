@@ -22,3 +22,13 @@ está separado en [recategorizacion-log.md](recategorizacion-log.md).
 
 **Decisión**: el endpoint NO devuelve líneas por defecto si no hay selección — el front no llama a la API en ese caso. Esto evita queries pesadas innecesarias.
 
+## Mejora 6 — Ocultar Parámetros según rol
+
+- Card "⚙ Parámetros" del dashboard ahora arranca con `display:none` y
+  `setUserUI()` lo desbloquea sólo si `ctx.user.role ∈ {admin, socio}`.
+- Decisión: oculto del DOM via CSS (display:none) en vez de no renderizarlo,
+  porque los IDs internos (`sMP`, `sPers`, etc.) son referenciados por
+  `bindParamSliders()` antes del primer click — si los borráramos de la
+  página rompería el flujo de carga. La validación dura sigue siendo
+  server-side (`config_w` perm).
+

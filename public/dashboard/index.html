@@ -54,8 +54,8 @@
   <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Horas/sem totales</p><p style="font-size:19px;font-weight:500" id="k-horas">—</p><p style="font-size:11px;color:var(--text-2)" id="k-horas-s">—</p></div>
 </div>
 
-<!-- PARAMS PANEL -->
-<div class="card no-print" style="margin-bottom:1.25rem">
+<!-- PARAMS PANEL (visible sólo para admin/socio — ver setUserUI) -->
+<div class="card no-print" id="params-panel" style="margin-bottom:1.25rem;display:none">
   <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="togglePanel()">
     <p style="font-size:14px;font-weight:500">⚙ Parámetros</p>
     <span id="pchev" style="font-size:16px;transition:transform .2s">⌄</span>

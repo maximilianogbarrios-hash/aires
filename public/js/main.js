@@ -82,6 +82,11 @@ function setUserUI() {
   if (!ctx.user) return;
   $('tb-user').textContent = `${ctx.user.email} (${ctx.user.role})`;
   if (ctx.user.role === 'admin') $('tb-admin-link').style.display = '';
+  // Mejora 6: el panel de Parámetros (% MP / personal / impuestos / publicidad / €h)
+  // sólo se muestra a admin y socio. Para el resto, el card queda oculto.
+  const esAdminSocio = ['admin', 'socio'].includes(ctx.user.role);
+  const panel = $('params-panel');
+  if (panel) panel.style.display = esAdminSocio ? '' : 'none';
 }
 
 async function logout() {
