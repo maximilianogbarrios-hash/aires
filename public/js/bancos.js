@@ -341,14 +341,22 @@ async function loadProvRanking() {
   }
   // El backend filtra por rol; el front no envía vista (la deja en backend).
   const j = await api('/api/v1/bancos/proveedores?' + params.toString());
-  state.prov = {
+  // BUG fix — `state.prov = {...}` perdía propiedades del estado original
+  // (sort, donutThreshold, donutDrillOpen, donutDrillRows) y rompía a
+  // renderProvTabla con "Cannot destructure 'col' of state.prov.sort as it
+  // is undefined" al re-render tras una reclasificación. Object.assign
+  // preserva esas claves.
+  Object.assign(state.prov, {
     rows: j.proveedores || [],
     total: j.total_gasto || 0,
     intra: j.total_excluido_intra_grupo || 0,
     n_intra: j.n_excluido_intra_grupo || 0,
     loaded: true,
     vista: j.vista_efectiva || (rolEsAdmin() ? 'admin' : 'operativo'),
-  };
+  });
+  // Defensa adicional: si por cualquier ruta el sort se hubiera perdido,
+  // re-inicializarlo a su default.
+  if (!state.prov.sort) state.prov.sort = { col: 'total_importe', dir: -1 };
   aplicarVistaSegunRol();
   renderProvKpis();
   renderProvDonut();
@@ -1071,12 +1079,17 @@ function renderProvSidebarRows(conceptos) {
             ${CATEGORIAS_TODAS.map((cat) => `<option value="${cat}" ${cat === c.categoria_actual ? 'selected' : ''}>${cat}</option>`).join('')}
           </select>
           <label>Nombre normalizado</label>
-          <div style="position:relative">
-            <input type="text" id="rc-name-${i}" autocomplete="off" list="rc-names-${i}"
+          <div class="rc-combo" style="position:relative">
+            <input type="text" id="rc-name-${i}" autocomplete="off"
               value="${(state._sbData?.grupo || '').replace(/"/g, '&quot;')}"
-              placeholder="Escribí para buscar uno existente o crear uno nuevo"
-              style="width:100%;padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
-            <datalist id="rc-names-${i}"></datalist>
+              placeholder="Click para ver lista o escribí para filtrar / crear"
+              onfocus="rcOpenList(${i})"
+              oninput="rcFilterList(${i})"
+              onkeydown="rcListKey(event, ${i})"
+              onblur="setTimeout(() => rcCloseList(${i}), 180)"
+              style="width:100%;padding:5px 28px 5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
+            <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--text-2);font-size:10px">▾</span>
+            <div id="rc-list-${i}" class="rc-list" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;max-height:220px;overflow-y:auto;background:var(--bg-primary);border:.5px solid var(--border-2);border-radius:6px;box-shadow:0 6px 16px rgba(0,0,0,.18);margin-top:2px"></div>
             <p id="rc-name-hint-${i}" style="font-size:9px;color:var(--text-2);margin-top:2px">Todos los grupos existentes (cualquier categoría) · si el nombre que escribís no está, se crea como slice nuevo en el donut</p>
           </div>
           <label style="grid-column:1/-1;display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -1111,9 +1124,7 @@ function toggleReclasificar(i) {
 let _rcNombresAllCache = null;
 
 async function rcRefreshNombres(i) {
-  const dl = $(`rc-names-${i}`);
   const hint = $(`rc-name-hint-${i}`);
-  if (!dl) return;
   if (!_rcNombresAllCache) {
     try {
       const j = await api('/api/v1/bancos/proveedores-normalizados?limit=500');
@@ -1122,24 +1133,103 @@ async function rcRefreshNombres(i) {
       _rcNombresAllCache = [];
     }
   }
-  // Endpoint devuelve por total DESC; el dropdown se muestra alfabético
-  // para que sea fácil de scanear visualmente. El label de cada opción
-  // incluye el importe total para identificar de un vistazo qué grupo es.
-  const sorted = [..._rcNombresAllCache].sort((a, b) => a.nombre.localeCompare(b.nombre));
-  dl.innerHTML = sorted
-    .map((r) => {
-      const nombreEsc = (r.nombre || '').replace(/"/g, '&quot;');
-      // value: lo que el input recibe al seleccionar (sólo el nombre).
-      // label/text: lo que el browser muestra como sugerencia (nombre + total).
-      return `<option value="${nombreEsc}" label="${nombreEsc} · ${eur(r.total_importe)}">${nombreEsc} · ${eur(r.total_importe)}</option>`;
-    })
-    .join('');
   if (hint) {
-    hint.textContent = sorted.length
-      ? `${sorted.length} grupos existentes (todas las categorías) · escribí para filtrar; si no está, se crea como slice nuevo`
+    hint.textContent = _rcNombresAllCache.length
+      ? `${_rcNombresAllCache.length} grupos existentes (todas las categorías) · escribí para filtrar; si no está, se crea como slice nuevo`
       : 'No hay grupos normalizados todavía · escribí uno nuevo';
   }
+  // Pre-popular la lista visible (cerrada hasta el focus)
+  _rcRenderList(i, '');
 }
+
+// Render del dropdown custom: lista filtrada + opción "+ Crear nuevo".
+function _rcRenderList(i, q) {
+  const list = $(`rc-list-${i}`);
+  if (!list) return;
+  const all = _rcNombresAllCache || [];
+  const qNorm = (q || '').trim().toLowerCase();
+  const matches = qNorm
+    ? all.filter((r) => (r.nombre || '').toLowerCase().includes(qNorm))
+    : [...all];
+  // Orden: si hay query, los que arrancan con la query primero; luego alfabético.
+  matches.sort((a, b) => {
+    if (qNorm) {
+      const ax = (a.nombre || '').toLowerCase().startsWith(qNorm) ? 0 : 1;
+      const bx = (b.nombre || '').toLowerCase().startsWith(qNorm) ? 0 : 1;
+      if (ax !== bx) return ax - bx;
+    }
+    return (a.nombre || '').localeCompare(b.nombre || '');
+  });
+  const cap = matches.slice(0, 80);
+  const exacto = qNorm && all.some((r) => (r.nombre || '').toLowerCase() === qNorm);
+  const rows = cap.map((r) => {
+    const nombreEsc = (r.nombre || '').replace(/"/g, '&quot;');
+    return `<div class="rc-list-item" data-val="${nombreEsc}"
+        onmousedown="event.preventDefault()" onclick="rcPickList(${i}, this.dataset.val)"
+        style="padding:6px 10px;cursor:pointer;font-size:11px;border-bottom:.5px solid var(--border-3);display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.nombre}</span>
+      <span style="color:var(--text-2);font-size:10px;flex-shrink:0">${eur(r.total_importe)}</span>
+    </div>`;
+  }).join('');
+  let createBlock = '';
+  if (qNorm && !exacto) {
+    const valEsc = q.replace(/"/g, '&quot;');
+    createBlock = `<div class="rc-list-item rc-list-create" data-val="${valEsc}"
+        onmousedown="event.preventDefault()" onclick="rcPickList(${i}, this.dataset.val)"
+        style="padding:7px 10px;cursor:pointer;font-size:11px;color:#185FA5;font-weight:500;background:var(--bg-secondary);border-top:.5px solid var(--border-2)">
+      + Crear nuevo: <span style="text-decoration:underline">${q}</span>
+    </div>`;
+  }
+  const empty = (!cap.length && !createBlock)
+    ? '<div style="padding:8px 10px;font-size:11px;color:var(--text-2);text-align:center">Sin grupos</div>' : '';
+  list.innerHTML = rows + empty + createBlock;
+  // Truncated indicator
+  if (matches.length > cap.length) {
+    list.insertAdjacentHTML('beforeend',
+      `<div style="padding:5px 10px;font-size:9px;color:var(--text-2);text-align:center;border-top:.5px dashed var(--border-3)">+${matches.length - cap.length} más · refiná la búsqueda</div>`);
+  }
+}
+
+window.rcOpenList = function (i) {
+  // Si todavía no cargamos los nombres, los traemos.
+  if (!_rcNombresAllCache) rcRefreshNombres(i);
+  else _rcRenderList(i, $(`rc-name-${i}`)?.value || '');
+  const list = $(`rc-list-${i}`);
+  if (list) list.style.display = '';
+};
+
+window.rcCloseList = function (i) {
+  const list = $(`rc-list-${i}`);
+  if (list) list.style.display = 'none';
+};
+
+window.rcFilterList = function (i) {
+  const q = $(`rc-name-${i}`)?.value || '';
+  _rcRenderList(i, q);
+  const list = $(`rc-list-${i}`);
+  if (list) list.style.display = '';
+};
+
+window.rcPickList = function (i, val) {
+  const inp = $(`rc-name-${i}`);
+  if (inp) inp.value = val;
+  rcCloseList(i);
+  if (inp) inp.focus();
+};
+
+window.rcListKey = function (ev, i) {
+  if (ev.key === 'Escape') { rcCloseList(i); ev.target.blur(); }
+  else if (ev.key === 'Enter') {
+    // Si hay un único match → pickearlo
+    const list = $(`rc-list-${i}`);
+    if (!list || list.style.display === 'none') return;
+    const items = list.querySelectorAll('.rc-list-item');
+    if (items.length === 1) {
+      ev.preventDefault();
+      rcPickList(i, items[0].dataset.val);
+    }
+  }
+};
 
 function _setRcFeedback(i, ok, html) {
   const el = $(`rc-feedback-${i}`);

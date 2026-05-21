@@ -90,6 +90,10 @@ input[type=number].real-inp{width:80px;text-align:right;font-size:12px;padding:3
 .ped-pay-dot.pd-r{background:#dc2626}
 .ped-pay-dot.pd-a{background:#eab308}
 .ped-pay-dot.pd-v{background:#22c55e}
+/* Dropdown custom para reclasificación de proveedores (/bancos sidebar) */
+.rc-list-item:hover{background:var(--bg-secondary)}
+.rc-list-item.rc-list-create:hover{background:#E6F1FB}
+.rc-list:last-child{border-bottom-left-radius:6px;border-bottom-right-radius:6px}
 /* Mejora 9: input "text-number" sin flechas y con UX cómodo */
 .ped-hours-inp{text-align:right}
 .ped-hours-inp::-webkit-outer-spin-button,.ped-hours-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
