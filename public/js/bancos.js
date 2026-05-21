@@ -1067,16 +1067,24 @@ function renderProvSidebarRows(conceptos) {
       <div id="rc-form-${i}" style="display:none;margin-top:10px;padding-top:10px;border-top:.5px dashed var(--border-3)">
         <div style="display:grid;grid-template-columns:140px 1fr;gap:6px 10px;align-items:center;font-size:11px">
           <label>Categoría</label>
-          <select id="rc-cat-${i}" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
+          <select id="rc-cat-${i}" onchange="rcRefreshNombres(${i})" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
             ${CATEGORIAS_TODAS.map((cat) => `<option value="${cat}" ${cat === c.categoria_actual ? 'selected' : ''}>${cat}</option>`).join('')}
           </select>
           <label>Nombre normalizado</label>
-          <input type="text" id="rc-name-${i}" value="${(state._sbData?.grupo || '').replace(/"/g, '&quot;')}" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
+          <div style="position:relative">
+            <input type="text" id="rc-name-${i}" autocomplete="off" list="rc-names-${i}"
+              value="${(state._sbData?.grupo || '').replace(/"/g, '&quot;')}"
+              placeholder="Escribí para buscar o crear uno nuevo"
+              style="width:100%;padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:11px">
+            <datalist id="rc-names-${i}"></datalist>
+            <p id="rc-name-hint-${i}" style="font-size:9px;color:var(--text-2);margin-top:2px">Sugerencias filtradas por la categoría seleccionada · escribí para crear uno nuevo</p>
+          </div>
           <label style="grid-column:1/-1;display:flex;align-items:center;gap:6px;cursor:pointer">
             <input type="checkbox" id="rc-rule-${i}">
             <span>Aplicar a futuros extractos (guardar regla)</span>
           </label>
         </div>
+        <div id="rc-feedback-${i}" style="display:none;margin-top:8px;font-size:11px;padding:6px 10px;border-radius:6px"></div>
         <div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end">
           <button onclick="toggleReclasificar(${i})" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Cancelar</button>
           <button onclick="confirmReclasificar(${i})" style="padding:5px 12px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Confirmar</button>
@@ -1093,6 +1101,48 @@ function toggleReclasificar(i) {
   form.style.display = open ? 'none' : '';
   const btn = $(`rc-btn-${i}`);
   if (btn) btn.textContent = open ? 'Reclasificar' : 'Cerrar';
+  // Al abrir: poblar el datalist según la categoría inicial seleccionada.
+  if (!open) rcRefreshNombres(i);
+}
+
+// Reglas que el frontend cachea por categoría para evitar pegarle a la
+// red en cada apertura del form. Se invalida cuando el endpoint
+// devuelve un nuevo resultset (sin caching agresivo: TTL implícita por
+// recarga del sidebar).
+const _rcNombresCache = new Map();
+
+async function rcRefreshNombres(i) {
+  const cat = $(`rc-cat-${i}`)?.value || '';
+  const dl = $(`rc-names-${i}`);
+  const hint = $(`rc-name-hint-${i}`);
+  if (!dl) return;
+  let list = _rcNombresCache.get(cat);
+  if (!list) {
+    try {
+      const j = await api('/api/v1/bancos/proveedores-normalizados?' + new URLSearchParams({ categoria: cat, limit: 100 }));
+      list = j.proveedores || [];
+      _rcNombresCache.set(cat, list);
+    } catch (e) {
+      list = [];
+    }
+  }
+  dl.innerHTML = list
+    .map((r) => `<option value="${(r.nombre || '').replace(/"/g, '&quot;')}">${r.n} tx · ${eur(r.total)}</option>`)
+    .join('');
+  if (hint) {
+    hint.textContent = list.length
+      ? `${list.length} nombres existentes para ${cat} · escribí para filtrar o crear uno nuevo`
+      : `Sin nombres normalizados todavía en ${cat} · escribí uno nuevo`;
+  }
+}
+
+function _setRcFeedback(i, ok, html) {
+  const el = $(`rc-feedback-${i}`);
+  if (!el) return;
+  el.style.display = '';
+  el.style.background = ok ? '#DCFCE7' : '#FCE7E7';
+  el.style.color = ok ? '#166534' : '#991B1B';
+  el.innerHTML = html;
 }
 
 async function confirmReclasificar(i) {
@@ -1102,7 +1152,7 @@ async function confirmReclasificar(i) {
   const proveedor_nuevo = $(`rc-name-${i}`)?.value?.trim();
   const guardar_regla = !!$(`rc-rule-${i}`)?.checked;
   if (!categoria_nueva || !proveedor_nuevo) {
-    Api.pill('Categoría y nombre requeridos', true);
+    _setRcFeedback(i, false, 'Categoría y nombre son requeridos.');
     return;
   }
   try {
@@ -1110,15 +1160,24 @@ async function confirmReclasificar(i) {
       method: 'POST',
       body: JSON.stringify({ concepto, categoria_nueva, proveedor_nuevo, guardar_regla }),
     });
-    Api.pill(`Reclasificadas: ${j.affected}` + (j.regla_id ? ` · regla #${j.regla_id} creada` : ''));
+    const reglaMsg = (guardar_regla && j.regla_id)
+      ? ` · <strong>✓ Regla guardada</strong> — se aplicará a futuros extractos (regla #${j.regla_id})`
+      : '';
+    _setRcFeedback(i, true, `✓ ${j.affected} fila${j.affected === 1 ? '' : 's'} reclasificada${j.affected === 1 ? '' : 's'} → <code>${categoria_nueva}</code> / <strong>${proveedor_nuevo}</strong>${reglaMsg}`);
+    Api.pill(`Reclasificadas: ${j.affected}` + (j.regla_id ? ' · regla creada' : ''));
+    // Invalidar cache porque el set de nombres normalizados cambió.
+    _rcNombresCache.clear();
     // Refresh donut + ranking, y el sidebar con el nuevo nombre si cambió.
     await loadProvRanking();
+    // Si cambió el nombre canónico, cerramos el sidebar tras 1.5s para
+    // dejar leer el feedback. Si no cambió, recargamos el sidebar.
     if (proveedor_nuevo !== (state._sbData?.grupo || '')) {
-      closeProvSidebar();
+      setTimeout(closeProvSidebar, 1500);
     } else {
-      await openProvSidebar(proveedor_nuevo);
+      setTimeout(() => openProvSidebar(proveedor_nuevo), 800);
     }
   } catch (e) {
+    _setRcFeedback(i, false, '✗ Error: ' + e.message);
     Api.pill('Error: ' + e.message, true);
   }
 }
@@ -1130,7 +1189,7 @@ Object.assign(window, {
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
   setDonutThreshold, enterDonutDrill, exitDonutDrill,
   // Sidebar de detalle / reclasificación
-  openProvSidebar, closeProvSidebar, toggleReclasificar, confirmReclasificar,
+  openProvSidebar, closeProvSidebar, toggleReclasificar, confirmReclasificar, rcRefreshNombres,
   // Evolución temporal
   loadEvolucion, evRenderSugerencias, evSeleccionar, evQuitar, evAplicarTopMatch,
 });

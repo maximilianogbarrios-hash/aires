@@ -618,6 +618,41 @@ router.get('/periodos', async (req, res) => {
   }
 });
 
+// Autocompletado para el campo "Nombre normalizado" del sidebar de
+// reclasificación. Devuelve los proveedor_normalizado únicos ya
+// presentes en ab_movimientos, opcionalmente filtrados por categoría
+// y/o texto. Ordenado por frecuencia (count) DESC para que los más
+// usados aparezcan primero.
+router.get('/proveedores-normalizados', async (req, res) => {
+  try {
+    const categoria = req.query.categoria || null;
+    const q = (req.query.q || '').trim();
+    const limit = Math.min(+req.query.limit || 50, 200);
+
+    const where = ['importe < 0', 'proveedor_normalizado IS NOT NULL'];
+    const vals = [];
+    if (categoria) { where.push(`categoria = $${vals.length + 1}`); vals.push(categoria); }
+    if (q)         { where.push(`proveedor_normalizado ILIKE $${vals.length + 1}`); vals.push('%' + q + '%'); }
+
+    const rows = await many(
+      `SELECT proveedor_normalizado AS nombre,
+              COUNT(*)::int       AS n,
+              SUM(ABS(importe))::float8 AS total,
+              MAX(categoria)      AS categoria_top
+         FROM ab_movimientos
+        WHERE ${where.join(' AND ')}
+        GROUP BY proveedor_normalizado
+        ORDER BY n DESC, nombre ASC
+        LIMIT $${vals.length + 1}`,
+      [...vals, limit]
+    );
+    res.json({ proveedores: rows });
+  } catch (e) {
+    console.error('[bancos.proveedores-normalizados]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // Detalle de los conceptos que componen un grupo (proveedor canónico).
 // Devuelve la lista con totales por concepto, ordenada por importe desc.
 // Usa la MISMA lógica de derivación de grupo que /proveedores
