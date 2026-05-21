@@ -253,6 +253,12 @@ async function confirmParams() {
     _captureParamsOriginal();
     _showParamsConfirmBar();
     await fetchLastParamsMod();
+    // Notificar a consumidores (Pedidos > MP, Personal) que %MP/%Pers/€h
+    // cambiaron. La tabla MP debe recalcular Budget MP y los importes
+    // sugeridos en tiempo real si la pestaña está visible.
+    window.dispatchEvent(new CustomEvent('aires:config-changed', {
+      detail: { source: 'params' },
+    }));
   } catch (e) {
     Api.pill('Error: ' + e.message, true);
   }
@@ -1139,6 +1145,11 @@ function updPresFac(id, val) {
     local_id: id, anio: uiState.presYear, mes: uiState.presMonth,
     fac_presupuestada: num,
   }));
+  // Notificar a consumidores (Pedidos > MP, Personal) que la facturación
+  // presupuestada del local cambió. Ellos saben si deben refrescar.
+  window.dispatchEvent(new CustomEvent('aires:budget-changed', {
+    detail: { local_id: id, anio: uiState.presYear, mes: uiState.presMonth, field: 'fac_presupuestada' },
+  }));
 }
 
 function updPresReal(id, val) {
@@ -1148,6 +1159,9 @@ function updPresReal(id, val) {
   Api.debouncedSave(`pres.${id}.real`, () => Api.savePresupuesto({
     local_id: id, anio: uiState.presYear, mes: uiState.presMonth,
     fac_real: num,
+  }));
+  window.dispatchEvent(new CustomEvent('aires:budget-changed', {
+    detail: { local_id: id, anio: uiState.presYear, mes: uiState.presMonth, field: 'fac_real' },
   }));
 }
 

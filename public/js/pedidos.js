@@ -105,6 +105,14 @@
   // ─── Entry point al cambiar a la pestaña Pedidos ────────────────────
   async function onEnterPedidos() {
     await ensureBootstrap();
+    // Garantizar que cualquier edición pendiente en Presupuesto / Parámetros
+    // / Servicios se haya persistido antes de fetchear MP — sino el backend
+    // devuelve datos viejos. Ver Api.flushPending y aires:*-changed events.
+    await Promise.all([
+      Api.flushPending('pres.'),
+      Api.flushPending('config.'),
+      Api.flushPending('local.'),
+    ]);
     renderControls();
     renderAlerta();
     await renderSub(pState.sub);
@@ -1133,6 +1141,13 @@
   // duplicar — el DOM target es el mismo (ped-personal-table, ped-pk-*).
   window.pedEnterPersonal = async function () {
     await ensureBootstrap();
+    // Flush de saves pendientes (presupuesto/config/servicios) antes de
+    // recargar Personal — sino se ve fac_presupuestada vieja.
+    await Promise.all([
+      Api.flushPending('pres.'),
+      Api.flushPending('config.'),
+      Api.flushPending('local.'),
+    ]);
     // Controles de mes en la barra propia de la pestaña.
     const pc = $('pers-controls');
     if (pc) {
@@ -1168,6 +1183,40 @@
     if (typeof origShowTab === 'function') origShowTab(name, btn);
     if (name === 'pedidos') onEnterPedidos();
   };
+
+  // ─── Refresco automático ante cambios externos ─────────────────────────
+  // Si el user está EN Pedidos > MP o EN Personal y cambia fac_presupuestada
+  // en Presupuesto o confirma parámetros (% MP, % Personal, €/h), refrescar
+  // la vista en vivo. Si no está visible, ignorar — la próxima vez que entre,
+  // onEnterPedidos / pedEnterPersonal hace flush + fetch garantizado.
+  async function refreshActiveIfApplicable() {
+    if (!pState.initialized) return;
+    const sectPedidosVisible = document.getElementById('sect-pedidos')?.classList.contains('on');
+    const sectPersonalVisible = document.getElementById('sect-personal')?.classList.contains('on');
+    try {
+      if (sectPersonalVisible) {
+        await renderPersonal();
+      } else if (sectPedidosVisible && pState.sub === 'mp') {
+        await renderMP();
+      }
+    } catch (e) {
+      console.error('[pedidos.refreshActive]', e);
+    }
+  }
+
+  // Debounce: si el user edita varias filas seguidas en Presupuesto, se
+  // disparan N eventos. Coalesce en una sola pasada flush+refresh.
+  let _refreshTimer = null;
+  function scheduleRefresh(prefix) {
+    clearTimeout(_refreshTimer);
+    _refreshTimer = setTimeout(async () => {
+      await Api.flushPending(prefix);
+      refreshActiveIfApplicable();
+    }, 400);
+  }
+
+  window.addEventListener('aires:budget-changed', () => scheduleRefresh('pres.'));
+  window.addEventListener('aires:config-changed', () => scheduleRefresh('config.'));
 
   // Si el usuario quedó parado en la pestaña Pedidos al cargar (no esperado
   // hoy, pero por las dudas), no hacemos nada hasta el primer click.

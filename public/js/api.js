@@ -26,24 +26,41 @@ window.Api = (function () {
   }
 
   // Coalescing per (entity, key): el último request gana.
+  // Guardamos también `fn` en el entry para poder hacer flush forzado desde
+  // afuera (ver flushPending). Sin esto, el save quedaba colgado del setTimeout
+  // y módulos consumidores (Pedidos/Personal) leían backend con datos viejos
+  // si el usuario navegaba dentro de la ventana del debounce.
   const pending = new Map();
   function debouncedSave(key, fn, ms = 350) {
     if (pending.has(key)) {
       clearTimeout(pending.get(key).timer);
     }
-    const entry = {
-      timer: setTimeout(async () => {
-        pending.delete(key);
-        try {
-          await fn();
-          pill('Guardado');
-        } catch (e) {
-          console.error('[save]', key, e);
-          pill('Error al guardar', true);
-        }
-      }, ms),
+    const run = async () => {
+      pending.delete(key);
+      try {
+        await fn();
+        pill('Guardado');
+      } catch (e) {
+        console.error('[save]', key, e);
+        pill('Error al guardar', true);
+      }
     };
+    const entry = { fn: run, timer: setTimeout(run, ms) };
     pending.set(key, entry);
+  }
+
+  // Fuerza ejecución inmediata de todos los saves pendientes cuyo `key`
+  // empiece por `prefix`. Usado por consumidores que necesitan datos
+  // garantizadamente frescos del backend (p.ej. Pedidos/Personal al
+  // abrirse después de tocar Presupuesto o Parámetros).
+  async function flushPending(prefix) {
+    const matches = [];
+    for (const [key, entry] of pending.entries()) {
+      if (prefix && !key.startsWith(prefix)) continue;
+      clearTimeout(entry.timer);
+      matches.push(entry.fn());
+    }
+    if (matches.length) await Promise.allSettled(matches);
   }
 
   const bootstrap = () => jsonFetch('/api/v1/aires/bootstrap');
@@ -139,6 +156,6 @@ window.Api = (function () {
     pedidosMix, pedidosMixSave, pedidosMixCopy, pedidosMixImport,
     pedidosSavePedido, pedidosConfirmar, pedidosMarcarPagado, pedidosCmpBancos,
     pedidosHistorial, pedidosRanking,
-    logout, debouncedSave, pill,
+    logout, debouncedSave, flushPending, pill,
   };
 })();
