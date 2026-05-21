@@ -122,3 +122,149 @@ input[type=range].param-dirty::-webkit-slider-runnable-track{background:#FEF3C7}
   .card{border:1px solid #ccc;break-inside:avoid}
   th{background:#f0f0f0!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
+
+/* ─── RESPONSIVE MOBILE (≤768px) ────────────────────────────────────
+   Solo agregamos overrides para pantallas chicas. Desktop intacto.
+   Reglas clave:
+   - Touch targets ≥44px (inputs/botones).
+   - font-size ≥16px en inputs para que iOS no haga zoom-in al focus.
+   - KPIs 4-up → 2×2 grid.
+   - Tablas anchas → scroll horizontal dentro del contenedor.
+   - Sliders y filtros → apilados verticalmente, label encima del control.
+   - Canvas/gráficos: altura reducida, leyenda debajo.
+*/
+@media (max-width:768px){
+  body{padding:0 .75rem 2rem}
+
+  /* Topbar — apilable, oculta etiquetas largas */
+  .topbar{flex-wrap:wrap;gap:6px;padding:.6rem 0}
+  .topbar h1{font-size:13px}
+  .topbar .actions{flex-wrap:wrap;gap:6px;width:100%;justify-content:flex-end}
+  .topbar .actions button,
+  .topbar .actions a{min-height:38px;padding:8px 12px;font-size:13px}
+
+  /* KPIs 4-up → 2×2; 5-up → 2 columnas */
+  .g4{grid-template-columns:repeat(2,1fr);gap:8px}
+  .g5{grid-template-columns:repeat(2,1fr);gap:8px}
+  .g2{gap:8px}
+  .surf{padding:.6rem .7rem}
+  .card{padding:.85rem .9rem;border-radius:var(--r-md)}
+
+  /* Tabs principales — scroll horizontal sin recortar; touch target alto */
+  .tab{padding:12px 14px;font-size:13px;min-height:44px}
+  .sub-tab{padding:10px 12px;font-size:13px;min-height:40px}
+
+  /* Tablas — los wrappers ya usan overflow-x:auto inline; sólo ajustamos
+     tamaño de fuente y padding para que las celdas no queden minúsculas. */
+  table{font-size:12px}
+  th,td{padding:8px 8px;white-space:nowrap}
+  /* Smooth scroll en wrappers de tablas anchas en iOS */
+  #ped-mp-table,
+  #ped-personal-table,
+  #ped-mix-grid{-webkit-overflow-scrolling:touch}
+
+  /* Botones generales — touch-friendly */
+  .tgl{padding:8px 12px;font-size:13px;min-height:38px}
+
+  /* Inputs — ≥16px evita zoom iOS, ≥40px alto facilita el touch */
+  input[type=text],
+  input[type=number],
+  input[type=password],
+  input[type=email],
+  input[type=tel],
+  select,
+  textarea{font-size:16px!important;min-height:40px;padding:8px 10px}
+  /* Inputs numéricos compactos de tablas — siguen mostrando bien con
+     16px pero ajustamos ancho mínimo y altura para que sean tocables. */
+  .num-inp,
+  .real-inp,
+  .ped-cell-inp,
+  .ped-mp-inp,
+  .ped-hours-inp,
+  input[type=number].hrs-inp{font-size:16px!important;min-height:38px;padding:6px 8px;min-width:70px}
+  /* Range sliders — alto del thumb táctil */
+  input[type=range]{height:36px}
+
+  /* Parámetros — sliders apilados con label encima */
+  .pr{flex-direction:column;align-items:stretch;gap:4px;margin-bottom:14px}
+  .pl{width:auto;font-size:13px;font-weight:500;color:var(--text)}
+  .pv{align-self:flex-end;font-size:14px}
+
+  /* Panel parámetros: grid 2-col → 1-col */
+  #pbody>div:first-child{grid-template-columns:1fr!important;gap:.75rem!important}
+
+  /* Sidebar reclasificación /bancos — full width.
+     El inline-style usa min(620px,95vw); aumentamos a 100vw para móvil. */
+  #prov-sidebar{width:100vw!important;border-left:none!important;box-shadow:none!important}
+
+  /* Header dashboard (fac total + meta) — ajustar tamaños */
+  #hdr-fac{font-size:17px}
+  #hdr-mg{font-size:11px}
+
+  /* KPI numbers — bajar de 19px a 17px en móvil */
+  .surf p[id^="k-"],
+  .surf p[id^="r-"],
+  .surf p[id^="prov-kpi"],
+  .surf p[id^="pk-"],
+  .surf p[id^="ped-k-"],
+  .surf p[id^="ped-pk-"]{font-size:17px}
+
+  /* Filtros bancos: la grilla 200/160/1fr no entra → 1fr */
+  #sect-resumen .card>div[style*="grid-template-columns"],
+  #sect-movimientos .card>div[style*="grid-template-columns"],
+  #sect-gastos .card>div[style*="grid-template-columns"],
+  #sect-proveedores .card>div[style*="grid-template-columns"],
+  #sect-cruce .card>div[style*="grid-template-columns"]{
+    display:grid!important;
+    grid-template-columns:1fr!important;
+    gap:10px!important;
+  }
+
+  /* Gráficos: donut + leyenda en columna, no 2-col */
+  #sect-gastos .card>div[style*="grid-template-columns:280px"]{
+    grid-template-columns:1fr!important;
+  }
+  #sect-proveedores .card>div[style*="grid-template-columns:320px"]{
+    grid-template-columns:1fr!important;
+  }
+
+  /* Altura de canvas reducida en móvil */
+  canvas{max-height:240px!important}
+
+  /* Soc-toggle bar (admin/socio) — apilable */
+  #soc-toggle-bar{flex-direction:column;align-items:stretch!important;gap:6px}
+  #soc-toggle-bar button{width:100%;text-align:center}
+
+  /* Bloque header: fac + locales side-by-side rompe → columnas */
+  #hdr-financiero{text-align:left!important;width:100%}
+
+  /* Upload row /bancos: grid 4-col → 1-col */
+  .upload-row{grid-template-columns:1fr!important}
+
+  /* Login box: padding más ajustado */
+  .login-box{margin:2rem auto;padding:1.25rem;max-width:95vw}
+
+  /* Save pill: subirla y centrar — no tape el dock del teclado */
+  .save-pill{bottom:10px;right:10px;left:10px;text-align:center;font-size:13px;padding:8px 14px}
+
+  /* Pool checkbox grupos: agrandar tap area */
+  #pbody label{min-height:40px}
+}
+
+/* ─── EXTRA-SMALL (≤420px iPhone SE / standard portrait) ─────────────
+   Algunos KPIs/elementos siguen muy ajustados; afinamos un poco más.
+*/
+@media (max-width:420px){
+  body{padding:0 .5rem 2rem}
+  .topbar h1{font-size:12px}
+  .topbar .actions button,
+  .topbar .actions a{padding:7px 9px;font-size:12px}
+  .surf p[id^="k-"],
+  .surf p[id^="r-"],
+  .surf p[id^="prov-kpi"],
+  .surf p[id^="pk-"],
+  .surf p[id^="ped-k-"],
+  .surf p[id^="ped-pk-"]{font-size:15px}
+  .tab{padding:10px 10px;font-size:12px}
+  canvas{max-height:200px!important}
+}
