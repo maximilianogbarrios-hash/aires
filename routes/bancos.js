@@ -399,7 +399,9 @@ router.get('/proveedores', async (req, res) => {
     // El cap garantiza ≤maxGrupos (default 30). Ambos thresholds son query-configurables.
     const minTx = req.query.menores_min_tx ? +req.query.menores_min_tx : 5;
     const minEur = req.query.menores_min_eur ? +req.query.menores_min_eur : 2000;
-    const maxGrupos = req.query.max_grupos ? +req.query.max_grupos : 30;
+    // Ronda 6: cap subido de 30 a 50 para acomodar las nuevas categorías
+    // (PROVEEDOR_LACTEOS x4, GASTOS_DIRECCION, GASTOS_VEHICULOS, etc.).
+    const maxGrupos = req.query.max_grupos ? +req.query.max_grupos : 50;
 
     function colapsarEnMenores(lista, predicate) {
       const grandes = lista.filter((p) => !predicate(p));

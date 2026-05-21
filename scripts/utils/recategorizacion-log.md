@@ -259,4 +259,33 @@ node scripts/utils/ronda6-recategorizar.js --dry-run
 node scripts/utils/ronda6-recategorizar.js
 ```
 
+### Ronda 6b (corrección TGT + cap50, 2026-05-21)
 
+**Cambio 1 — TGT absorbe "TGT Dialque"**: el spec original de Ronda 6
+incluía un `extraWhere AND NOT (concepto ILIKE '%dialque%')` para que
+los conceptos "TRANSFERENCIA A TGT Dialque Murcia" cayeran en Dialque
+SAU. Revisión: el usuario pidió que TGT sea **slice independiente** con
+proveedor='TGT' incluyendo "TGT Dialque". Se eliminó la exclusión:
+
+| antes (Ronda 6)            | después (Ronda 6b)         |
+|---|---|
+| Regla TGT prio 120 con `NOT dialque` | Regla TGT prio 120 SIN exclusión |
+| "TGT Dialque Murcia" → Dialque SAU   | "TGT Dialque Murcia" → TGT       |
+
+**UPDATE retroactivo**: 97 filas reclasificadas de `Dialque SAU` →
+`TGT` (todos los conceptos que contienen "TGT" y antes estaban en
+Dialque). Recalc resumen: 12 combos.
+
+**Resultado donut**:
+
+| proveedor       | antes Ronda 6b | después Ronda 6b |
+|---|---:|---:|
+| TGT             |  1 884€ /  15 tx | **24 882€ / 112 tx** |
+| Dialque SAU     | 93 281€ / 423 tx |  70 283€ / 326 tx |
+
+**Cambio 2 — `max_grupos` default 30 → 50** en `routes/bancos.js`
+endpoint `/proveedores`. Con las nuevas categorías (PROVEEDOR_LACTEOS
+con 4 slices, GASTOS_DIRECCION, GASTOS_VEHICULOS, EQUIPAMIENTO, etc.)
+el límite de 30 ocultaba proveedores legítimos en "Proveedores
+Menores". El cap de 50 permite ver los 49 grupos individuales relevantes
+sin saturar.
