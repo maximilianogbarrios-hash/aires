@@ -48,6 +48,8 @@ async function boot() {
     ctx.config = withDefaults(data.config || {});
     ctx.locales = data.locales || [];
     ctx.user = data.user || null;
+    ctx.tabs = data.tabs || null;
+    ctx.flags = data.flags || {};
     // Build h25 from historial
     ctx.h25 = {};
     (data.historial || []).filter((h) => h.fuente === '2025_real' && h.anio === 2025).forEach((h) => {
@@ -82,11 +84,31 @@ function setUserUI() {
   if (!ctx.user) return;
   $('tb-user').textContent = `${ctx.user.email} (${ctx.user.role})`;
   if (ctx.user.role === 'admin') $('tb-admin-link').style.display = '';
-  // Mejora 6: el panel de Parámetros (% MP / personal / impuestos / publicidad / €h)
-  // sólo se muestra a admin y socio. Para el resto, el card queda oculto.
+  // Mejora 6: el panel de Parámetros sólo se muestra a admin y socio.
   const esAdminSocio = ['admin', 'socio'].includes(ctx.user.role);
   const panel = $('params-panel');
   if (panel) panel.style.display = esAdminSocio ? '' : 'none';
+
+  // Mejora 8: visibilidad granular.
+  const flags = ctx.flags || {};
+  // KPIs financieros globales (g4 + hdr-fac/mg)
+  if ($('kpis-top'))        $('kpis-top').style.display        = flags.dashboard_kpis ? '' : 'none';
+  if ($('hdr-financiero'))  $('hdr-financiero').style.display  = flags.dashboard_kpis ? '' : 'none';
+  // Toggle Sociedad/Completo
+  if ($('soc-toggle-bar'))  $('soc-toggle-bar').style.display  = flags.vista_sociedad ? 'flex' : 'none';
+  // Link Bancos en topbar
+  if ($('tb-bancos-link'))  $('tb-bancos-link').style.display  = flags.bancos ? '' : 'none';
+  // Pestañas: filtrar por matriz tabs[]
+  const tabs = ctx.tabs || [];
+  document.querySelectorAll('.tab[data-tab]').forEach((el) => {
+    el.style.display = tabs.includes(el.dataset.tab) ? '' : 'none';
+  });
+  // Si la pestaña activa (resumen) por defecto no está permitida, abrir la primera permitida.
+  const visible = [...document.querySelectorAll('.tab[data-tab]')].filter((el) => el.style.display !== 'none');
+  const visibleNames = visible.map((el) => el.dataset.tab);
+  if (visibleNames.length && !visibleNames.includes('resumen')) {
+    showTab(visibleNames[0], visible[0]);
+  }
 }
 
 async function logout() {
@@ -967,6 +989,10 @@ function srt(col) {
 }
 
 function showTab(name, btn) {
+  // Mejora 8: si el rol no tiene la pestaña habilitada, no hacer nada
+  // (defense-in-depth aparte de ocultar el botón).
+  const tabs = ctx.tabs || [];
+  if (tabs.length && !tabs.includes(name)) return;
   document.querySelectorAll('.sect').forEach((s) => s.classList.remove('on'));
   document.querySelectorAll('.tab').forEach((t) => t.classList.remove('on'));
   $(`sect-${name}`).classList.add('on');

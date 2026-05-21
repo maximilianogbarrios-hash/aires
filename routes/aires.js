@@ -438,6 +438,8 @@ router.get('/presupuesto/contexto', async (req, res) => {
   }
 });
 
+const { tabsPermitidas, PERMS } = require('../lib/roles');
+
 // ─── BOOTSTRAP: todo lo que necesita el front en un solo request ──────
 router.get('/bootstrap', async (req, res) => {
   try {
@@ -470,7 +472,17 @@ router.get('/bootstrap', async (req, res) => {
        ORDER BY anio, mes, local_id`
     );
 
-    res.json({ config, locales, historial, presupuesto, user: req.session.user });
+    // Mejora 8: matriz de pestañas + flags visuales por rol.
+    const role = req.session?.user?.role;
+    const tabs = role ? tabsPermitidas(role) : [];
+    const flags = {
+      dashboard_kpis: !!(role && PERMS.dashboard_kpis.includes(role)),
+      vista_sociedad: !!(role && PERMS.vista_sociedad.includes(role)),
+      config_w:       !!(role && PERMS.config_w.includes(role)),
+      bancos:         !!(role && PERMS.bancos.includes(role)),
+      pedidos_pagar:  !!(role && PERMS.pedidos_pagar_w.includes(role)),
+    };
+    res.json({ config, locales, historial, presupuesto, user: req.session.user, tabs, flags });
   } catch (e) {
     console.error('[aires.bootstrap]', e);
     res.status(500).json({ error: 'internal' });

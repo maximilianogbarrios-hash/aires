@@ -7,7 +7,7 @@ const pgSession = require('connect-pg-simple')(session);
 
 const { pool } = require('./lib/db');
 const { runMigrations } = require('./lib/migrations');
-const { requireAuth } = require('./lib/auth');
+const { requireAuth, requirePerm } = require('./lib/auth');
 
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
@@ -84,7 +84,7 @@ app.get('/account', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'account', 'index.html'));
 });
 
-app.get('/bancos', requireAuth, (req, res) => {
+app.get('/bancos', requireAuth, requirePerm('bancos'), (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'bancos', 'index.html'));
 });
 

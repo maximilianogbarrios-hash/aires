@@ -22,6 +22,35 @@ está separado en [recategorizacion-log.md](recategorizacion-log.md).
 
 **Decisión**: el endpoint NO devuelve líneas por defecto si no hay selección — el front no llama a la API en ese caso. Esto evita queries pesadas innecesarias.
 
+## Mejora 8 — Control granular de pestañas por rol
+
+**Permisos centralizados** en `lib/roles.js`:
+- `PERMS.bancos` ya no incluye `'pedidos'` (la página /bancos rechaza el GET).
+- Nuevas perms `dashboard_kpis` (admin/socio/gerente) y `vista_sociedad` (admin/socio).
+- Nueva matriz `TABS_DASHBOARD` declarando qué pestañas ve cada rol, con helper
+  `tabsPermitidas(role)`.
+
+**Backend**
+- `GET /api/v1/aires/bootstrap` ahora devuelve `tabs: [..]` (lista de pestañas
+  permitidas para el rol) y `flags: { dashboard_kpis, vista_sociedad, config_w,
+  bancos, pedidos_pagar }`.
+- `app.get('/bancos')` añade `requirePerm('bancos')` → roles `pedidos` y
+  `personal` reciben 403 si entran por URL directa.
+
+**Frontend dashboard**
+- `setUserUI()` lee `ctx.tabs` y `ctx.flags` y oculta:
+  - Botones de tab no permitidos
+  - KPIs financieros (`#kpis-top`, `#hdr-financiero`)
+  - Toggle Sociedad/Completo (`#soc-toggle-bar`)
+  - Link a Bancos en la topbar (`#tb-bancos-link`)
+- Si el rol no ve "resumen" como tab default, se abre la primera tab visible.
+- `showTab(name)` agrega defense-in-depth: ignora la navegación si la tab no
+  está en `ctx.tabs`.
+
+**Decisión**: la matriz vive en backend (single source of truth) y se envía
+al front via bootstrap, en lugar de hardcodearla en JS. Así si se agrega un
+rol nuevo, sólo se cambia `lib/roles.js`.
+
 ## Mejora 7 — Confirmar pedido con importe real + toggle Pagado + cruce bancos
 
 **Permisos**

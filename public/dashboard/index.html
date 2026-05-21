@@ -16,7 +16,7 @@
   </div>
   <div class="actions">
     <span class="meta" id="tb-user">—</span>
-    <a href="/bancos">Bancos</a>
+    <a href="/bancos" id="tb-bancos-link" style="display:none">Bancos</a>
     <a href="/account">Mi cuenta</a>
     <a href="/admin" id="tb-admin-link" style="display:none">Usuarios</a>
     <button onclick="window.print()">Imprimir</button>
@@ -24,8 +24,8 @@
   </div>
 </div>
 
-<!-- SOCIEDAD TOGGLE -->
-<div style="padding:.5rem 0 .5rem;display:flex;align-items:center;gap:10px;flex-wrap:wrap" class="no-print">
+<!-- SOCIEDAD TOGGLE (visible solo admin/socio — ver setUserUI) -->
+<div id="soc-toggle-bar" style="padding:.5rem 0 .5rem;display:none;align-items:center;gap:10px;flex-wrap:wrap" class="no-print">
   <span style="font-size:12px;font-weight:500;color:var(--text-2)">Vista:</span>
   <button class="tgl" id="tb-soc" onclick="setSoc(true)" style="font-size:13px;padding:5px 14px">SOCIEDAD</button>
   <button class="tgl on" id="tb-com" onclick="setSoc(false)" style="font-size:13px;padding:5px 14px">COMPLETO</button>
@@ -39,15 +39,15 @@
   <div>
     <p style="font-size:12px;color:var(--text-2);margin-top:2px" id="hdr-sub">Mi Análisis · 14 locales</p>
   </div>
-  <div style="text-align:right">
+  <div style="text-align:right" id="hdr-financiero">
     <p style="font-size:11px;color:var(--text-2)">Facturación</p>
     <p style="font-size:19px;font-weight:500" id="hdr-fac">—</p>
     <p style="font-size:12px" id="hdr-mg">—</p>
   </div>
 </div>
 
-<!-- KPIs -->
-<div class="g4" style="margin-bottom:1.25rem">
+<!-- KPIs (visible solo admin/socio/gerente — ver setUserUI) -->
+<div class="g4" id="kpis-top" style="margin-bottom:1.25rem">
   <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Facturación total</p><p style="font-size:19px;font-weight:500" id="k-fac">—</p></div>
   <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Margen operativo</p><p style="font-size:19px;font-weight:500" id="k-mg">—</p><p style="font-size:11px;color:var(--text-2)" id="k-mgp">—</p></div>
   <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Viables (&gt;15%)</p><p style="font-size:19px;font-weight:500" id="k-via">—</p></div>
