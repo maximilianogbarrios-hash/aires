@@ -394,8 +394,11 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
           : Math.abs(variacion) <= 0.20 ? 'amarillo'
           : 'rojo';
         const pagado_banco = pagadoPorProv.get(`${l.id}|${m.proveedor}`) || null;
-        // Alerta de mismatch banco vs real (>5% diff sólo si está marcado recibido)
-        const mismatch_banco = (ped?.estado === 'recibido' && real != null && pagado_banco != null)
+        // Alerta de mismatch banco vs real: cuando hay dato bancario Y
+        // confirmado real, calculamos si hay >5% de diferencia
+        // (independiente de que el usuario haya marcado 'recibido'),
+        // así el frontend puede mostrar el badge informativo siempre.
+        const mismatch_banco = (real != null && pagado_banco != null)
           ? Math.abs(pagado_banco - real) / Math.max(real, 1) > 0.05
           : false;
         return {
@@ -443,6 +446,11 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
       (p) => p.estado !== 'pendiente').length, 0);
     const pendientes = items.reduce((s, it) => s + it.proveedores.filter(
       (p) => p.estado === 'pendiente').length, 0);
+    // KPIs nuevos: pendiente de pago (confirmados pero no pagados) y total pagado.
+    const total_pendiente_pago = items.reduce((s, it) => s + it.proveedores.reduce(
+      (ss, p) => ss + (p.estado === 'enviado' ? (p.importe_real ?? p.importe_sugerido ?? 0) : 0), 0), 0);
+    const total_pagado = items.reduce((s, it) => s + it.proveedores.reduce(
+      (ss, p) => ss + (p.estado === 'recibido' ? (p.importe_real ?? p.importe_sugerido ?? 0) : 0), 0), 0);
     // Alerta tardía: hoy >= miércoles (dow 3 con dom=0).
     const today = new Date();
     const dow = today.getDay();
@@ -456,6 +464,8 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
         total_sugerido:  Math.round(totalSugerido * 100) / 100,
         total_pedido_real: Math.round(totalPedidoReal * 100) / 100,
         confirmados, pendientes,
+        total_pendiente_pago: Math.round(total_pendiente_pago * 100) / 100,
+        total_pagado: Math.round(total_pagado * 100) / 100,
         pct_ejecutado: totalBudget > 0 ? Math.round((totalPedidoReal / totalBudget) * 1000) / 10 : 0,
         alerta_tardia: tardio,
       },
@@ -467,7 +477,12 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
 });
 
 function emptyKpis() {
-  return { total_budget_mp: 0, total_sugerido: 0, total_pedido_real: 0, confirmados: 0, pendientes: 0, pct_ejecutado: 0, alerta_tardia: false };
+  return {
+    total_budget_mp: 0, total_sugerido: 0, total_pedido_real: 0,
+    confirmados: 0, pendientes: 0,
+    total_pendiente_pago: 0, total_pagado: 0,
+    pct_ejecutado: 0, alerta_tardia: false,
+  };
 }
 
 // PUT /pedidos/pedido — edita importe_real / notas / estado de un pedido puntual.
@@ -527,22 +542,34 @@ router.put('/marcar-pagado', requirePerm('pedidos_pagar_w'), async (req, res) =>
     if (!local_id || !anio || !semana_iso || !proveedor) {
       return res.status(400).json({ error: 'local_id, anio, semana_iso, proveedor requeridos' });
     }
-    // Actualizar estado.
     const userId = req.session?.user?.id || null;
     const nuevoEstado = pagado ? 'recibido' : 'enviado';
-    const updated = await query(
-      `UPDATE ab_pedidos_semana
-          SET estado=$1,
-              updated_at=NOW(),
-              confirmado_en  = CASE WHEN $1<>'pendiente' AND confirmado_en IS NULL THEN NOW() ELSE confirmado_en END,
-              confirmado_por = CASE WHEN $1<>'pendiente' AND confirmado_por IS NULL THEN $6 ELSE confirmado_por END
-        WHERE local_id=$2 AND anio=$3 AND semana_iso=$4 AND proveedor=$5
-        RETURNING importe_real::float8 AS importe_real, importe_sugerido::float8 AS importe_sugerido`,
-      [nuevoEstado, local_id, +anio, +semana_iso, proveedor, userId]
+    // Aceptamos categoria + importe_sugerido del body para poder UPSERT si la
+    // fila no existe aún (ej. admin marca pagado en una celda nueva sin
+    // importe confirmado previamente).
+    const categoria = req.body.categoria && CATEGORIAS_MP.includes(req.body.categoria)
+      ? req.body.categoria : 'Otros MP';
+    const importeSugIn = asNumOrNull(req.body.importe_sugerido) ?? 0;
+
+    const upserted = await query(
+      `INSERT INTO ab_pedidos_semana
+         (local_id, anio, semana_iso, proveedor, categoria,
+          importe_sugerido, estado, updated_at, confirmado_en, confirmado_por)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::varchar(15),NOW(),
+               CASE WHEN $7::varchar(15)<>'pendiente' THEN NOW() ELSE NULL END,
+               CASE WHEN $7::varchar(15)<>'pendiente' THEN $8::int ELSE NULL END)
+       ON CONFLICT (local_id, anio, semana_iso, proveedor)
+       DO UPDATE SET
+         estado          = EXCLUDED.estado,
+         updated_at      = NOW(),
+         confirmado_en   = CASE WHEN EXCLUDED.estado<>'pendiente' AND ab_pedidos_semana.confirmado_en IS NULL THEN NOW() ELSE ab_pedidos_semana.confirmado_en END,
+         confirmado_por  = CASE WHEN EXCLUDED.estado<>'pendiente' AND ab_pedidos_semana.confirmado_por IS NULL THEN $8::int ELSE ab_pedidos_semana.confirmado_por END
+       RETURNING importe_real::float8 AS importe_real, importe_sugerido::float8 AS importe_sugerido`,
+      [local_id, +anio, +semana_iso, String(proveedor).trim(), categoria,
+       importeSugIn, nuevoEstado, userId]
     );
-    if (!updated.rowCount) return res.status(404).json({ error: 'pedido no encontrado — confirmá importe primero' });
-    const fila = updated.rows[0];
-    const importeReal = fila.importe_real ?? fila.importe_sugerido ?? 0;
+    const fila = upserted.rows[0] || {};
+    const importeReal = fila.importe_real ?? fila.importe_sugerido ?? importeSugIn ?? 0;
 
     // Cruce con ab_movimientos: rango lunes-domingo de la semana ISO.
     const monday = mondayOfIsoWeek(+anio, +semana_iso);

@@ -174,11 +174,13 @@
     renderAlerta();
     const items = pState.mp.items || [];
     const k = pState.mp.kpis || {};
-    $('ped-k-budget').textContent = eur(k.total_budget_mp);
-    $('ped-k-conf').textContent = k.confirmados ?? '—';
-    $('ped-k-pend').textContent = k.pendientes ?? '—';
-    $('ped-k-exec').textContent = (k.pct_ejecutado ?? 0).toFixed(1).replace('.', ',') + '%';
-    $('ped-k-exec-eur').textContent = `${eur(k.total_pedido_real)} de ${eur(k.total_budget_mp)}`;
+    if ($('ped-k-budget'))   $('ped-k-budget').textContent   = eur(k.total_budget_mp);
+    if ($('ped-k-conf'))     $('ped-k-conf').textContent     = k.confirmados ?? '—';
+    if ($('ped-k-pend'))     $('ped-k-pend').textContent     = k.pendientes ?? '—';
+    if ($('ped-k-pendpago')) $('ped-k-pendpago').textContent = eur(k.total_pendiente_pago);
+    if ($('ped-k-pagado'))   $('ped-k-pagado').textContent   = eur(k.total_pagado);
+    if ($('ped-k-exec'))     $('ped-k-exec').textContent     = (k.pct_ejecutado ?? 0).toFixed(1).replace('.', ',') + '%';
+    if ($('ped-k-exec-eur')) $('ped-k-exec-eur').textContent = `${eur(k.total_pedido_real)} de ${eur(k.total_budget_mp)}`;
 
     // Conjunto de proveedores únicos para columnas dinámicas.
     const provs = new Set();
@@ -193,26 +195,62 @@
     const canWrite = hasPerm('pedidos_w');
     const canPagar = hasPerm('pedidos_pagar_w');
 
+    // Escapa apóstrofes y backslashes para inyectar en strings de JS dentro de
+    // atributos HTML (onclick/onchange).
+    const escJs = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
     function renderCelda(it, p) {
       const semClass = p.semaforo === 'verde' ? 'sem-cell-v' : p.semaforo === 'amarillo' ? 'sem-cell-a' : p.semaforo === 'rojo' ? 'sem-cell-r' : '';
       const mismatchClass = p.mismatch_banco ? 'sem-cell-r' : '';
       const realVal = p.importe_real == null ? '' : p.importe_real;
-      const idCell = `${it.local_id}|${p.proveedor}|${p.categoria}`.replace(/'/g, '&#39;');
+      const dataLoc = it.local_id;
+      const dataProv = (p.proveedor || '').replace(/"/g, '&quot;');
+      const dataCat = p.categoria;
+      const sug = +p.importe_sugerido || 0;
       const sugLbl = `<span style="font-size:9px;color:var(--text-2)" title="Sugerido por mix × budget MP semana">≈${eur(p.importe_sugerido)}</span>`;
+
+      // INPUT Confirmado € (BUG 1 + BUG 2): type=text, inputmode numeric,
+      // autoselect on focus, debounce + feedback visual via .saving/.saved/.errored.
       const inpConf = canWrite
-        ? `<input class="ped-cell-inp" type="number" min="0" step="10" placeholder="${Math.round(p.importe_sugerido)}" value="${realVal}" onchange="pedSetReal('${it.local_id}','${p.proveedor.replace(/'/g, '&#39;')}','${p.categoria}',this.value,${p.importe_sugerido})" title="Confirmado €">`
+        ? `<input class="ped-cell-inp ped-mp-inp" type="text" inputmode="numeric" autocomplete="off"
+            data-loc="${dataLoc}" data-prov="${dataProv}" data-cat="${dataCat}" data-sug="${sug}"
+            placeholder="${Math.round(sug)}" value="${realVal}"
+            onfocus="this.select()"
+            oninput="pedMPInput(this)"
+            onkeydown="pedMPKey(event, this)"
+            onblur="pedMPFlush(this)"
+            title="Confirmado €">`
         : `<span style="font-size:11px">${eur(p.importe_real)}</span>`;
-      // Toggle pagado
+
+      // Pagado: tres modos
+      //  - canPagar (admin/administrativo): toggle interactivo
+      //  - solo lectura con perm pedidos_view: semáforo de 3 colores
+      //    🔴 no pagado · 🟢 pagado y coincide ±5% · 🟡 pagado pero difiere
       const isPagado = p.estado === 'recibido';
-      const pagadoUI = canPagar
-        ? `<label class="ped-pagado-toggle" title="${isPagado ? 'Marcar como pendiente de pago' : 'Marcar pagado y cruzar con bancos'}">
-            <input type="checkbox" ${isPagado ? 'checked' : ''} ${p.importe_real == null ? 'disabled' : ''} onchange="pedTogglePagado('${it.local_id}','${p.proveedor.replace(/'/g, '&#39;')}',this.checked)">
-            <span>${isPagado ? '✓ pag.' : 'pagar'}</span>
-          </label>`
-        : isPagado ? '<span class="ped-pagado-ro" title="Pagado">✓</span>' : '';
-      // Pagado banco vs real (badge si está recibido)
-      const bancoBadge = (isPagado && p.pagado_banco != null)
-        ? `<div style="font-size:9px;color:${p.mismatch_banco ? '#dc2626' : 'var(--text-2)'}" title="Sumado de ab_movimientos esta semana">banco: ${eur(p.pagado_banco)}${p.mismatch_banco ? ' ⚠' : ''}</div>`
+      let pagadoUI;
+      if (canPagar) {
+        pagadoUI = `<label class="ped-pagado-toggle" title="${isPagado ? 'Marcar como pendiente de pago' : 'Marcar pagado y cruzar con bancos'}">
+            <input type="checkbox" ${isPagado ? 'checked' : ''}
+              data-loc="${dataLoc}" data-prov="${dataProv}" data-cat="${dataCat}" data-sug="${sug}"
+              onchange="pedTogglePagado(this)">
+            <span>${isPagado ? '✓ pagado' : 'pagar'}</span>
+          </label>`;
+      } else {
+        const dotClass = !isPagado ? 'pd-r' : (p.mismatch_banco ? 'pd-a' : 'pd-v');
+        const dotTip = !isPagado ? 'Pendiente de pago'
+          : (p.mismatch_banco ? `Pagado · difiere del banco (${eur(p.pagado_banco)})` : 'Pagado · coincide con banco');
+        pagadoUI = `<span class="ped-pay-dot ${dotClass}" title="${dotTip}"></span>`;
+      }
+
+      // Badge banco vs confirmado. Antes requería isPagado === true para
+      // mostrarse — eso ocultaba el dato bancario hasta que el admin
+      // marcara recibido. Ahora se muestra siempre que haya un pago
+      // detectado en ab_movimientos esta semana, incluso si el pedido
+      // sigue en "pendiente" (útil para ver pagos ejecutados por el
+      // banco antes de confirmar manualmente). Sólo para canPagar; el
+      // rol view-only ya tiene el indicador integrado en pagadoUI.
+      const bancoBadge = (canPagar && p.pagado_banco != null)
+        ? `<div style="font-size:9px;color:${p.mismatch_banco ? '#dc2626' : 'var(--text-2)'}" title="Sumado de ab_movimientos esta semana${p.mismatch_banco ? ' · difiere del confirmado >5%' : ''}">banco: ${eur(p.pagado_banco)}${p.mismatch_banco ? ' ⚠' : ''}</div>`
         : '';
       return `<td class="${semClass} ${mismatchClass}" style="text-align:right;vertical-align:top">
           <div style="display:flex;flex-direction:column;align-items:flex-end;gap:1px">
@@ -261,52 +299,175 @@
     $('ped-mp-table').innerHTML = html;
   }
 
-  window.pedTogglePagado = async function (localId, proveedor, pagado) {
+  // BUG 3 fix: el toggle ahora opera sobre el checkbox real (recibe el input
+  // como argumento), no se bloquea — siempre vuelve a habilitar al finalizar.
+  // Envía categoria + importe_sugerido para que el endpoint pueda UPSERT
+  // (crear la fila si no existía).
+  window.pedTogglePagado = async function (inp) {
+    if (!inp) return;
+    const { loc, prov, cat, sug } = inp.dataset;
+    const pagado = !!inp.checked;
+    inp.disabled = true;
     try {
       const r = await Api.pedidosMarcarPagado({
-        local_id: localId,
+        local_id: loc,
         anio: pState.week.anio, semana_iso: pState.week.semana_iso,
-        proveedor, pagado,
+        proveedor: prov, categoria: cat, importe_sugerido: +sug,
+        pagado,
       });
       if (pagado) {
-        const okTxt = r.ok_match ? '✓ banco coincide' : '⚠ diferencia con banco';
-        Api.pill(`Pagado · ${okTxt} (banco: ${r.pagado_banco}€, dif ${r.diferencia}€)`, !r.ok_match);
+        const okTxt = r.ok_match ? '✓ banco coincide' : '⚠ banco difiere';
+        Api.pill(`Pagado · ${okTxt} (banco ${eur(r.pagado_banco)}, dif ${eur(r.diferencia)})`, !r.ok_match);
       } else {
         Api.pill('Marcado como pendiente de pago');
       }
       await renderMP();
     } catch (e) {
+      // Revertir visualmente y mostrar error sin romper la UI
+      inp.checked = !pagado;
       Api.pill('Error: ' + e.message, true);
+    } finally {
+      inp.disabled = false;
     }
   };
 
-  window.pedSetReal = async function (localId, proveedor, categoria, val, sugerido) {
-    const real = val === '' || val == null ? null : Math.max(0, +val || 0);
-    // Si el pedido ya estaba enviado o recibido lo mantenemos; si era
-    // pendiente o nuevo, al guardar Confirmado € pasa a 'enviado'.
+  // ─── Input "Confirmado €" — debounce 800ms + feedback visual ────────
+  const _mpInpTimers = new WeakMap();        // input → timer
+  const _mpInpInflight = new WeakSet();
+
+  function _sanitizeNumStr(raw) {
+    // Acepta dígitos y un único separador decimal (coma o punto).
+    let s = String(raw || '').replace(/[^0-9.,]/g, '');
+    let seen = false, out = '';
+    for (const ch of s) {
+      if (ch === '.' || ch === ',') {
+        if (seen) continue;
+        seen = true; out += ',';
+      } else out += ch;
+    }
+    return out;
+  }
+
+  function _setInpState(inp, cls) {
+    inp.classList.remove('saving', 'saved', 'errored');
+    if (cls) inp.classList.add(cls);
+  }
+
+  window.pedMPInput = function (inp) {
+    const sanitized = _sanitizeNumStr(inp.value);
+    if (sanitized !== inp.value) {
+      const pos = inp.selectionStart;
+      inp.value = sanitized;
+      try { inp.setSelectionRange(pos, pos); } catch {}
+    }
+    // Programar guardado con debounce 800ms
+    clearTimeout(_mpInpTimers.get(inp));
+    _setInpState(inp, 'saving');
+    const t = setTimeout(() => pedMPFlush(inp), 800);
+    _mpInpTimers.set(inp, t);
+  };
+
+  window.pedMPKey = function (ev, inp) {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      clearTimeout(_mpInpTimers.get(inp));
+      pedMPFlush(inp);
+      inp.blur();
+    }
+  };
+
+  window.pedMPFlush = async function (inp) {
+    if (!inp || _mpInpInflight.has(inp)) return;
+    clearTimeout(_mpInpTimers.get(inp));
+    const { loc, prov, cat, sug } = inp.dataset;
+    const val = (inp.value || '').replace(',', '.');
+    const real = val === '' ? null : Math.max(0, +val || 0);
+    _mpInpInflight.add(inp);
+    _setInpState(inp, 'saving');
+    try {
+      await pedSaveImporte(loc, prov, cat, real, +sug || 0);
+      _setInpState(inp, 'saved');
+      // Show "✓ guardado" badge 1s then fade out
+      _showInpBadge(inp, '✓ guardado', '#16a34a');
+      setTimeout(() => { if (inp.classList.contains('saved')) _setInpState(inp, ''); }, 1000);
+    } catch (e) {
+      _setInpState(inp, 'errored');
+      _showInpBadge(inp, '✗ error', '#dc2626');
+      Api.pill('Error guardando: ' + e.message, true);
+      setTimeout(() => { if (inp.classList.contains('errored')) _setInpState(inp, ''); }, 2000);
+    } finally {
+      _mpInpInflight.delete(inp);
+    }
+  };
+
+  function _showInpBadge(inp, txt, color) {
+    // Inserta/actualiza un span hermano para el feedback.
+    let badge = inp.parentElement?.querySelector('.ped-mp-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'ped-mp-badge';
+      badge.style.cssText = 'font-size:9px;font-weight:500;transition:opacity .4s';
+      inp.insertAdjacentElement('afterend', badge);
+    }
+    badge.textContent = txt;
+    badge.style.color = color;
+    badge.style.opacity = '1';
+    clearTimeout(badge._t);
+    badge._t = setTimeout(() => { badge.style.opacity = '0'; }, color === '#16a34a' ? 1000 : 2000);
+  }
+
+  async function pedSaveImporte(localId, proveedor, categoria, real, sugerido) {
+    // Estado: si ya estaba pagado, mantener; si tenía importe, pasa a 'enviado';
+    // si se borra, vuelve a 'pendiente'.
     let estadoActual = 'pendiente';
+    let pRef = null;
     if (pState.mp?.items) {
       for (const it of pState.mp.items) {
         if (it.local_id !== localId) continue;
         const p = it.proveedores.find((x) => x.proveedor === proveedor && x.categoria === categoria);
-        if (p) { estadoActual = p.estado; break; }
+        if (p) { estadoActual = p.estado; pRef = p; break; }
       }
     }
     const nuevoEstado = (real == null || real === 0)
       ? 'pendiente'
       : (estadoActual === 'recibido' ? 'recibido' : 'enviado');
-    try {
-      await Api.pedidosSavePedido({
-        local_id: localId, anio: pState.week.anio, semana_iso: pState.week.semana_iso,
-        proveedor, categoria, importe_sugerido: sugerido, importe_real: real,
-        estado: nuevoEstado,
-      });
-      Api.pill(nuevoEstado === 'enviado' ? 'Confirmado · enviado' : 'Guardado');
-      await renderMP();
-    } catch (e) {
-      Api.pill('Error: ' + e.message, true);
+    // Sin try/catch — el error sube a pedMPFlush que ya muestra "✗ error".
+    await Api.pedidosSavePedido({
+      local_id: localId, anio: pState.week.anio, semana_iso: pState.week.semana_iso,
+      proveedor, categoria, importe_sugerido: sugerido, importe_real: real,
+      estado: nuevoEstado,
+    });
+    // Actualizar pState localmente para no perder foco con un re-render.
+    if (pRef) {
+      pRef.importe_real = real;
+      pRef.estado = nuevoEstado;
     }
-  };
+    refreshMPKpis();
+  }
+
+  // Recalcula y pinta los KPIs superiores leyendo pState.mp.items sin re-render.
+  function refreshMPKpis() {
+    const items = pState.mp?.items || [];
+    let budget = 0, real = 0, conf = 0, pend = 0, pendPago = 0, pagado = 0;
+    for (const it of items) {
+      budget += it.budget_mp_semana || 0;
+      for (const p of (it.proveedores || [])) {
+        real += p.importe_real || 0;
+        if (p.estado === 'pendiente') pend++; else conf++;
+        const imp = p.importe_real ?? p.importe_sugerido ?? 0;
+        if (p.estado === 'enviado')  pendPago += imp;
+        if (p.estado === 'recibido') pagado   += imp;
+      }
+    }
+    const pctExec = budget > 0 ? (real / budget) * 100 : 0;
+    $('ped-k-budget')   && ($('ped-k-budget').textContent   = eur(budget));
+    $('ped-k-conf')     && ($('ped-k-conf').textContent     = conf);
+    $('ped-k-pend')     && ($('ped-k-pend').textContent     = pend);
+    $('ped-k-pendpago') && ($('ped-k-pendpago').textContent = eur(pendPago));
+    $('ped-k-pagado')   && ($('ped-k-pagado').textContent   = eur(pagado));
+    if ($('ped-k-exec')) $('ped-k-exec').textContent = pctExec.toFixed(1).replace('.', ',') + '%';
+    if ($('ped-k-exec-eur')) $('ped-k-exec-eur').textContent = `${eur(real)} de ${eur(budget)}`;
+  }
 
   window.pedConfirmar = async function (localId) {
     if (!confirm(`¿Confirmar pedidos pendientes de ${localId} en la semana ${pState.week.semana_iso}?`)) return;
