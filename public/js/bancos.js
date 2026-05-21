@@ -68,24 +68,42 @@ async function boot() {
   try {
     const me = await api('/api/v1/auth/me');
     state.user = me.user;
+    state.subTabsBancos = me.sub_tabs_bancos || null;
+    state.flags = me.flags || {};
     $('tb-user').textContent = `${me.user.email} (${me.user.role})`;
     // Vista dual: admin/socio ven "Todos los gastos"; resto ven "Proveedores operativos".
     aplicarVistaSegunRol();
-    // Upload extractos/cierres TPV: SÓLO admin (perm bancos_upload_admin).
-    // El botón está oculto por default en el HTML; lo desbloqueamos acá si
-    // corresponde. Defense in depth: el endpoint POST también devuelve 403
-    // para no-admin (requirePerm en routes/bancos.js).
+    // Flags servidor (single source of truth en lib/roles.js):
+    const f = state.flags;
     const btnUpload = $('btn-upload-toggle');
-    if (btnUpload) btnUpload.style.display = (me.user.role === 'admin') ? '' : 'none';
-    // Export CSV (Movimientos + Proveedores): sólo admin (perm export_w).
-    // Los demás roles no ven los botones — gating a nivel UI; los endpoints
-    // futuros que devuelvan archivos descargables se protegen con
-    // requirePerm('export_w') en el backend.
-    const esExportAdmin = me.user.role === 'admin';
+    if (btnUpload) btnUpload.style.display = f.bancos_upload_admin ? '' : 'none';
     const btnExpM = $('m-btn-export');
-    if (btnExpM) btnExpM.style.display = esExportAdmin ? '' : 'none';
+    if (btnExpM) btnExpM.style.display = f.export_w ? '' : 'none';
     const btnExpP = $('prov-btn-export');
-    if (btnExpP) btnExpP.style.display = esExportAdmin ? '' : 'none';
+    if (btnExpP) btnExpP.style.display = f.export_w ? '' : 'none';
+    // Filtrar las sub-pestañas /bancos según matriz del backend
+    // (lib/roles.js SUB_TABS_BANCOS). Por ejemplo gerente y administrativo
+    // sólo ven Resumen + Proveedores; pierden Movimientos / Análisis gastos /
+    // Cruce TPV vs Banco.
+    if (Array.isArray(state.subTabsBancos)) {
+      document.querySelectorAll('.tab[data-tab]').forEach((el) => {
+        el.style.display = state.subTabsBancos.includes(el.dataset.tab) ? '' : 'none';
+      });
+      // Si la pestaña activa por default (resumen) no está permitida, abrir la primera visible.
+      const active = document.querySelector('.tab.on[data-tab]');
+      if (active && active.style.display === 'none') {
+        const first = [...document.querySelectorAll('.tab[data-tab]')]
+          .find((el) => el.style.display !== 'none');
+        if (first) {
+          document.querySelectorAll('.tab').forEach((t) => t.classList.remove('on'));
+          first.classList.add('on');
+          // Mostrar la sección correspondiente
+          document.querySelectorAll('.sect').forEach((s) => s.classList.remove('on'));
+          const sect = $('sect-' + first.dataset.tab);
+          if (sect) sect.classList.add('on');
+        }
+      }
+    }
   } catch {}
   const meta = await api('/api/v1/bancos/meta');
   state.sociedades = meta.sociedades || [];
@@ -753,6 +771,10 @@ function initCharts() {
 
 // ─── Tabs ──────────────────────────────────────────────────────────────
 function showTab(name, btn) {
+  // Defense in depth: si el rol no tiene esa sub-pestaña permitida, no
+  // hacer nada. El bootstrap ya oculta el botón, pero esto evita
+  // navegación por consola o llamadas programáticas.
+  if (Array.isArray(state.subTabsBancos) && !state.subTabsBancos.includes(name)) return;
   document.querySelectorAll('.sect').forEach((s) => s.classList.remove('on'));
   document.querySelectorAll('.tab').forEach((t) => t.classList.remove('on'));
   $(`sect-${name}`).classList.add('on');
