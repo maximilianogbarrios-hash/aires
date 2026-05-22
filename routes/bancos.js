@@ -8,7 +8,6 @@ const { SOCIEDADES, DIRECCIONES, findSociedad, sociedadDeLocal } = require('../l
 const { parseSantanderBuffer } = require('../lib/bank/parser-santander');
 const { parseGetnetBuffer } = require('../lib/bank/parser-getnet');
 const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
-const { CATEGORIAS_PROVEEDOR_OPERATIVO } = require('../lib/bank/categorizer');
 const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
 const bankDb = require('../lib/bank/db');
 
@@ -414,10 +413,11 @@ router.get('/proveedores', async (req, res) => {
     const agg = new Map(); // proveedor → { total, n, categorias: Map<cat, count>, ultima_fecha }
     let totalExcluido = 0;
     let nExcluido = 0;
-    const opSet = new Set(CATEGORIAS_PROVEEDOR_OPERATIVO);
-    const ovPre = gdOverridesPre || new Map();
     for (const r of rows) {
-      if (esIntraGrupo(r.concepto)) {
+      // INTRAGRUPO se excluye en dos pasadas:
+      //   1) heurística por concepto (Aires→Aires sin categorizar correctamente)
+      //   2) categoría persistida === 'INTRAGRUPO' (defense in depth)
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') {
         totalExcluido += Math.abs(+r.importe);
         nExcluido++;
         continue;
@@ -436,13 +436,21 @@ router.get('/proveedores', async (req, res) => {
           proveedor = n.proveedor;
           categoria = n.categoria;
         }
+        // El normalizer puede haber recategorizado a INTRAGRUPO algo
+        // que el SQL dejó pasar (caso poco común pero posible si la
+        // categoría persistida estaba mal). Re-chequeo defensivo.
+        if (categoria === 'INTRAGRUPO') {
+          totalExcluido += Math.abs(+r.importe);
+          nExcluido++;
+          continue;
+        }
       }
-      // Vista unificada: descartamos categorías que no sean ni operativas
-      // ni elegibles para fusionar en Gastos Dirección (default por
-      // categoría o override 'include'). Aplica a TODOS los roles, igual.
-      if (!opSet.has(categoria) && !perteneceAGastosDireccion(proveedor, categoria, ovPre)) {
-        continue;
-      }
+      // Sin filtro por categoría: el donut muestra TODOS los gastos
+      // (impuestos, nóminas, alquileres, suministros, etc.) salvo
+      // INTRAGRUPO. Los sensibles (NOMINAS_DIRECCION, GASTOS_DIRECCION,
+      // PRESTAMOS, FINANCIERO) y los con override 'include' se fusionan
+      // más abajo en el slice "Gastos Dirección" (admin/socio pueden
+      // expandirlo; el resto ve 🔒).
       const k = proveedor;
       if (!agg.has(k)) agg.set(k, { total: 0, n: 0, cats: new Map(), ultima_fecha: null });
       const a = agg.get(k);
@@ -948,6 +956,16 @@ router.get('/grupo-detalle', async (req, res) => {
     let provsMenores = null;
     let provsFuseDireccion = null;
     if (ES_MENORES) {
+      // Espejo del filtro de /proveedores: el bucket "Proveedores Menores"
+      // se construye con count<5 AND total<2000€, PERO excluye a los
+      // proveedores con regla forzar_visible=TRUE (que en /proveedores
+      // aparecen como slice individual, no en el bucket). Sin esta
+      // exclusión, una reclasificación manual hace aparecer el slice
+      // en el donut pero el concepto sigue viéndose en el drill-down
+      // de Menores — disonancia que confunde al usuario.
+      const proveedoresForzados = new Set(
+        reglasDb.filter((r) => r.forzar_visible).map((r) => r.proveedor_normalizado)
+      );
       const totPorProv = new Map();
       for (const e of enriched) {
         const x = totPorProv.get(e._proveedor) || { total: 0, n: 0 };
@@ -957,7 +975,7 @@ router.get('/grupo-detalle', async (req, res) => {
       }
       provsMenores = new Set(
         [...totPorProv.entries()]
-          .filter(([, x]) => x.n < 5 && x.total < 2000)
+          .filter(([prov, x]) => !proveedoresForzados.has(prov) && x.n < 5 && x.total < 2000)
           .map(([p]) => p)
       );
     }
@@ -1197,7 +1215,11 @@ router.post('/reclasificar', express.json(), async (req, res) => {
     if (proveedor_nuevo === FUSE_PROVEEDOR) {
       categoria_nueva = 'GASTOS_DIRECCION';
     }
-    // 1) UPDATE ab_movimientos por concepto exacto.
+    // 1) UPDATE ab_movimientos por concepto exacto — MOVE, no COPY.
+    // Sin filtro de fecha ni sociedad: la reclasificación es de
+    // alcance global sobre todos los períodos y sociedades donde
+    // exista ese concepto. Es lo que permite que una sola operación
+    // del usuario tape todo el histórico.
     const upd = await query(
       `UPDATE ab_movimientos
           SET categoria = $1,
@@ -1208,8 +1230,12 @@ router.post('/reclasificar', express.json(), async (req, res) => {
     );
     const affected = upd.rowCount || 0;
     const combos = new Set((upd.rows || []).map((r) => `${r.sociedad_id}|${r.periodo}`));
+    const periodosAfectados = new Set((upd.rows || []).map((r) => r.periodo));
 
     // 2) Si toggle "Aplicar a futuros extractos" → guardar regla.
+    // Prioridad 110: por encima de las reglas seed (≤100) y por encima
+    // de las reglas históricas creadas con prioridad 100. La regla más
+    // reciente del usuario gana ante conflictos.
     let regla_id = null;
     if (guardar_regla) {
       const tipo = ['ilike', 'regex', 'exacto'].includes(tipo_match) ? tipo_match : 'ilike';
@@ -1223,20 +1249,29 @@ router.post('/reclasificar', express.json(), async (req, res) => {
       // Menores ni en el cap top-N).
       const ins = await one(
         `INSERT INTO ab_reglas_normalizacion (patron, tipo_match, categoria, proveedor_normalizado, prioridad, forzar_visible)
-         VALUES ($1, $2, $3, $4, 100, TRUE)
+         VALUES ($1, $2, $3, $4, 110, TRUE)
          RETURNING id`,
         [pat, tipo, categoria_nueva, proveedor_nuevo]
       );
       regla_id = ins?.id || null;
     }
 
-    // 3) Recalcular resumen mensual de cada (sociedad, periodo) afectado.
+    // 3) Recalcular resumen mensual + cruces TPV/banco para cada
+    // (sociedad, periodo) afectado. Tolerante: si una sociedad/periodo
+    // no tiene cierres TPV, el cruce falla silenciosamente — está bien.
     for (const combo of combos) {
       const [sociedad_id, periodo] = combo.split('|');
       try { await bankDb.recalcResumenMensual(sociedad_id, periodo); } catch (e) { /* tolerante */ }
+      try { await bankDb.recalcCrucesParaSociedadPeriodo(sociedad_id, periodo); } catch (e) { /* tolerante */ }
     }
 
-    res.json({ ok: true, affected, regla_id, combos: combos.size });
+    res.json({
+      ok: true,
+      affected,
+      regla_id,
+      combos: combos.size,
+      periodos_afectados: [...periodosAfectados].sort(),
+    });
   } catch (e) {
     console.error('[bancos.reclasificar]', e);
     res.status(500).json({ error: e.message || 'internal' });

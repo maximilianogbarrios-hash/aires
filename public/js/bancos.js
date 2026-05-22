@@ -1183,7 +1183,7 @@ function renderProvSidebarRows(conceptos) {
             <p id="rc-name-hint-${i}" style="font-size:9px;color:var(--text-2);margin-top:2px">Todos los grupos existentes (cualquier categoría) · si el nombre que escribís no está, se crea como slice nuevo en el donut</p>
           </div>
           <label style="grid-column:1/-1;display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="checkbox" id="rc-rule-${i}">
+            <input type="checkbox" id="rc-rule-${i}" checked>
             <span>Aplicar a futuros extractos (guardar regla)</span>
           </label>
         </div>
@@ -1356,6 +1356,7 @@ async function confirmReclasificar(i) {
     _setRcFeedback(i, false, 'Categoría y nombre son requeridos.');
     return;
   }
+  const grupoOriginal = state._sbData?.grupo || '';
   try {
     const j = await api('/api/v1/bancos/reclasificar', {
       method: 'POST',
@@ -1365,23 +1366,26 @@ async function confirmReclasificar(i) {
     // refleja el cambio. Mostramos "Actualizando donut..." mientras se
     // refrescan los datos para que el usuario tenga señal inmediata de
     // que la operación fue exitosa y el render del slice está en curso.
-    _setRcFeedback(i, true, '✓ Reclasificado. Actualizando donut...');
+    _setRcFeedback(i, true, '⏳ Actualizando donut...');
     Api.pill(`Reclasificadas: ${j.affected}` + (j.regla_id ? ' · regla creada' : ''));
     // Invalidar cache porque el set de nombres normalizados cambió.
     _rcNombresAllCache = null;
-    // Refresh donut + ranking, y el sidebar con el nuevo nombre si cambió.
+    // Refresh donut + ranking (el UPDATE ya impactó a todos los períodos
+    // y sociedades — el donut re-agrupa y muestra el nuevo slice).
     await loadProvRanking();
+    const nPer = (j.periodos_afectados || []).length;
+    const periodosTxt = nPer > 0
+      ? `${j.affected} movimiento${j.affected === 1 ? '' : 's'} actualizado${j.affected === 1 ? '' : 's'} en ${nPer === 1 ? 'el período ' + j.periodos_afectados[0] : `${nPer} períodos (${j.periodos_afectados[0]} … ${j.periodos_afectados[nPer - 1]})`}`
+      : `${j.affected} movimiento${j.affected === 1 ? '' : 's'} actualizado${j.affected === 1 ? '' : 's'}`;
     const reglaMsg = (guardar_regla && j.regla_id)
-      ? ` · <strong>✓ Regla guardada</strong> — se aplicará a futuros extractos (regla #${j.regla_id}, slice forzado visible)`
+      ? ' Regla guardada para futuros extractos.'
       : '';
-    _setRcFeedback(i, true, `✓ ${j.affected} fila${j.affected === 1 ? '' : 's'} reclasificada${j.affected === 1 ? '' : 's'} → <code>${categoria_nueva}</code> / <strong>${proveedor_nuevo}</strong>${reglaMsg}`);
-    // Si cambió el nombre canónico, cerramos el sidebar tras 1.5s para
-    // dejar leer el feedback. Si no cambió, recargamos el sidebar.
-    if (proveedor_nuevo !== (state._sbData?.grupo || '')) {
-      setTimeout(closeProvSidebar, 1500);
-    } else {
-      setTimeout(() => openProvSidebar(proveedor_nuevo), 800);
-    }
+    _setRcFeedback(i, true, `✓ Movido a <strong>${proveedor_nuevo}</strong> (<code>${categoria_nueva}</code>). ${periodosTxt}.${reglaMsg}`);
+    // Refrescamos el sidebar — si el usuario está viendo el grupo
+    // origen, ahora verá que el concepto desapareció. Si reclasificó
+    // a un nuevo grupo, abrimos ese para ver el resultado.
+    const grupoTarget = (proveedor_nuevo !== grupoOriginal) ? grupoOriginal : proveedor_nuevo;
+    if (grupoTarget) setTimeout(() => openProvSidebar(grupoTarget), 700);
   } catch (e) {
     _setRcFeedback(i, false, '✗ Error: ' + e.message);
     Api.pill('Error: ' + e.message, true);

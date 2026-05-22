@@ -13,7 +13,18 @@ const crypto = require('crypto');
 const { one, query } = require(path.resolve(__dirname, '..', '..', 'lib', 'db'));
 
 const BASE = 'http://localhost:3000';
-const FILTRO = '?sociedad_id=sin_elche&periodo=2026-04';
+// Acepta override por CLI: node e2e-vista-unificada.js 2025-06
+const PERIODO = process.argv[2] || '2026-04';
+const FILTRO = `?sociedad_id=sin_elche&periodo=${PERIODO}`;
+// Categorías cuya presencia (al menos un slice cae en ellas) garantiza
+// que el donut está mostrando el espectro completo, no sólo operativos.
+// Lista basada en lo que pidió el user: nóminas, TGSS, AEAT, alquileres,
+// energía, mantenimiento, equipamiento, vehículos, comisiones, GD.
+const CATEGORIAS_ESPERADAS_AMPLIO = [
+  'NOMINAS', 'SS_LABORAL', 'IMPUESTOS', 'ALQUILER',
+  'SUMINISTROS_ENERGIA', 'MANTENIMIENTO',
+  'GASTOS_DIRECCION', // siempre presente como categoría del slice fusionado
+];
 
 async function createSession(role) {
   const u = await one('SELECT id, email, role FROM ab_users WHERE role=$1 LIMIT 1', [role]);
@@ -135,6 +146,16 @@ function fmtEur(v) { return (v != null ? v : 0).toFixed(2) + ' €'; }
         console.error(`    ✗ ${r} puede_drilldown debería ser ${esAdmin}`);
         ok = false;
       }
+    }
+
+    // Cobertura: el donut tiene slices de las categorías "amplias".
+    console.log('\n── Cobertura de categorías ──');
+    for (const r of rolesOk) {
+      const cats = new Set((respuestas[r].proveedores || [])
+        .map((p) => p.categoria).filter(Boolean));
+      const missing = CATEGORIAS_ESPERADAS_AMPLIO.filter((c) => !cats.has(c));
+      console.log(`  ${r.padEnd(15)} → ${cats.size} categorías distintas  ${missing.length === 0 ? '✓ todas las esperadas presentes' : '✗ faltan: ' + missing.join(', ')}`);
+      if (missing.length) ok = false;
     }
 
     // Drill-down: admin 200, no-admin 403
