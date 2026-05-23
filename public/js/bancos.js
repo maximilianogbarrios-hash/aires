@@ -1221,24 +1221,50 @@ function toggleReclasificar(i) {
   if (!open) rcRefreshNombres(i);
 }
 
-// Cache global de la lista completa de nombres normalizados — se
-// invalida al confirmar una reclasificación porque el set puede cambiar.
+// Cache de la lista de nombres normalizados — keyed por los filtros
+// activos del donut (sociedad + período). Si el usuario cambia el filtro
+// y vuelve a abrir el sidebar, se refetch automáticamente porque la key
+// cambia. Se invalida al confirmar una reclasificación.
 let _rcNombresAllCache = null;
+let _rcNombresCacheKey = null;
+
+function _rcFiltrosActivos() {
+  // Refleja los filtros activos del donut /proveedores (mismos selectores
+  // que usa loadProvRanking). Si el usuario está mirando "Sin Elche /
+  // Abr 2026", el dropdown sólo debe ofrecer grupos que aparecen en ese
+  // corte — no la lista global de ~500.
+  const soc = $('prov-sociedad')?.value || '';
+  const desde = $('prov-periodo-desde')?.value || '';
+  const hasta = $('prov-periodo-hasta')?.value || '';
+  const params = new URLSearchParams();
+  if (soc)   params.set('sociedad_id', soc);
+  if (desde && hasta && desde === hasta) {
+    params.set('periodo', desde);
+  } else {
+    if (desde) params.set('periodo_desde', desde);
+    if (hasta) params.set('periodo_hasta', hasta);
+  }
+  params.set('limit', '500');
+  return { qs: params.toString(), key: `${soc}|${desde}|${hasta}` };
+}
 
 async function rcRefreshNombres(i) {
   const hint = $(`rc-name-hint-${i}`);
-  if (!_rcNombresAllCache) {
+  const { qs, key } = _rcFiltrosActivos();
+  if (!_rcNombresAllCache || _rcNombresCacheKey !== key) {
     try {
-      const j = await api('/api/v1/bancos/proveedores-normalizados?limit=500');
+      const j = await api('/api/v1/bancos/proveedores-normalizados?' + qs);
       _rcNombresAllCache = j.proveedores || [];
+      _rcNombresCacheKey = key;
     } catch (e) {
       _rcNombresAllCache = [];
+      _rcNombresCacheKey = key;
     }
   }
   if (hint) {
     hint.textContent = _rcNombresAllCache.length
-      ? `${_rcNombresAllCache.length} grupos existentes (todas las categorías) · escribí para filtrar; si no está, se crea como slice nuevo`
-      : 'No hay grupos normalizados todavía · escribí uno nuevo';
+      ? `${_rcNombresAllCache.length} grupos en el filtro activo · escribí para filtrar; si no está, se crea como slice nuevo`
+      : 'Sin grupos en este filtro · escribí uno nuevo';
   }
   // Pre-popular la lista visible (cerrada hasta el focus)
   _rcRenderList(i, '');
@@ -1386,6 +1412,7 @@ async function confirmReclasificar(i) {
     Api.pill(`Reclasificadas: ${j.affected}` + (j.regla_id ? ' · regla creada' : ''));
     // Invalidar cache porque el set de nombres normalizados cambió.
     _rcNombresAllCache = null;
+    _rcNombresCacheKey = null;
     // Refresh donut + ranking (el UPDATE ya impactó a todos los períodos
     // y sociedades — el donut re-agrupa y muestra el nuevo slice).
     await loadProvRanking();

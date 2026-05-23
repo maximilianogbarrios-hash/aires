@@ -835,6 +835,23 @@ router.get('/proveedores-normalizados', async (req, res) => {
     const q = (req.query.q || '').trim();
     const limit = Math.min(+req.query.limit || 200, 500);
     const noAdmin = !esAdminLike(req);
+    // Filtros de contexto: mismos parámetros que /proveedores (sociedad +
+    // período) para que el dropdown sea un reflejo exacto del donut, no
+    // una lista global. Si no se envían, devolvemos todos los grupos.
+    const sociedad_id = req.query.sociedad_id || null;
+    const clamped = clampPeriodoParaNoAdmin(req, {
+      periodo: req.query.periodo || null,
+      periodo_desde: req.query.periodo_desde || null,
+      periodo_hasta: req.query.periodo_hasta || null,
+    });
+    if (clamped.fueraDeRango) {
+      return res.json({
+        proveedores: [],
+        filtros: { sociedad_id, periodo: clamped.periodo, periodo_desde: clamped.periodo_desde, periodo_hasta: clamped.periodo_hasta },
+        periodo_floor_aplicado: PERIODO_FLOOR_NO_ADMIN,
+      });
+    }
+    const { periodo, periodo_desde, periodo_hasta } = clamped;
 
     // Traemos todos los gastos (proveedor_normalizado puede ser NULL).
     // Para no-admin descartamos INTRAGRUPO directo en SQL.
@@ -842,6 +859,12 @@ router.get('/proveedores-normalizados', async (req, res) => {
     const vals = [];
     if (categoria)  { where.push(`categoria = $${vals.length + 1}`); vals.push(categoria); }
     if (noAdmin)    { where.push(`categoria <> 'INTRAGRUPO'`); }
+    // Filtros sociedad/período idénticos a los del donut /proveedores.
+    const socCl = buildSociedadClause(sociedad_id, vals.length + 1);
+    if (socCl)         { where.push(socCl.sql);                       vals.push(...socCl.vals); }
+    if (periodo)       { where.push(`periodo=$${vals.length + 1}`);   vals.push(periodo); }
+    if (periodo_desde) { where.push(`periodo>=$${vals.length + 1}`);  vals.push(periodo_desde); }
+    if (periodo_hasta) { where.push(`periodo<=$${vals.length + 1}`);  vals.push(periodo_hasta); }
     const rows = await many(
       `SELECT concepto, categoria, importe::float8 AS importe, proveedor_normalizado
          FROM ab_movimientos
@@ -849,15 +872,16 @@ router.get('/proveedores-normalizados', async (req, res) => {
       vals
     );
     const reglasDb = await loadReglas();
+    const gdOverrides = await loadGdOverrides();
 
-    // Agrupar por proveedor canónico derivado (misma precedencia que
+    // Agrupar por proveedor canónico derivado (misma pipeline que
     // /proveedores): proveedor_normalizado > regla DB > normalizarProveedor().
+    // Paridad estricta con el donut: INTRAGRUPO se excluye para TODOS los
+    // roles (igual que /proveedores). Si admin quiere reasignar a un grupo
+    // intra-grupo, puede escribirlo y usar "Crear nuevo: <nombre>".
     const agg = new Map(); // nombre → { total, n, categoria_top: { cat→count } }
     for (const r of rows) {
-      // INTRAGRUPO heurístico para no-admin (cubre filas mal categorizadas).
-      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') {
-        if (noAdmin) continue;
-      }
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
       let nombre, cat;
       if (r.proveedor_normalizado) {
         nombre = r.proveedor_normalizado; cat = r.categoria;
@@ -869,9 +893,13 @@ router.get('/proveedores-normalizados', async (req, res) => {
           nombre = n.proveedor; cat = n.categoria;
         }
       }
-      // Defensa adicional: nombres sensibles bloqueados para no-admin.
+      // Re-chequeo post-derivación: el normalizer puede recategorizar a
+      // INTRAGRUPO. Excluir para todos los roles.
+      if (cat === 'INTRAGRUPO') continue;
+      // Raba: defense in depth para no-admin (Raba se persiste como
+      // PROVEEDOR_OTROS, no INTRAGRUPO, así que el filtro anterior no
+      // la atrapaba).
       if (noAdmin && RABA_NOMBRES.has(nombre)) continue;
-      if (noAdmin && cat === 'INTRAGRUPO') continue;
       // Filtro por categoría solicitada (post-derivación, porque el
       // proveedor canónico puede caer en una categoría distinta a la
       // persistida cuando hay regla DB).
@@ -883,61 +911,87 @@ router.get('/proveedores-normalizados', async (req, res) => {
       a.cats.set(cat, (a.cats.get(cat) || 0) + 1);
     }
 
-    // Filtro de texto sobre el set agregado.
-    const qNorm = q.toLowerCase();
+    // Aplicar mismas transformaciones que /proveedores para paridad
+    // estricta dropdown ↔ donut: (a) fusión "Gastos Dirección" y
+    // (b) rollup "Proveedores Menores" con mismos thresholds.
     let proveedores = [...agg.entries()].map(([nombre, a]) => {
       let topCat = null, topCnt = 0;
       for (const [c, n] of a.cats.entries()) if (n > topCnt) { topCnt = n; topCat = c; }
-      return { nombre, n: a.n, total_importe: a.total, categoria_top: topCat };
+      return { nombre, n: a.n, total_importe: a.total, categoria: topCat };
     });
+
+    // (a) Fusión Gastos Dirección — mismas reglas que /proveedores.
+    {
+      const sensibles = proveedores.filter((p) => perteneceAGastosDireccion(p.nombre, p.categoria, gdOverrides));
+      const restantes = proveedores.filter((p) => !perteneceAGastosDireccion(p.nombre, p.categoria, gdOverrides));
+      if (sensibles.length) {
+        const tot = sensibles.reduce((s, p) => s + p.total_importe, 0);
+        const tx = sensibles.reduce((s, p) => s + p.n, 0);
+        restantes.push({
+          nombre: FUSE_PROVEEDOR,
+          n: tx,
+          total_importe: tot,
+          categoria: 'GASTOS_DIRECCION',
+          _es_grupo_fusion: true,
+          _miembros: sensibles.length,
+        });
+      }
+      proveedores = restantes;
+    }
+
+    // (b) Rollup "Proveedores Menores" — mismas reglas que /proveedores.
+    const proveedoresForzados = new Set(
+      reglasDb.filter((r) => r.forzar_visible).map((r) => r.proveedor_normalizado)
+    );
+    const minTx = req.query.menores_min_tx ? +req.query.menores_min_tx : 5;
+    const minEur = req.query.menores_min_eur ? +req.query.menores_min_eur : 2000;
+    const maxGrupos = req.query.max_grupos ? +req.query.max_grupos : 50;
+    function colapsar(lista, predicate) {
+      const grandes = lista.filter((p) => !predicate(p));
+      const menores = lista.filter(predicate);
+      if (menores.length <= 1) return lista;
+      const tot = menores.reduce((s, p) => s + p.total_importe, 0);
+      const tx = menores.reduce((s, p) => s + p.n, 0);
+      const existente = grandes.find((p) => p.nombre === 'Proveedores Menores');
+      if (existente) {
+        existente.total_importe += tot;
+        existente.n += tx;
+        existente._miembros = (existente._miembros || 0) + menores.length;
+        return grandes;
+      }
+      grandes.push({
+        nombre: 'Proveedores Menores',
+        n: tx,
+        total_importe: tot,
+        categoria: 'PROVEEDOR_OTROS',
+        _es_bucket_virtual: true,
+        _miembros: menores.length,
+      });
+      return grandes;
+    }
+    proveedores = colapsar(proveedores, (p) =>
+      !proveedoresForzados.has(p.nombre) && p.n < minTx && p.total_importe < minEur
+    );
+    if (proveedores.length > maxGrupos) {
+      const sortDesc = [...proveedores].sort((a, b) => b.total_importe - a.total_importe);
+      const cutOff = sortDesc[maxGrupos - 2]?.total_importe ?? 0;
+      proveedores = colapsar(proveedores, (p) =>
+        p.nombre !== 'Proveedores Menores' &&
+        !proveedoresForzados.has(p.nombre) &&
+        p.total_importe < cutOff
+      );
+    }
+
+    // Filtro de texto sobre el set final (post-fusión + rollup).
+    const qNorm = q.toLowerCase();
     if (q) proveedores = proveedores.filter((p) => p.nombre.toLowerCase().includes(qNorm));
 
-    // Orden: por total DESC (los grupos más grandes primero, candidatos
-    // más probables de reasignación), desempate alfabético ASC.
+    // Orden: total DESC, desempate alfabético.
     proveedores.sort((a, b) => b.total_importe - a.total_importe
       || a.nombre.localeCompare(b.nombre));
 
-    // Cap configurable — default subido a 200 (antes 80 cortaba grupos
-    // legítimos). El frontend puede paginar el render si es necesario.
     if (proveedores.length > limit) proveedores = proveedores.slice(0, limit);
 
-    // Prepend slice fusionado "Gastos Dirección" como destino canónico
-    // (es virtual — no necesariamente está en agg si todavía no hay
-    // movimientos con ese nombre). Para no-admin también se prepend:
-    // tienen permiso para usarlo como destino de reclasificación.
-    const matchesFilter = !qNorm || FUSE_PROVEEDOR.toLowerCase().includes(qNorm);
-    const matchesCategoria = !categoria || categoria === 'GASTOS_DIRECCION';
-    proveedores = proveedores.filter((p) => p.nombre !== FUSE_PROVEEDOR);
-    if (matchesFilter && matchesCategoria) {
-      const ex = agg.get(FUSE_PROVEEDOR);
-      proveedores = [
-        {
-          nombre: FUSE_PROVEEDOR,
-          n: ex?.n || 0,
-          total_importe: ex?.total || 0,
-          categoria_top: 'GASTOS_DIRECCION',
-          _es_grupo_fusion: true,
-        },
-        ...proveedores,
-      ];
-    }
-    // Prepend "Proveedores Menores" — también es un bucket virtual del
-    // donut (rollup por threshold). Como destino de reclasificación
-    // raramente se usa, pero mantiene paridad con lo que el user ve
-    // en la leyenda del donut.
-    const PMEN = 'Proveedores Menores';
-    const matchesPmenFilter = !qNorm || PMEN.toLowerCase().includes(qNorm);
-    const matchesPmenCat = !categoria;
-    proveedores = proveedores.filter((p) => p.nombre !== PMEN);
-    if (matchesPmenFilter && matchesPmenCat) {
-      proveedores.push({
-        nombre: PMEN,
-        n: 0,
-        total_importe: 0,
-        categoria_top: 'PROVEEDOR_OTROS',
-        _es_bucket_virtual: true,
-      });
-    }
     res.json({ proveedores });
   } catch (e) {
     console.error('[bancos.proveedores-normalizados]', e);
