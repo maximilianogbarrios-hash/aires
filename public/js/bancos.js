@@ -65,6 +65,7 @@ async function api(url, opts = {}) {
 }
 
 async function boot() {
+  let initialTab = null;
   try {
     const me = await api('/api/v1/auth/me');
     state.user = me.user;
@@ -85,23 +86,18 @@ async function boot() {
     // (lib/roles.js SUB_TABS_BANCOS). Por ejemplo gerente y administrativo
     // sólo ven Resumen + Proveedores; pierden Movimientos / Análisis gastos /
     // Cruce TPV vs Banco.
+    // Pestaña inicial visible para este rol. Si Resumen no está
+    // permitida (gerente/administrativo), abrimos la primera visible.
+    // No la activamos todavía — requiere state.periodos (cargado más
+    // abajo) para que initProvFiltros pueda armar los selectores.
     if (Array.isArray(state.subTabsBancos)) {
       document.querySelectorAll('.tab[data-tab]').forEach((el) => {
         el.style.display = state.subTabsBancos.includes(el.dataset.tab) ? '' : 'none';
       });
-      // Si la pestaña activa por default (resumen) no está permitida, abrir la primera visible.
       const active = document.querySelector('.tab.on[data-tab]');
       if (active && active.style.display === 'none') {
-        const first = [...document.querySelectorAll('.tab[data-tab]')]
+        initialTab = [...document.querySelectorAll('.tab[data-tab]')]
           .find((el) => el.style.display !== 'none');
-        if (first) {
-          document.querySelectorAll('.tab').forEach((t) => t.classList.remove('on'));
-          first.classList.add('on');
-          // Mostrar la sección correspondiente
-          document.querySelectorAll('.sect').forEach((s) => s.classList.remove('on'));
-          const sect = $('sect-' + first.dataset.tab);
-          if (sect) sect.classList.add('on');
-        }
       }
     }
   } catch {}
@@ -114,6 +110,10 @@ async function boot() {
   buildPeriodSelector();
   initCharts();
   await reload();
+  // Activar pestaña inicial (gerente/administrativo arrancan en
+  // Proveedores). Esto debe ir DESPUÉS de cargar state.periodos,
+  // sino initProvFiltros encuentra los selectores vacíos.
+  if (initialTab) showTab(initialTab.dataset.tab, initialTab);
 }
 
 function buildSelectors() {
@@ -347,24 +347,36 @@ function initProvFiltros() {
   }
   const note = $('prov-period-floor-note');
   if (note) note.style.display = rolEsAdmin() ? 'none' : '';
-  // Default sociedad: "Sin Elche" (4 sociedades — excluye Grupo Hostelero).
-  // Sólo lo seteamos si el usuario no eligió nada todavía.
-  if (sSel && !sSel.value) sSel.value = 'sin_elche';
-  // Default período: mes anterior al actual (Desde = Hasta = ese mes).
-  // Se calcula al vuelo con new Date() — el comportamiento sigue al
-  // calendario real, no al último período cargado. Para no-admin/socio
-  // se eleva al suelo (2026-01) si el mes anterior es menor. Si el
-  // período calculado no existe en la lista disponible (porque aún no
-  // se cargó ese extracto), caemos al último período disponible.
-  if (periodosPermitidos.length > 0) {
-    const hoy = new Date();
-    const prev = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
-    let target = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
-    if (!rolEsAdmin() && target < FLOOR) target = FLOOR;
-    const ultimo = periodosPermitidos[periodosPermitidos.length - 1];
-    const elegido = periodosPermitidos.includes(target) ? target : ultimo;
-    if (!$('prov-periodo-desde').value) $('prov-periodo-desde').value = elegido;
-    if (!$('prov-periodo-hasta').value) $('prov-periodo-hasta').value = elegido;
+
+  // Defaults aplicados sólo la PRIMERA vez que el usuario entra a la
+  // pestaña. Después se respeta lo que el usuario haya elegido. El guard
+  // anterior `if (!sSel.value)` no funcionaba porque tras appendChild el
+  // browser autoselecciona el primer <option> — sSel.value nunca está
+  // vacío. Usamos un flag explícito state.prov.defaultsAplicados.
+  if (!state.prov.defaultsAplicados) {
+    // Default sociedad: "Sin Elche" (4 sociedades — excluye Grupo Hostelero).
+    if (sSel) sSel.value = 'sin_elche';
+    // Default período: mes anterior al actual (Desde = Hasta = ese mes).
+    // Se calcula al vuelo con new Date() — el comportamiento sigue al
+    // calendario real, no al último período cargado. Para no-admin/socio
+    // se eleva al suelo (2026-01) si el mes anterior es menor. Si el
+    // período calculado no existe en la lista disponible (porque aún no
+    // se cargó ese extracto), caemos al último período disponible.
+    if (periodosPermitidos.length > 0) {
+      const hoy = new Date();
+      const prev = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+      let target = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+      if (!rolEsAdmin() && target < FLOOR) target = FLOOR;
+      const ultimo = periodosPermitidos[periodosPermitidos.length - 1];
+      const elegido = periodosPermitidos.includes(target) ? target : ultimo;
+      $('prov-periodo-desde').value = elegido;
+      $('prov-periodo-hasta').value = elegido;
+    }
+    // Default umbral del donut: "Ver todos" (null). El HTML ya marca
+    // <option value="all" selected> pero forzamos para asegurar
+    // consistencia tras reload o navegación por consola.
+    setDonutThreshold('all');
+    state.prov.defaultsAplicados = true;
   }
 }
 
