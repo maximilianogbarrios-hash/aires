@@ -445,6 +445,15 @@ router.get('/proveedores', async (req, res) => {
           continue;
         }
       }
+      // Defense in depth: Raba Buildings es información intra-grupo
+      // sensible. Si una fila quedara mal categorizada (no INTRAGRUPO)
+      // pero el proveedor canónico es Raba, no debe aparecer en el
+      // donut para roles no-admin.
+      if (!esAdminLike(req) && RABA_NOMBRES.has(proveedor)) {
+        totalExcluido += Math.abs(+r.importe);
+        nExcluido++;
+        continue;
+      }
       // Sin filtro por categoría: el donut muestra TODOS los gastos
       // (impuestos, nóminas, alquileres, suministros, etc.) salvo
       // INTRAGRUPO. Los sensibles (NOMINAS_DIRECCION, GASTOS_DIRECCION,
@@ -697,10 +706,16 @@ router.get('/proveedor-evolucion', async (req, res) => {
       const byCat = new Map();  // categoria  -> Map<periodo, total>
       for (const r of rows) {
         if (esIntraGrupo(r.concepto)) continue;
+        // INTRAGRUPO por categoría persistida (Raba Buildings y otros
+        // movimientos clasificados como intra-grupo) se excluye para
+        // todos: nunca debe aparecer en series de proveedor.
+        if (r.categoria === 'INTRAGRUPO') continue;
         const { proveedor: provDerivado, categoria } = normalizarProveedor(r.concepto, r.categoria);
         // Prefer proveedor_normalizado persistido; si no, el derivado.
         const proveedor = r.proveedor_normalizado || provDerivado;
         const cat = categoria || r.categoria;
+        // Defense in depth: Raba Buildings para no-admin → skip silencioso.
+        if (noAdmin && RABA_NOMBRES.has(proveedor)) continue;
         const abs = Math.abs(+r.importe);
         const esSensible = noAdmin && perteneceAGastosDireccion(proveedor, r.categoria, gdOverridesEvol);
 
@@ -801,54 +816,127 @@ router.get('/periodos', async (req, res) => {
 });
 
 // Autocompletado para el campo "Nombre normalizado" del sidebar de
-// reclasificación. Devuelve los proveedor_normalizado únicos ya
-// presentes en ab_movimientos, opcionalmente filtrados por categoría
-// y/o texto. Ordenado por total DESC (los grupos más grandes primero,
-// que son los candidatos más probables de reasignación) y luego por
-// nombre ASC para estabilidad.
+// reclasificación. Devuelve TODOS los grupos canónicos que aparecen
+// en el donut — incluye los proveedor_normalizado persistidos +
+// derivados via reglas DB + normalizarProveedor (la misma pipeline
+// que /proveedores). Antes el endpoint sólo devolvía rows con
+// proveedor_normalizado IS NOT NULL, por eso faltaban grupos virtuales
+// como "Alquileres y Arrendamientos", "Nóminas Personal", "TGSS",
+// "AEAT - Impuestos", "Energía y Gas", etc.
+//
+// Seguridad (P2 — Raba Buildings): para roles no-admin/socio
+// excluímos INTRAGRUPO (que es donde cae 'Raba Buildings') + cualquier
+// match defensivo por nombre. Defense in depth aunque INTRAGRUPO ya
+// se filtra arriba.
+const RABA_NOMBRES = new Set(['Raba Buildings', 'Raba']);
 router.get('/proveedores-normalizados', async (req, res) => {
   try {
     const categoria = req.query.categoria || null;
     const q = (req.query.q || '').trim();
     const limit = Math.min(+req.query.limit || 200, 500);
+    const noAdmin = !esAdminLike(req);
 
-    const where = ['importe < 0', 'proveedor_normalizado IS NOT NULL'];
+    // Traemos todos los gastos (proveedor_normalizado puede ser NULL).
+    // Para no-admin descartamos INTRAGRUPO directo en SQL.
+    const where = ['importe < 0'];
     const vals = [];
-    if (categoria) { where.push(`categoria = $${vals.length + 1}`); vals.push(categoria); }
-    if (q)         { where.push(`proveedor_normalizado ILIKE $${vals.length + 1}`); vals.push('%' + q + '%'); }
-
+    if (categoria)  { where.push(`categoria = $${vals.length + 1}`); vals.push(categoria); }
+    if (noAdmin)    { where.push(`categoria <> 'INTRAGRUPO'`); }
     const rows = await many(
-      `SELECT proveedor_normalizado AS nombre,
-              COUNT(*)::int             AS n,
-              SUM(ABS(importe))::float8 AS total_importe,
-              MAX(categoria)            AS categoria_top
+      `SELECT concepto, categoria, importe::float8 AS importe, proveedor_normalizado
          FROM ab_movimientos
-        WHERE ${where.join(' AND ')}
-        GROUP BY proveedor_normalizado
-        ORDER BY total_importe DESC, nombre ASC
-        LIMIT $${vals.length + 1}`,
-      [...vals, limit]
+        WHERE ${where.join(' AND ')}`,
+      vals
     );
-    // Prepend opción especial "Gastos Dirección" — slice fusionado virtual.
-    // No es un proveedor_normalizado tradicional sino un destino canónico
-    // para mandar conceptos al grupo protegido (categoria=GASTOS_DIRECCION).
-    // Dedupe si ya existe en la lista por reclasificaciones previas.
+    const reglasDb = await loadReglas();
+
+    // Agrupar por proveedor canónico derivado (misma precedencia que
+    // /proveedores): proveedor_normalizado > regla DB > normalizarProveedor().
+    const agg = new Map(); // nombre → { total, n, categoria_top: { cat→count } }
+    for (const r of rows) {
+      // INTRAGRUPO heurístico para no-admin (cubre filas mal categorizadas).
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') {
+        if (noAdmin) continue;
+      }
+      let nombre, cat;
+      if (r.proveedor_normalizado) {
+        nombre = r.proveedor_normalizado; cat = r.categoria;
+      } else {
+        const rule = matchRegla(r.concepto, reglasDb);
+        if (rule) { nombre = rule.proveedor_normalizado; cat = rule.categoria; }
+        else {
+          const n = normalizarProveedor(r.concepto, r.categoria);
+          nombre = n.proveedor; cat = n.categoria;
+        }
+      }
+      // Defensa adicional: nombres sensibles bloqueados para no-admin.
+      if (noAdmin && RABA_NOMBRES.has(nombre)) continue;
+      if (noAdmin && cat === 'INTRAGRUPO') continue;
+      // Filtro por categoría solicitada (post-derivación, porque el
+      // proveedor canónico puede caer en una categoría distinta a la
+      // persistida cuando hay regla DB).
+      if (categoria && cat !== categoria) continue;
+      if (!agg.has(nombre)) agg.set(nombre, { total: 0, n: 0, cats: new Map() });
+      const a = agg.get(nombre);
+      a.total += Math.abs(+r.importe);
+      a.n += 1;
+      a.cats.set(cat, (a.cats.get(cat) || 0) + 1);
+    }
+
+    // Filtro de texto sobre el set agregado.
     const qNorm = q.toLowerCase();
+    let proveedores = [...agg.entries()].map(([nombre, a]) => {
+      let topCat = null, topCnt = 0;
+      for (const [c, n] of a.cats.entries()) if (n > topCnt) { topCnt = n; topCat = c; }
+      return { nombre, n: a.n, total_importe: a.total, categoria_top: topCat };
+    });
+    if (q) proveedores = proveedores.filter((p) => p.nombre.toLowerCase().includes(qNorm));
+
+    // Orden: por total DESC (los grupos más grandes primero, candidatos
+    // más probables de reasignación), desempate alfabético ASC.
+    proveedores.sort((a, b) => b.total_importe - a.total_importe
+      || a.nombre.localeCompare(b.nombre));
+
+    // Cap configurable — default subido a 200 (antes 80 cortaba grupos
+    // legítimos). El frontend puede paginar el render si es necesario.
+    if (proveedores.length > limit) proveedores = proveedores.slice(0, limit);
+
+    // Prepend slice fusionado "Gastos Dirección" como destino canónico
+    // (es virtual — no necesariamente está en agg si todavía no hay
+    // movimientos con ese nombre). Para no-admin también se prepend:
+    // tienen permiso para usarlo como destino de reclasificación.
     const matchesFilter = !qNorm || FUSE_PROVEEDOR.toLowerCase().includes(qNorm);
     const matchesCategoria = !categoria || categoria === 'GASTOS_DIRECCION';
-    let proveedores = rows.filter((r) => r.nombre !== FUSE_PROVEEDOR);
+    proveedores = proveedores.filter((p) => p.nombre !== FUSE_PROVEEDOR);
     if (matchesFilter && matchesCategoria) {
-      const existente = rows.find((r) => r.nombre === FUSE_PROVEEDOR);
+      const ex = agg.get(FUSE_PROVEEDOR);
       proveedores = [
         {
           nombre: FUSE_PROVEEDOR,
-          n: existente?.n || 0,
-          total_importe: existente?.total_importe || 0,
+          n: ex?.n || 0,
+          total_importe: ex?.total || 0,
           categoria_top: 'GASTOS_DIRECCION',
           _es_grupo_fusion: true,
         },
         ...proveedores,
       ];
+    }
+    // Prepend "Proveedores Menores" — también es un bucket virtual del
+    // donut (rollup por threshold). Como destino de reclasificación
+    // raramente se usa, pero mantiene paridad con lo que el user ve
+    // en la leyenda del donut.
+    const PMEN = 'Proveedores Menores';
+    const matchesPmenFilter = !qNorm || PMEN.toLowerCase().includes(qNorm);
+    const matchesPmenCat = !categoria;
+    proveedores = proveedores.filter((p) => p.nombre !== PMEN);
+    if (matchesPmenFilter && matchesPmenCat) {
+      proveedores.push({
+        nombre: PMEN,
+        n: 0,
+        total_importe: 0,
+        categoria_top: 'PROVEEDOR_OTROS',
+        _es_bucket_virtual: true,
+      });
     }
     res.json({ proveedores });
   } catch (e) {
@@ -888,8 +976,13 @@ router.get('/grupo-detalle', async (req, res) => {
     // El slice "Gastos Dirección" no se expande, y tampoco se permite
     // acceder por URL a los proveedores individuales que pertenecen a
     // ese grupo (default por categoría + overrides admin-managed).
+    // Además Raba Buildings (INTRAGRUPO) está bloqueado por nombre y por
+    // categoría como defense in depth.
     if (!esAdminLike(req)) {
       if (grupo === FUSE_PROVEEDOR) {
+        return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
+      }
+      if (RABA_NOMBRES.has(grupo)) {
         return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
       }
       const overrides = await loadGdOverrides();
@@ -897,6 +990,9 @@ router.get('/grupo-detalle', async (req, res) => {
         'SELECT MAX(categoria) AS cat FROM ab_movimientos WHERE proveedor_normalizado = $1',
         [grupo]
       );
+      if (cat?.cat === 'INTRAGRUPO') {
+        return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
+      }
       if (perteneceAGastosDireccion(grupo, cat?.cat, overrides)) {
         return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
       }

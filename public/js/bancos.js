@@ -1267,9 +1267,13 @@ function _rcRenderList(i, q) {
   const rows = cap.map((r) => {
     const nombreEsc = (r.nombre || '').replace(/"/g, '&quot;');
     const esFusion = !!r._es_grupo_fusion;
+    // No mostramos montos en el dropdown — el rol gerente no debe ver
+    // cuánto se gastó con cada proveedor desde aquí. Esa info está en
+    // el donut/tabla principal. Sólo dejamos el badge "slice fusionado"
+    // para distinguir Gastos Dirección del resto.
     const badge = esFusion
       ? '<span style="font-size:9px;font-weight:500;color:#7E22CE;background:#F3E8FF;padding:1px 6px;border-radius:999px;flex-shrink:0">slice fusionado</span>'
-      : `<span style="color:var(--text-2);font-size:10px;flex-shrink:0">${eur(r.total_importe)}</span>`;
+      : '';
     const bg = esFusion ? 'background:#FBF8FF;' : '';
     return `<div class="rc-list-item" data-val="${nombreEsc}"
         onmousedown="event.preventDefault()" onclick="rcPickList(${i}, this.dataset.val)"

@@ -894,3 +894,42 @@ F) Rollback OK.
 regla activa con `forzar_visible=TRUE` siempre se renderiza como slice
 individual en el donut — no cae ni en threshold (count<5 AND total<2000€)
 ni en cap top-N (≤50 grupos).
+
+
+## Seguridad Raba Buildings (2026-05-23)
+
+Raba Buildings es información intra-grupo sensible (alquiler que se paga
+dentro del grupo de sociedades). Antes era visible a roles no-admin en
+el dropdown de reclasificación porque el filtro solo excluía
+`categoria='INTRAGRUPO'` y Raba estaba persistida como `PROVEEDOR_OTROS`
+en `ab_movimientos.categoria`.
+
+**Defense in depth aplicado a los 4 endpoints**:
+
+| Endpoint | Filtro para no-admin |
+|---|---|
+| `/api/v1/bancos/proveedores-normalizados` | SQL `categoria <> 'INTRAGRUPO'` + JS `RABA_NOMBRES.has(nombre)` |
+| `/api/v1/bancos/proveedores` | JS `RABA_NOMBRES.has(proveedor)` post-derivación |
+| `/api/v1/bancos/grupo-detalle?grupo=Raba Buildings` | 403 por nombre + 403 si `MAX(categoria) === 'INTRAGRUPO'` |
+| `/api/v1/bancos/proveedor-evolucion` | skip silencioso de filas con `categoria==='INTRAGRUPO'` o `RABA_NOMBRES.has(proveedor)` |
+
+`RABA_NOMBRES = new Set(['Raba Buildings', 'Raba'])` definido en
+`routes/bancos.js`. Cubre ambos casos: alias corto + nombre largo.
+
+**E2E** (`scripts/utils/e2e-raba-seguridad.js`, ejecutado contra DB de
+producción 2026-05-23):
+
+| Check (rol gerente) | Resultado |
+|---|---|
+| (1) `/proveedores-normalizados` → 500 grupos, Raba presente | `false` ✓ |
+| (2) `/proveedores?periodo=2026-04` → 37 slices, Raba presente | `false` ✓ |
+| (3) `/grupo-detalle?grupo=Raba Buildings` | HTTP 403 ✓ |
+| (4) `/proveedor-evolucion?proveedores=Raba` → series con datos | `false` ✓ |
+
+| Control admin | Resultado |
+|---|---|
+| (1) `/proveedores-normalizados` → Raba presente | `true` ✓ |
+| (3) `/grupo-detalle?grupo=Raba Buildings` | HTTP 200 ✓ |
+
+El control admin confirma que el bloqueo NO es global — admin/socio
+siguen viendo Raba para gestión interna.
