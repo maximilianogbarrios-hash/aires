@@ -61,11 +61,21 @@
     sucursalSort: { col: 'venta_total', dir: -1 },
     promoSort: { col: 'venta_total', dir: -1 },
     camareroSort: { col: 'venta_total', dir: -1 },
-    cache: { productos: null, sucursales: null, promociones: null, diahora: null, camareros: null },
+    cache: { productos: null, sucursales: null, promociones: null, diahora: null, camareros: null, costos: null },
     charts: {},   // Chart.js instances keyed by canvas id (destruir antes de re-crear)
     camarerosAccess: true,    // se vuelve false en el primer 403
     refreshTimer: null,
+    // Estado del tab Costos
+    costosFiltros: { q: '', familia: '', estado: 'all' },
+    costosSort: { col: 'uds_vendidas', dir: -1 },
+    costosPage: 0,
+    costosPageSize: 50,
   };
+
+  // Permiso para editar costos (admin/socio/gerente)
+  function puedeEditarCostos() {
+    return ['admin', 'socio', 'gerente'].includes(vt.role);
+  }
 
   // ─── Boot ──────────────────────────────────────────────────────────
   async function vtInit() {
@@ -102,8 +112,10 @@
   function aplicarAccessControl() {
     const r = vt.role;
     const tabs = document.querySelectorAll('#sect-ventas .vt-tab');
-    let permitidos = ['productos', 'graficos', 'sucursales', 'promociones', 'diahora', 'camareros'];
-    if (r === 'pedidos')  permitidos = ['productos'];
+    let permitidos = ['productos', 'graficos', 'sucursales', 'promociones', 'diahora', 'camareros', 'costos'];
+    // Pedidos: sólo Productos + Costos (sin margen/M.Obra, sólo costo MP).
+    if (r === 'pedidos')  permitidos = ['productos', 'costos'];
+    // Personal: sólo Día y Hora.
     if (r === 'personal') permitidos = ['diahora'];
     // Camareros sólo admin/socio/gerente.
     if (!['admin', 'socio', 'gerente'].includes(r)) {
@@ -357,13 +369,18 @@
 
   function renderKpis(k) {
     const esRolReducido = vt.role === 'pedidos' || vt.role === 'personal';
+    const subMargenReal = k.n_productos_con_costo
+      ? `Margen real · ${k.n_productos_con_costo}/${k.n_productos_total} prods (${k.venta_cubierta > 0 ? pct1(k.venta_cubierta / k.venta_total) : '0%'} venta cubierta)`
+      : 'sin costos cargados';
     const cards = [
       { lbl: 'Venta Total', val: eur0(k.venta_total), cls: '' },
       { lbl: 'Venta GLOVO', val: eur0(k.venta_glovo), sub: k.venta_total > 0 ? pct1(k.venta_glovo / k.venta_total) + ' del total' : '', cls: 'vt-kpi-glovo' },
       { lbl: 'Comisión GLOVO', val: eur0(k.comision_glovo), sub: pct2(k.pct_comision_glovo), cls: '' },
       { lbl: 'Neto GLOVO', val: eur0(k.neto_glovo), cls: 'vt-kpi-glovo' },
-      { lbl: 'Margen Bruto', val: eur0(k.margen_bruto_total), sub: k.mostrar_aviso_anomalas ? '⚠️ ver nota' : '', cls: 'vt-kpi-margen' },
-      { lbl: '% Margen medio', val: pct2(k.pct_margen_medio), cls: 'vt-kpi-margen' },
+      { lbl: 'Margen Bruto TPV', val: eur0(k.margen_bruto_total), sub: k.mostrar_aviso_anomalas ? '⚠️ ver nota (TPV)' : '', cls: 'vt-kpi-margen' },
+      { lbl: '% Margen TPV', val: pct2(k.pct_margen_medio), cls: 'vt-kpi-margen' },
+      { lbl: 'Margen Real', val: eur0(k.margen_real), sub: subMargenReal, cls: 'vt-kpi-real' },
+      { lbl: '% Margen Real', val: pct2(k.pct_margen_real), sub: k.n_productos_con_costo ? `${k.n_productos_con_costo} productos con costo` : '', cls: 'vt-kpi-real' },
     ];
     // En pedidos/personal escondemos cards de €/margen.
     const visibles = esRolReducido ? cards.filter((c) => c.lbl === 'Venta Total') : cards;
@@ -410,6 +427,7 @@
     if (name === 'promociones') return loadPromociones();
     if (name === 'diahora')     return loadDiaHora();
     if (name === 'camareros')   return loadCamareros();
+    if (name === 'costos')      return loadCostos();
   }
 
   function _paneSkel(id) {
@@ -911,6 +929,331 @@
     else { s.col = col; s.dir = (col === 'usuario' || col === 'local') ? 1 : -1; }
     renderCamareros(vt.cache.camareros);
   };
+
+  // ─── Costos ────────────────────────────────────────────────────────
+  async function loadCostos() {
+    _paneSkel('vt-pane-costos');
+    try {
+      const f = vt.costosFiltros;
+      const p = new URLSearchParams();
+      if (f.q) p.set('q', f.q);
+      if (f.familia) p.set('familia', f.familia);
+      if (f.estado && f.estado !== 'all') p.set('estado', f.estado);
+      const j = await api('/api/v1/ventas/costos?' + p.toString());
+      vt.cache.costos = j;
+      renderCostos(j);
+    } catch (e) { _paneError('vt-pane-costos', e); }
+  }
+
+  function renderCostos(j) {
+    const reducido = vt.role === 'pedidos';
+    const puedeEditar = puedeEditarCostos();
+    const f = vt.costosFiltros;
+    let rows = j.productos || [];
+    const { col, dir } = vt.costosSort;
+    rows = [...rows].sort((a, b) => {
+      const av = a[col], bv = b[col];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1; if (bv == null) return -1;
+      if (typeof av === 'string') return dir * av.localeCompare(bv);
+      return dir * (av < bv ? -1 : av > bv ? 1 : 0);
+    });
+    const total = rows.length;
+    const pages = Math.max(1, Math.ceil(total / vt.costosPageSize));
+    if (vt.costosPage >= pages) vt.costosPage = 0;
+    const pageRows = rows.slice(vt.costosPage * vt.costosPageSize, (vt.costosPage + 1) * vt.costosPageSize);
+    const arrow = (c) => col === c ? (dir < 0 ? ' ↓' : ' ↑') : '';
+
+    // Familias únicas para el filtro
+    const familiasUnicas = [...new Set((j.productos || []).map((r) => r.familia).filter(Boolean))].sort();
+    const stats = j.stats || { total: 0, con_costo: 0, sin_costo: 0, pct_cubierto: 0 };
+    const covCls = stats.pct_cubierto >= 0.7 ? 'good' : stats.pct_cubierto >= 0.3 ? '' : 'warn';
+
+    $('vt-pane-costos').innerHTML = `
+      <div class="vt-card">
+        <div class="vt-card-head">
+          <div>
+            <span class="vt-card-title">💰 Costos por producto</span>
+            <span class="vt-cov-pill ${covCls}" style="margin-left:8px">
+              ${stats.con_costo} / ${stats.total} con costo · ${pct1(stats.pct_cubierto)} cubierto
+            </span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input id="vt-cs-q" class="vt-search" style="max-width:200px" placeholder="🔍 buscar producto…" value="${esc(f.q)}">
+            <select id="vt-cs-fam" class="vt-search" style="max-width:180px">
+              <option value="">Todas las familias</option>
+              ${familiasUnicas.map((fa) => `<option value="${esc(fa)}" ${fa === f.familia ? 'selected' : ''}>${esc(fa)}</option>`).join('')}
+            </select>
+            <div class="vt-tog-row">
+              <button class="vt-tog ${f.estado === 'all' ? 'active' : ''}" data-est="all">Todos</button>
+              <button class="vt-tog ${f.estado === 'con-costo' ? 'active' : ''}" data-est="con-costo">Con costo</button>
+              <button class="vt-tog ${f.estado === 'sin-costo' ? 'active' : ''}" data-est="sin-costo">Sin costo</button>
+            </div>
+          </div>
+        </div>
+        <div class="vt-stat-bar">
+          <span><strong>${num0(stats.total)}</strong> productos vendidos</span>
+          <span style="color:var(--vt-green)"><strong>${num0(stats.con_costo)}</strong> con costo</span>
+          <span style="color:var(--vt-red)"><strong>${num0(stats.sin_costo)}</strong> sin costo</span>
+          <span>cobertura<span class="vt-pct-bar-bg"><i style="width:${(stats.pct_cubierto * 100).toFixed(0)}%"></i></span> <strong>${pct1(stats.pct_cubierto)}</strong></span>
+        </div>
+        <div class="vt-tbl-wrap">
+          <table class="vt-tbl">
+            <thead><tr>
+              <th></th>
+              <th onclick="vtSortCostos('producto')">Producto${arrow('producto')}</th>
+              <th onclick="vtSortCostos('familia')">Familia${arrow('familia')}</th>
+              <th class="r" onclick="vtSortCostos('uds_vendidas')">Uds.${arrow('uds_vendidas')}</th>
+              <th class="r" onclick="vtSortCostos('costo_mp')">Costo MP${arrow('costo_mp')}</th>
+              ${reducido ? '' : `
+              <th class="r" onclick="vtSortCostos('mano_obra')">M.Obra${arrow('mano_obra')}</th>
+              <th class="r" onclick="vtSortCostos('costo_total')">Costo Total${arrow('costo_total')}</th>
+              <th class="r" onclick="vtSortCostos('margen_pvp')">Margen PVP*${arrow('margen_pvp')}</th>`}
+              <th></th>
+            </tr></thead>
+            <tbody>
+              ${pageRows.length === 0 ? `<tr><td colspan="${reducido ? 6 : 9}" style="text-align:center;color:var(--vt-muted);padding:14px">Sin resultados</td></tr>`
+                : pageRows.map((r) => `
+                <tr>
+                  <td><span class="vt-status-pill ${r.tiene_costo ? 'ok' : 'no'}"></span></td>
+                  <td><strong>${esc(r.producto)}</strong></td>
+                  <td style="color:var(--vt-muted)">${esc(r.familia || '—')}</td>
+                  <td class="r">${num0(r.uds_vendidas)}</td>
+                  <td class="r">${r.costo_mp != null ? eur2(r.costo_mp) : '<span style="color:var(--vt-red)">—</span>'}</td>
+                  ${reducido ? '' : `
+                  <td class="r" style="color:var(--vt-muted)">${r.mano_obra != null ? eur2(r.mano_obra) : '—'}</td>
+                  <td class="r"><strong>${r.costo_total != null ? eur2(r.costo_total) : '<span style="color:var(--vt-red)">—</span>'}</strong></td>
+                  <td class="r" style="color:${_margenColor(r.margen_pvp)}">${r.margen_pvp != null ? pct1(r.margen_pvp) : '—'}</td>`}
+                  <td style="text-align:right;white-space:nowrap">
+                    ${r.tiene_costo
+                      ? `<button class="vt-btn-link" onclick="vtVerReceta('${esc(r.producto).replace(/'/g, '&#39;')}')">📋 receta</button>${puedeEditar ? `<button class="vt-btn-link" onclick="vtEditarCosto('${esc(r.producto).replace(/'/g, '&#39;')}')">✏️ editar</button>` : ''}`
+                      : (puedeEditar ? `<button class="vt-btn-link danger" onclick="vtCargarCosto('${esc(r.producto).replace(/'/g, '&#39;')}','${esc(r.familia || '')}')">+ cargar costo</button>` : '<span style="color:var(--vt-muted);font-size:10px">sin costo</span>')
+                    }
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${reducido ? '' : '<p style="font-size:10px;color:var(--vt-muted);margin-top:8px">*Margen sobre precio medio de venta real en el período (cruzando con TPV).</p>'}
+        <div class="vt-paginator">
+          <span>Página ${vt.costosPage + 1} / ${pages} · ${num0(pageRows.length)} de ${num0(total)}</span>
+          <div>
+            <button id="vt-cs-prev" ${vt.costosPage === 0 ? 'disabled' : ''}>← Anterior</button>
+            <button id="vt-cs-next" ${vt.costosPage >= pages - 1 ? 'disabled' : ''}>Siguiente →</button>
+          </div>
+        </div>
+      </div>`;
+    // Wire
+    const $q = $('vt-cs-q');
+    if ($q) {
+      $q.oninput = (() => {
+        let t;
+        return () => { clearTimeout(t); t = setTimeout(() => { f.q = $q.value.trim(); vt.costosPage = 0; loadCostos(); }, 300); };
+      })();
+      setTimeout(() => { $q.focus(); $q.setSelectionRange($q.value.length, $q.value.length); }, 0);
+    }
+    const $fam = $('vt-cs-fam');
+    if ($fam) $fam.onchange = () => { f.familia = $fam.value; vt.costosPage = 0; loadCostos(); };
+    document.querySelectorAll('#vt-pane-costos .vt-tog[data-est]').forEach((b) => b.onclick = () => {
+      f.estado = b.dataset.est; vt.costosPage = 0; loadCostos();
+    });
+    $('vt-cs-prev').onclick = () => { vt.costosPage = Math.max(0, vt.costosPage - 1); renderCostos(j); };
+    $('vt-cs-next').onclick = () => { vt.costosPage = Math.min(pages - 1, vt.costosPage + 1); renderCostos(j); };
+  }
+
+  window.vtSortCostos = function (col) {
+    const s = vt.costosSort;
+    if (s.col === col) s.dir = -s.dir;
+    else { s.col = col; s.dir = (col === 'producto' || col === 'familia') ? 1 : -1; }
+    renderCostos(vt.cache.costos);
+  };
+
+  // ─── Slide-in: Ver Receta ──────────────────────────────────────────
+  window.vtVerReceta = async function (producto) {
+    if (!producto) return;
+    const panel = $('vt-receta');
+    const overlay = $('vt-receta-overlay');
+    panel.innerHTML = '<div style="padding:18px"><div class="vt-skel" style="height:24px;width:60%"></div><div class="vt-skel"></div><div class="vt-skel"></div></div>';
+    overlay.style.display = 'block'; panel.style.display = 'block';
+    try {
+      const j = await api('/api/v1/ventas/costos/' + encodeURIComponent(producto));
+      _renderRecetaPanel(j);
+    } catch (e) {
+      panel.innerHTML = `<p style="color:#e63946;font-size:12px">Error: ${esc(e.message)}</p>`;
+    }
+  };
+  window.vtCloseReceta = function () {
+    $('vt-receta').style.display = 'none';
+    $('vt-receta-overlay').style.display = 'none';
+  };
+
+  function _renderRecetaPanel(j) {
+    const reducido = vt.role === 'pedidos';
+    const c = j.costo;
+    const v = j.ventas || {};
+    const recetas = j.recetas || [];
+    const pvp = v.pvp_medio;
+    const margenBruto = (pvp != null && c?.costo_total != null) ? pvp - +c.costo_total : null;
+    const pctMargen = (margenBruto != null && pvp > 0) ? margenBruto / pvp : null;
+    const updated = c?.updated_at ? new Date(c.updated_at).toLocaleDateString('es-ES') : '—';
+    $('vt-receta').innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+        <div>
+          <p style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--vt-muted);margin-bottom:3px">${esc(c?.familia || '—')}</p>
+          <h2 style="font-size:18px;font-weight:800">${esc(j.producto)}</h2>
+        </div>
+        <button class="vt-btn-secondary" onclick="vtCloseReceta()">×</button>
+      </div>
+      <div style="margin-bottom:18px">
+        <p style="font-size:10px;color:var(--vt-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;font-weight:700">Ingredientes</p>
+        ${recetas.length === 0 ? `<p style="font-size:11px;color:var(--vt-muted);font-style:italic">Sin receta detallada cargada. ${puedeEditarCostos() ? 'Podés editarlo desde el modal.' : ''}</p>` : `
+          <div style="background:#242429;border-radius:8px;padding:10px 12px">
+            <div class="vt-receta-line" style="font-weight:700;color:var(--vt-muted);border-bottom:1px solid #2e2e35">
+              <span>Ingrediente</span><span class="r">€/kg</span><span class="r">Cant g</span><span class="r">Subtotal</span>
+            </div>
+            ${recetas.map((r) => `<div class="vt-receta-line">
+              <span>${esc(r.ingrediente)}</span>
+              <span class="r">${r.costo_unitario != null ? eur2(r.costo_unitario) : '—'}</span>
+              <span class="r">${r.cantidad_receta != null ? num2(r.cantidad_receta) : '—'}</span>
+              <span class="r" style="color:var(--vt-amber)">${r.subtotal != null ? eur2(r.subtotal) : '—'}</span>
+            </div>`).join('')}
+          </div>`}
+      </div>
+      <div style="background:#242429;border-radius:8px;padding:12px 14px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--vt-muted);padding:3px 0">
+          <span>Costo MP:</span><strong style="color:var(--vt-text)">${c?.costo_mp != null ? eur2(c.costo_mp) : '—'}</strong>
+        </div>
+        ${reducido ? '' : `
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--vt-muted);padding:3px 0">
+          <span>Mano de obra:</span><strong style="color:var(--vt-text)">${c?.mano_obra != null ? eur2(c.mano_obra) : '—'}</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--vt-muted);padding:3px 0">
+          <span>Fritura/Energía:</span><strong style="color:var(--vt-text)">${c?.costo_fritura != null ? eur2(c.costo_fritura) : '—'}</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;border-top:1px solid #2e2e35;padding-top:8px;margin-top:5px">
+          <span>COSTO TOTAL:</span><span style="color:var(--vt-amber)">${c?.costo_total != null ? eur2(c.costo_total) : '—'}</span>
+        </div>`}
+      </div>
+      ${reducido ? '' : `
+      <div style="background:#242429;border-radius:8px;padding:12px 14px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--vt-muted);padding:3px 0">
+          <span>Precio medio venta:</span><strong style="color:var(--vt-text)">${eur2(pvp)}</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--vt-muted);padding:3px 0">
+          <span>Margen bruto:</span><strong style="color:${margenBruto != null ? _margenColor(pctMargen) : 'var(--vt-text)'}">${eur2(margenBruto)}</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;border-top:1px solid #2e2e35;padding-top:8px;margin-top:5px">
+          <span>% Margen:</span><span style="color:${_margenColor(pctMargen)}">${pct1(pctMargen)}</span>
+        </div>
+      </div>`}
+      <p style="font-size:10px;color:var(--vt-muted);margin-bottom:14px">Última actualización: ${updated}${c?.actualizado_por_email ? ` · ${esc(c.actualizado_por_email)}` : ''}${v.uds_vendidas ? ` · ${num0(v.uds_vendidas)} uds vendidas` : ''}</p>
+      ${puedeEditarCostos() ? `<button class="vt-btn-primary" style="width:100%" onclick="vtEditarCosto('${esc(j.producto).replace(/'/g, "&#39;")}')">✏️ Editar costo</button>` : ''}
+    `;
+  }
+
+  // ─── Modal: Cargar / Editar costo ──────────────────────────────────
+  window.vtCargarCosto = function (producto, familia) {
+    _openModalCosto({ producto, familia, esNuevo: true });
+  };
+  window.vtEditarCosto = async function (producto) {
+    try {
+      const j = await api('/api/v1/ventas/costos/' + encodeURIComponent(producto));
+      _openModalCosto({ producto, familia: j.costo?.familia, costo: j.costo, esNuevo: false });
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  };
+  window.vtCloseModal = function () {
+    $('vt-modal').style.display = 'none';
+    $('vt-modal-overlay').style.display = 'none';
+  };
+
+  function _openModalCosto(ctx) {
+    const c = ctx.costo || {};
+    const overlay = $('vt-modal-overlay'); const modal = $('vt-modal');
+    overlay.style.display = 'block'; modal.style.display = 'block';
+    modal.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+        <div>
+          <p style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--vt-muted);margin-bottom:3px">${ctx.esNuevo ? 'Cargar costo' : 'Editar costo'}</p>
+          <h2 style="font-size:17px;font-weight:800">${esc(ctx.producto)}</h2>
+        </div>
+        <button class="vt-btn-secondary" onclick="vtCloseModal()">×</button>
+      </div>
+      <div class="vt-form-row">
+        <label>Familia</label>
+        <input id="vt-mod-fam" type="text" value="${esc(ctx.familia || c.familia || '')}">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:11px">
+        <div class="vt-form-row" style="margin-bottom:0">
+          <label>Costo MP (€)</label>
+          <input id="vt-mod-mp" type="number" step="0.0001" value="${c.costo_mp != null ? c.costo_mp : ''}">
+        </div>
+        <div class="vt-form-row" style="margin-bottom:0">
+          <label>M. Obra (€)</label>
+          <input id="vt-mod-mo" type="number" step="0.01" value="${c.mano_obra != null ? c.mano_obra : '0.65'}">
+        </div>
+        <div class="vt-form-row" style="margin-bottom:0">
+          <label>Fritura (€)</label>
+          <input id="vt-mod-fr" type="number" step="0.01" value="${c.costo_fritura != null ? c.costo_fritura : '0'}">
+        </div>
+      </div>
+      <div class="vt-form-row">
+        <label>Costo Total (€) <span style="color:var(--vt-muted);text-transform:none;letter-spacing:0">— autocalculado, podés sobrescribir</span></label>
+        <input id="vt-mod-total" type="number" step="0.0001" value="${c.costo_total != null ? c.costo_total : ''}">
+      </div>
+      <div class="vt-form-row">
+        <label>Notas</label>
+        <textarea id="vt-mod-notas" rows="2">${esc(c.notas || '')}</textarea>
+      </div>
+      <p id="vt-mod-err" style="font-size:11px;color:#e63946;min-height:1em;margin-bottom:8px"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="vt-btn-secondary" onclick="vtCloseModal()">Cancelar</button>
+        <button class="vt-btn-primary" id="vt-mod-save">Guardar</button>
+      </div>
+    `;
+    // Auto-calc costo_total cuando cambian los componentes (si total está vacío o coincide con la suma anterior).
+    const upd = () => {
+      const mp = parseFloat($('vt-mod-mp').value) || 0;
+      const mo = parseFloat($('vt-mod-mo').value) || 0;
+      const fr = parseFloat($('vt-mod-fr').value) || 0;
+      $('vt-mod-total').value = (mp + mo + fr).toFixed(4);
+    };
+    ['vt-mod-mp', 'vt-mod-mo', 'vt-mod-fr'].forEach((id) => { const el = $(id); if (el) el.oninput = upd; });
+    $('vt-mod-save').onclick = async () => {
+      const body = {
+        familia: $('vt-mod-fam').value.trim() || null,
+        costo_mp: parseFloat($('vt-mod-mp').value) || null,
+        mano_obra: parseFloat($('vt-mod-mo').value) || 0,
+        costo_fritura: parseFloat($('vt-mod-fr').value) || 0,
+        costo_total: parseFloat($('vt-mod-total').value) || null,
+        notas: $('vt-mod-notas').value.trim() || null,
+      };
+      if (body.costo_mp == null && body.costo_total == null) {
+        $('vt-mod-err').textContent = 'Cargá al menos el costo MP o el costo total.'; return;
+      }
+      try {
+        const r = await fetch('/api/v1/ventas/costos/' + encodeURIComponent(ctx.producto), {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const t = await r.text().catch(() => '');
+          $('vt-mod-err').textContent = `Error ${r.status}: ${t || 'no se pudo guardar'}`;
+          return;
+        }
+        vtCloseModal();
+        vt.cache.costos = null;
+        await loadCostos();
+        // Refrescamos KPIs ya que cambió la cobertura.
+        loadKpis();
+      } catch (e) {
+        $('vt-mod-err').textContent = 'Error: ' + e.message;
+      }
+    };
+  }
 
   // Expose entry point
   window.vtInit = vtInit;

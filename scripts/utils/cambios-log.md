@@ -1363,3 +1363,93 @@ Margen medio. Banner amber con aviso si hay líneas con
   El script `scripts/import-ventas-tpv.js` ya cubre el camino CLI;
   falta el wrapper UI con multer route + barra de progreso.
 - Mobile hamburger fancy (hoy es columna stacked).
+
+## Módulo Ventas — tab Costos con recetas y costos reales (2026-05-24)
+
+Nueva tab "💰 Costos" en el módulo Ventas para gestionar costos de
+producto (MP + mano obra + fritura + receta opcional). El margen real
+del dashboard ahora se calcula con estos costos (no con el campo
+`margen` del TPV que tiene errores en filas de promo 2x1).
+
+**Cambios DB** (migration 18 — `ventas_costos`):
+- `ab_ventas_costos` — 1 fila por producto (UNIQUE), con costo_mp,
+  mano_obra (default 0,65 €), costo_fritura (default 0), costo_total,
+  notas, audit (`actualizado_por` FK `ab_users(id)`).
+- `ab_ventas_recetas` — N filas por producto, FK `costo_id` ON DELETE
+  CASCADE. Campos: ingrediente, costo_unitario, formato, rendimiento,
+  costo_por_gr, cantidad_receta, subtotal, orden.
+
+**Seed inicial** (`scripts/import-costos-tpv.js`):
+43 productos con valores entregados por operaciones. Upsert por
+nombre (idempotente). De los 43 cargados, 17 hacen match contra
+`ab_ventas_tpv.producto` en case-insensitive trim (el resto son
+nombres ligeramente distintos que la admin puede ajustar con el botón
+"+ cargar costo" en cada fila).
+
+**Permiso nuevo** (`lib/roles.js`):
+- `ventas_costos_edit`: admin, socio, gerente. Pedidos puede ver pero
+  no editar. Personal sin acceso al tab.
+
+**Endpoints nuevos** (`routes/ventas.js`):
+- `GET /costos` — lista productos vendidos en TPV con LEFT JOIN al
+  costo cargado. Filtros: `q` (substring), `familia`, `estado`
+  (all|con-costo|sin-costo). Incluye `pvp_medio`, `margen_pvp`
+  (calculado contra el precio medio real del TPV) y `tiene_costo`.
+  Devuelve `stats { total, con_costo, sin_costo, pct_cubierto }`.
+- `GET /costos/:producto` — detalle: costo + recetas + ventas
+  agregadas (`uds_vendidas`, `venta_total`, `pvp_medio`).
+- `PUT /costos/:producto` — upsert. Si `costo_total` viene vacío, se
+  deriva de `mp + mo + fritura`. Audit con `actualizado_por`.
+  Requiere `ventas_costos_edit`.
+- `POST /costos/:producto/receta` — replace-all de las líneas de
+  receta (delete + insert dentro de un loop). Calcula
+  `costo_por_gr` y `subtotal` si no vienen explícitos. Requiere
+  `ventas_costos_edit`.
+
+**KPIs extendidos** (`/kpis`): suma `margen_real`, `venta_cubierta`,
+`pct_margen_real`, `n_productos_con_costo`, `n_productos_total`.
+`margen_real = Σ (pvp_real - costo_total) × cantidad` sólo sobre
+productos con costo cargado. La cobertura se muestra como sub-label
+del KPI.
+
+**Frontend** (`public/js/ventas.js`):
+- Tab "💰 Costos" después de Camareros. Tabla paginada (50/pág),
+  buscador (debounce 300ms), filtro familia, toggle estado (Todos /
+  Con costo / Sin costo). Stat bar con barra de % cobertura.
+  Columnas: status pill (🟢/🔴) · Producto · Familia · Uds · Costo
+  MP · M.Obra · Costo Total · Margen PVP* · acciones.
+  Roles `pedidos` ven sólo Producto/Familia/Uds/Costo MP (sin
+  M.Obra ni margen) y sin botones de edición.
+- Slide-in panel "Ver receta" — abre desde 📋 receta, muestra
+  ingredientes con su € y subtotal, suma de costos (MP / M.Obra /
+  Fritura / TOTAL) y comparativa con PVP medio (margen € + %).
+- Modal "Editar / Cargar costo" — admin/socio/gerente. Costo total
+  auto-calcula al editar componentes (sobrescribible). PUT sincróno
+  cierra el modal y refresca tabla + KPIs.
+- KPIs: ahora 8 cards en grid 4×2 (eran 6 en 3×2). Agrega "Margen
+  Real" y "% Margen Real" en violeta (`var(--vt-purple)`) con
+  sub-label de cobertura. Mantiene "Margen Bruto TPV" para
+  contraste mientras se completa la cobertura.
+
+**Access control actualizado**:
+- admin/socio/gerente: todas las tabs + editar costos.
+- pedidos: Productos + Costos (sólo Costo MP, sin margen ni editar).
+- personal: sólo Día y Hora (sin Costos).
+
+**E2E verificado**:
+
+```
+GET /costos               → 396 productos · 17 con costo · 4,3% cobertura
+GET /costos/Wilson Burger → costo OK · 0 recetas · ventas: 12.412 uds · pvp €12,68
+KPIs:
+  venta_total: 1 547 888 €
+  margen_bruto_total (TPV, c/ errores): -816 414 € · -53,2%
+  margen_real (costos cargados): 621 904 € · 66,1% (17 prods · 941 538 € venta cubierta)
+PUT admin   ⇒ 200 OK
+PUT pedidos ⇒ 403 (sin perm ventas_costos_edit)
+POST receta ⇒ 200 OK · 2 líneas persistidas con costo_por_gr y subtotal auto-calculados
+```
+
+A medida que admin/gerente carguen costos para más productos, el
+margen real se vuelve más representativo (hoy cubre el 60,8% de la
+venta total — con 17 productos hits sobre 396 SKUs únicos).

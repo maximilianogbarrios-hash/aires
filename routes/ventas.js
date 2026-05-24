@@ -21,7 +21,7 @@
 // para los roles autorizados.
 
 const express = require('express');
-const { many, one } = require('../lib/db');
+const { many, one, query } = require('../lib/db');
 const { requireAuth, requirePerm } = require('../lib/auth');
 
 const router = express.Router();
