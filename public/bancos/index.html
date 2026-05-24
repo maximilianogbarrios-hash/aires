@@ -222,6 +222,13 @@
       </div>
     </div>
     <p id="prov-donut-hint" style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Proveedores por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down · Click en el nombre de cualquier grupo de la leyenda → panel de detalle con reclasificación.</p>
+    <!-- Contador de selección acumulada (oculto hasta que se marque la 1ra fila) -->
+    <div id="prov-sel-bar" style="display:none;margin-bottom:.6rem;padding:8px 12px;background:#2D1B5E;border:1px solid #7C3AED;border-radius:8px;align-items:center;gap:10px;font-size:12px;flex-wrap:wrap" role="status" aria-live="polite">
+      <span style="font-weight:500;color:#E9D5FF">✓ <span id="prov-sel-count">0</span> seleccionado<span id="prov-sel-plural">s</span></span>
+      <span style="color:#DDD6FE">— <strong id="prov-sel-pct">0,00%</strong> de la torta</span>
+      <span style="color:#A78BFA;font-size:11px">(<span id="prov-sel-eur">0 €</span>)</span>
+      <button onclick="clearProvSelection()" style="margin-left:auto;padding:3px 10px;border:.5px solid #7C3AED;border-radius:5px;background:transparent;color:#E9D5FF;cursor:pointer;font-size:11px">× Limpiar</button>
+    </div>
     <div style="display:grid;grid-template-columns:320px 1fr;gap:1.5rem;align-items:center">
       <div style="position:relative;height:300px"><canvas id="prov-donut"></canvas></div>
       <div id="prov-legend" style="display:grid;grid-template-columns:1fr;gap:4px;max-height:300px;overflow-y:auto"></div>
@@ -273,6 +280,7 @@
     </div>
     <div style="overflow-x:auto"><table>
       <thead><tr>
+        <th style="width:28px" title="Selección acumulada — marcá filas para sumar sus % de gasto"></th>
         <th>#</th>
         <th onclick="sortProvTabla('proveedor')">Proveedor<span id="srt-prov-proveedor"> ⇕</span></th>
         <th onclick="sortProvTabla('categoria')">Categoría<span id="srt-prov-categoria"> ⇕</span></th>

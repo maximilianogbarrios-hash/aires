@@ -6,6 +6,16 @@ const eur2 = (v) => v == null ? '—' : new Intl.NumberFormat('es-ES', { style:'
 const pct = (v) => v == null ? '—' : `${(v*100).toFixed(3).replace('.',',')}%`;
 const clrG = (v) => v >= 0 ? 'var(--text-success)' : 'var(--text-danger)';
 
+// Helper para atenuar un color hex (#RRGGBB) aplicando alpha → rgba.
+// Usado por renderProvDonut() cuando hay selección parcial: los slices
+// NO seleccionados se ven con menos opacidad para destacar los marcados.
+function _hexFade(hex, alpha) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${alpha})`;
+}
+
 const state = {
   sociedades: [], direcciones: {}, periodos: [],
   current_sociedad: null, current_periodo: null,
@@ -17,6 +27,7 @@ const state = {
     donutThreshold: null,                          // % mínimo de participación: 0.10|0.05|0.01|0.005|null (Ver todos). Default: Ver todos.
     donutDrillOpen: false,                         // drill-down "Otros" abierto
     donutDrillRows: null,                          // filas que cayeron bajo el umbral
+    selected: new Set(),                           // set de proveedor seleccionados para el contador acumulado
   },
   user: null,
 };
@@ -446,10 +457,17 @@ async function loadProvRanking() {
   // Defensa adicional: si por cualquier ruta el sort se hubiera perdido,
   // re-inicializarlo a su default.
   if (!state.prov.sort) state.prov.sort = { col: 'total_importe', dir: -1 };
+  // Reset de la selección acumulada al cambiar filtros del backend
+  // (sociedad, período): los % cambian, así que cualquier selección
+  // previa pasaría a representar % distintos sin que el usuario lo
+  // note. Más limpio resetear y empezar de cero.
+  if (!state.prov.selected) state.prov.selected = new Set();
+  state.prov.selected.clear();
   aplicarVistaSegunRol();
   renderProvKpis();
   renderProvDonut();
   renderProvTabla();
+  renderProvSelBar();
 }
 
 // Exposición pública del nombre que usa el HTML.
@@ -512,9 +530,23 @@ function renderProvDonut() {
   }
 
   const colors = labels.map((_, i) => COLORS_CAT[i % COLORS_CAT.length]);
+  // Highlight: slices cuyo label coincide con un proveedor seleccionado
+  // ganan un borde violeta brillante grueso. El resto mantiene el borde
+  // default (var(--bg-primary), thin) para separar slices.
+  const sel = state.prov.selected || new Set();
+  const ACCENT = '#A78BFA';
+  const borderColors = labels.map((l) => sel.has(l) ? ACCENT : 'rgba(0,0,0,0)');
+  const borderWidths = labels.map((l) => sel.has(l) ? 4 : 2);
+  // Bajamos la opacidad de los no-seleccionados para destacar los marcados.
+  // Cuando no hay selección, todos los slices se ven con color pleno.
+  const bg = sel.size === 0
+    ? colors
+    : colors.map((c, i) => sel.has(labels[i]) ? c : _hexFade(c, 0.35));
   chProvDonut.data.labels = labels;
   chProvDonut.data.datasets[0].data = values;
-  chProvDonut.data.datasets[0].backgroundColor = colors;
+  chProvDonut.data.datasets[0].backgroundColor = bg;
+  chProvDonut.data.datasets[0].borderColor = borderColors;
+  chProvDonut.data.datasets[0].borderWidth = borderWidths;
   chProvDonut._ntx = counts;
   chProvDonut.update();
 
@@ -662,10 +694,16 @@ function renderProvTabla() {
     thExtra.style.display = operativo ? '' : 'none';
   }
 
+  const sel = state.prov.selected || new Set();
   $('tb-proveedores').innerHTML = rows.map((p, i) => {
     const catTxt = p.categoria || '';
     const catChip = `<span class="cat-chip" onclick="filterByCategoria('${catTxt.replace(/'/g, "&#39;")}')" style="font-size:11px;color:var(--text-2);cursor:pointer;text-decoration:underline dotted" title="Filtrar por esta categoría">${(catTxt || '').replace('PROVEEDOR_', '')}</span>`;
-    const base = `<td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
+    const provEsc = p.proveedor.replace(/"/g, '&quot;');
+    const checked = sel.has(p.proveedor) ? ' checked' : '';
+    const rowBg = sel.has(p.proveedor) ? ' style="background:rgba(124,58,237,.08)"' : '';
+    const check = `<td style="text-align:center"><input type="checkbox" data-prov="${provEsc}"${checked} onchange="toggleProvSelection(this.dataset.prov, this.checked)" onclick="event.stopPropagation()" title="Sumar al contador acumulado" style="cursor:pointer"></td>`;
+    const base = `${check}
+      <td style="font-size:11px;color:var(--text-2)">${i + 1}</td>
       <td style="font-weight:500;font-size:12px">${p.proveedor}</td>
       <td>${catChip}</td>
       <td style="text-align:right;color:#dc2626">${eur2(p.total_importe)}</td>
@@ -673,12 +711,64 @@ function renderProvTabla() {
       <td style="text-align:right">${p.num_transacciones}</td>`;
     if (operativo) {
       const last = (p.ultimo_pedido || '').slice(0, 10);
-      return `<tr>${base}
+      return `<tr${rowBg}>${base}
         <td style="text-align:right;font-size:11px;color:var(--text-2)">${p.num_pedidos || 0}${last ? ' · ' + last : ''}</td>
       </tr>`;
     }
-    return `<tr>${base}<td></td></tr>`;
+    return `<tr${rowBg}>${base}<td></td></tr>`;
   }).join('');
+}
+
+// ─── Selección acumulada de % en la tabla ─────────────────────────────
+// El usuario marca filas con la checkbox al inicio; el bar arriba del
+// donut muestra suma de % + €. Los slices del donut con label match
+// se resaltan con un borde brillante. Se resetea al cambiar filtros
+// del backend (sociedad/periodo) — ver loadProvRanking.
+function toggleProvSelection(proveedor, checked) {
+  if (!proveedor) return;
+  if (!state.prov.selected) state.prov.selected = new Set();
+  if (checked) state.prov.selected.add(proveedor);
+  else state.prov.selected.delete(proveedor);
+  renderProvSelBar();
+  renderProvDonut();
+  // Toggle del background de la fila sin re-renderizar toda la tabla
+  // (más fluido al hacer clicks rápidos).
+  const tr = document.querySelector(`#tb-proveedores input[data-prov="${proveedor.replace(/"/g, '&quot;')}"]`)?.closest('tr');
+  if (tr) tr.style.background = checked ? 'rgba(124,58,237,.08)' : '';
+}
+
+function clearProvSelection() {
+  if (!state.prov.selected || !state.prov.selected.size) return;
+  state.prov.selected.clear();
+  renderProvSelBar();
+  renderProvDonut();
+  // Desmarcar todos los checkboxes + quitar background sin re-render.
+  document.querySelectorAll('#tb-proveedores input[type=checkbox]').forEach((cb) => { cb.checked = false; });
+  document.querySelectorAll('#tb-proveedores tr').forEach((tr) => { tr.style.background = ''; });
+}
+
+function renderProvSelBar() {
+  const bar = $('prov-sel-bar');
+  if (!bar) return;
+  const sel = state.prov.selected || new Set();
+  if (!sel.size) {
+    bar.style.display = 'none';
+    return;
+  }
+  // Sumamos % y € desde state.prov.rows (que ya respeta el filtro
+  // del backend activo — sociedad/período).
+  let sumaPct = 0, sumaEur = 0;
+  for (const r of state.prov.rows) {
+    if (sel.has(r.proveedor)) {
+      sumaPct += (r.porcentaje || 0);
+      sumaEur += (r.total_importe || 0);
+    }
+  }
+  bar.style.display = 'flex';
+  $('prov-sel-count').textContent = sel.size;
+  $('prov-sel-plural').textContent = sel.size === 1 ? '' : 's';
+  $('prov-sel-pct').textContent = (sumaPct * 100).toFixed(2).replace('.', ',') + '%';
+  $('prov-sel-eur').textContent = eur2(sumaEur);
 }
 
 function filterByCategoria(cat) {
@@ -1628,6 +1718,7 @@ Object.assign(window, {
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
   setDonutThreshold, enterDonutDrill, exitDonutDrill,
+  toggleProvSelection, clearProvSelection,
   // Sidebar de detalle / reclasificación
   openProvSidebar, closeProvSidebar, toggleReclasificar, confirmReclasificar, rcRefreshNombres,
   // Panel de gestión Gastos Dirección (admin/socio)
