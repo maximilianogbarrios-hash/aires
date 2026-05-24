@@ -149,6 +149,33 @@ window.Api = (function () {
     return jsonFetch('/api/v1/pedidos/ranking-eficiencia' + (qs ? '?' + qs : ''));
   };
 
+  // ─── MP v2 (módulo por volumen) ─────────────────────────────────────
+  const mp2 = {
+    meta:                () => jsonFetch('/api/v1/mp2/meta'),
+    catalogoGet:         (q={}) => jsonFetch('/api/v1/mp2/catalogo' + qs(q)),
+    catalogoSave:        (body) => jsonFetch('/api/v1/mp2/catalogo', { method: 'PUT', body: JSON.stringify(body) }),
+    catalogoHistorico:   (q={}) => jsonFetch('/api/v1/mp2/catalogo/historico' + qs(q)),
+    pedidosList:         (q={}) => jsonFetch('/api/v1/mp2/pedidos' + qs(q)),
+    pedidoGet:           (id) => jsonFetch('/api/v1/mp2/pedidos/' + id),
+    pedidoSave:          (body) => jsonFetch('/api/v1/mp2/pedidos', { method: 'POST', body: JSON.stringify(body) }),
+    pedidoConfirmar:     (id) => jsonFetch(`/api/v1/mp2/pedidos/${id}/confirmar`, { method: 'POST', body: '{}' }),
+    pedidoEstado:        (id, estado) => jsonFetch(`/api/v1/mp2/pedidos/${id}/estado`, { method: 'PUT', body: JSON.stringify({ estado }) }),
+    pedidoLineaUpdate:   (id, lineaId, body) => jsonFetch(`/api/v1/mp2/pedidos/${id}/lineas/${lineaId}`, { method: 'PUT', body: JSON.stringify(body) }),
+    pedidoDelete:        (id) => jsonFetch('/api/v1/mp2/pedidos/' + id, { method: 'DELETE' }),
+    semaforo:            (q={}) => jsonFetch('/api/v1/mp2/semaforo' + qs(q)),
+    kpis:                (q={}) => jsonFetch('/api/v1/mp2/kpis' + qs(q)),
+    conciliacionDebitos: (q={}) => jsonFetch('/api/v1/mp2/conciliacion/debitos' + qs(q)),
+    conciliacionPendientes: (q={}) => jsonFetch('/api/v1/mp2/conciliacion/pendientes' + qs(q)),
+    conciliar:           (body) => jsonFetch('/api/v1/mp2/conciliacion', { method: 'POST', body: JSON.stringify(body) }),
+    resumen:             (q={}) => jsonFetch('/api/v1/mp2/resumen' + qs(q)),
+  };
+  function qs(o) {
+    const p = new URLSearchParams();
+    for (const k of Object.keys(o)) if (o[k] !== null && o[k] !== undefined && o[k] !== '') p.set(k, o[k]);
+    const s = p.toString();
+    return s ? '?' + s : '';
+  }
+
   return {
     bootstrap, saveConfig, lastParamsMod, saveLocal, savePresupuesto, presupuestoContexto,
     saveFacturacionSemanal, getFacturacionSemanal, saveHorasSemanal,
@@ -156,6 +183,7 @@ window.Api = (function () {
     pedidosMix, pedidosMixSave, pedidosMixCopy, pedidosMixImport,
     pedidosSavePedido, pedidosConfirmar, pedidosMarcarPagado, pedidosCmpBancos,
     pedidosHistorial, pedidosRanking,
+    mp2,
     logout, debouncedSave, flushPending, pill,
   };
 })();

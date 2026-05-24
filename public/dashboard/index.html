@@ -405,6 +405,7 @@
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         <button class="sub-tab on" data-sub="mp"       onclick="showPedidosSub('mp',this)">Materia Prima</button>
+        <button class="sub-tab"    data-sub="mp2"     onclick="showPedidosSub('mp2',this)" id="sub-tab-mp2">Materia Prima v2</button>
         <button class="sub-tab"    data-sub="cmp"      onclick="showPedidosSub('cmp',this)">Comparativa Bancos</button>
         <button class="sub-tab"    data-sub="hist"     onclick="showPedidosSub('hist',this)">Historial</button>
         <button class="sub-tab"    data-sub="rk"       onclick="showPedidosSub('rk',this)">Ranking eficiencia</button>
@@ -436,6 +437,114 @@
 
   <!-- PERSONAL (sub-tab vacía — la pestaña principal sect-personal absorbió este contenido) -->
   <div id="pedsub-personal" class="ped-sub" style="display:none">
+  </div>
+
+  <!-- MATERIA PRIMA v2 — pedidos por volumen con distribución automática -->
+  <div id="pedsub-mp2" class="ped-sub">
+    <!-- Pantalla principal: lista + KPIs -->
+    <div id="mp2-vista-lista">
+      <div class="g5" style="margin-bottom:.75rem">
+        <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Budget MP semana</p><p style="font-size:18px;font-weight:500" id="mp2-k-budget">—</p></div>
+        <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Confirmados</p><p style="font-size:18px;font-weight:500" id="mp2-k-conf">—</p></div>
+        <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Borradores</p><p style="font-size:18px;font-weight:500;color:#BA7517" id="mp2-k-borr">—</p></div>
+        <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Estimado semana</p><p style="font-size:18px;font-weight:500" id="mp2-k-est">—</p></div>
+        <div class="surf"><p style="font-size:11px;color:var(--text-2);margin-bottom:2px">Pagado mes</p><p style="font-size:18px;font-weight:500;color:#16a34a" id="mp2-k-pag">—</p></div>
+      </div>
+      <div class="card no-print" style="margin-bottom:.75rem;padding:.6rem .9rem">
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+            <button class="tgl" onclick="mp2WeekNav(-1)" title="Semana anterior">◀</button>
+            <span style="font-size:12px;font-weight:500" id="mp2-week-lbl">—</span>
+            <button class="tgl" onclick="mp2WeekNav(1)" title="Semana siguiente">▶</button>
+            <select id="mp2-f-soc" onchange="mp2RenderLista()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:var(--r-md);font-size:12px;background:var(--bg-primary);color:var(--text)"></select>
+            <select id="mp2-f-estado" onchange="mp2RenderLista()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:var(--r-md);font-size:12px;background:var(--bg-primary);color:var(--text)">
+              <option value="">— Todos los estados —</option>
+              <option value="borrador">Borrador</option>
+              <option value="confirmado">Confirmado</option>
+              <option value="recibido">Recibido</option>
+              <option value="facturado">Facturado</option>
+              <option value="pagado">Pagado</option>
+            </select>
+            <button class="tgl" id="mp2-tab-conciliar" onclick="mp2ShowConciliar()" style="display:none">⇄ Conciliar banco</button>
+            <button class="tgl" id="mp2-tab-catalogo" onclick="mp2ShowCatalogo()" style="display:none">📋 Catálogo</button>
+            <button class="tgl" onclick="mp2ShowResumen()">📊 Resumen</button>
+          </div>
+          <button class="tgl on" onclick="mp2NuevoPedido()" style="background:#185FA5;color:#fff;border-color:#185FA5">+ Nuevo pedido</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="mp2-tabla" style="overflow-x:auto">—</div>
+      </div>
+    </div>
+
+    <!-- Conciliación (panel doble) -->
+    <div id="mp2-vista-conciliar" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+        <p style="font-size:13px;font-weight:500">Conciliación de pagos a proveedores</p>
+        <button class="tgl" onclick="mp2BackToLista()">← Volver a pedidos</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <div class="card">
+          <p style="font-size:12px;font-weight:500;margin-bottom:.5rem">Débitos sin conciliar</p>
+          <div id="mp2-debitos" style="overflow-x:auto">—</div>
+        </div>
+        <div class="card">
+          <p style="font-size:12px;font-weight:500;margin-bottom:.5rem">Pedidos pendientes de pago</p>
+          <div id="mp2-pendientes">Seleccioná un débito para ver pedidos vinculables.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Catálogo de precios -->
+    <div id="mp2-vista-catalogo" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+        <p style="font-size:13px;font-weight:500">Catálogo de precios</p>
+        <div style="display:flex;gap:6px">
+          <button class="tgl" id="mp2-cat-add" onclick="mp2CatAdd()" style="display:none">+ Añadir producto</button>
+          <button class="tgl" onclick="mp2BackToLista()">← Volver</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="mp2-catalogo" style="overflow-x:auto">—</div>
+      </div>
+    </div>
+
+    <!-- Resumen (grilla local × proveedor a partir de distribución) -->
+    <div id="mp2-vista-resumen" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+        <p style="font-size:13px;font-weight:500">Resumen distribución por local (read-only)</p>
+        <button class="tgl" onclick="mp2BackToLista()">← Volver</button>
+      </div>
+      <div class="card">
+        <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Datos generados automáticamente desde pedidos confirmados/facturados/pagados.</p>
+        <div id="mp2-resumen" style="overflow-x:auto">—</div>
+      </div>
+    </div>
+
+    <!-- Modal pedido (nuevo / edición) -->
+    <div id="mp2-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:80;align-items:flex-start;justify-content:center;padding:1.5rem;overflow-y:auto" onclick="if(event.target===this)mp2ModalClose()">
+      <div style="background:var(--bg-primary);padding:1.25rem;border-radius:var(--r-lg);max-width:920px;width:100%;max-height:90vh;overflow:auto">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+          <p style="font-size:15px;font-weight:500" id="mp2-modal-title">Nuevo pedido</p>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="mp2-modal-autosave" style="font-size:10px;color:#16a34a;opacity:0;transition:opacity .3s">●</span>
+            <button onclick="mp2ModalClose()" style="border:none;background:transparent;cursor:pointer;font-size:18px;color:var(--text-2)">✕</button>
+          </div>
+        </div>
+        <div id="mp2-modal-body">—</div>
+      </div>
+    </div>
+
+    <!-- Modal histórico de precios -->
+    <div id="mp2-hist-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:90;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+      <div style="background:var(--bg-primary);padding:1.25rem;border-radius:var(--r-lg);max-width:520px;width:92%;max-height:80vh;overflow:auto">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+          <p style="font-size:14px;font-weight:500" id="mp2-hist-title">Histórico de precio</p>
+          <button onclick="document.getElementById('mp2-hist-modal').style.display='none'" style="border:none;background:transparent;cursor:pointer;font-size:18px">✕</button>
+        </div>
+        <div id="mp2-hist-body">—</div>
+      </div>
+    </div>
   </div>
 
   <!-- MIX PROVEEDORES -->
@@ -506,5 +615,6 @@
 <script src="/js/api.js"></script>
 <script src="/js/main.js"></script>
 <script src="/js/pedidos.js"></script>
+<script src="/js/pedidos-mp2.js"></script>
 </body>
 </html>

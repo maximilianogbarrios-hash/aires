@@ -15,6 +15,7 @@ const airesRoutes = require('./routes/aires');
 const bancosRoutes = require('./routes/bancos');
 const facturacionRoutes = require('./routes/facturacion');
 const pedidosRoutes = require('./routes/pedidos');
+const mp2Routes = require('./routes/pedidos-mp2');
 
 const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -59,6 +60,7 @@ app.use('/api/v1/aires', airesRoutes);
 app.use('/api/v1/bancos', bancosRoutes);
 app.use('/api/v1/facturacion', facturacionRoutes);
 app.use('/api/v1/pedidos', pedidosRoutes);
+app.use('/api/v1/mp2', mp2Routes);
 
 // ─── Static (login y assets públicos) ─────────────────────────────────
 app.use('/login', express.static(path.join(__dirname, 'public', 'login')));

@@ -1026,3 +1026,93 @@ borrado y contra reclasificación manual (incluso para admin).
 Resultado: cualquier banco, sociedad o período → movs con "raba" van
 a Gastos Dirección de forma automática. Nadie puede revertirlo desde
 la UI ni la API.
+
+
+## Módulo Materia Prima v2 — pedidos por volumen con distribución automática (2026-05-24)
+
+Nueva sub-pestaña en módulo Pedidos ("Materia Prima v2") que convive con
+la pestaña original sin modificarla. Reemplaza la lógica de entrada
+manual de € por una lógica de pedidos por volumen (kg/ud/l) a nivel
+sociedad, con distribución automática a locales.
+
+### Migración 14 (`mp_v2_pedidos_volumen`)
+5 tablas + índices + seed de 4 productos:
+- `ab_mp_catalogo_precios` — UNIQUE(proveedor, producto), precio_ref +
+  notas_temporada + actualizado_por.
+- `ab_mp_pedidos_cabecera` — semana, año, sociedad_id, proveedor,
+  estado (`borrador`|`confirmado`|`recibido`|`facturado`|`pagado`),
+  importe_estimado/real, movimiento_banco_id + diferencia_conciliacion.
+- `ab_mp_pedidos_lineas` — producto × cantidad × precio_estimado/real.
+- `ab_mp_pedidos_distribucion` — UNIQUE(pedido_id, local_id),
+  pct_distribucion + importe_estimado/real.
+- `ab_mp_precios_historico` — auditoría con motivo.
+
+Índices en (anio, semana, sociedad_id), (estado), (proveedor),
+(pedido_id) y (local_id).
+
+### Backend (`routes/pedidos-mp2.js` → `/api/v1/mp2/*`)
+- `GET /meta` → sociedades + flags por rol
+- `GET /catalogo`, `PUT /catalogo`, `GET /catalogo/historico`
+- `GET /pedidos`, `GET /pedidos/:id`, `POST /pedidos` (upsert),
+  `POST /pedidos/:id/confirmar` (calcula distribución),
+  `PUT /pedidos/:id/estado`, `PUT /pedidos/:id/lineas/:lineaId`,
+  `DELETE /pedidos/:id`
+- `GET /semaforo?anio_mes=YYYY-MM` (presupuesto vs estimado por
+  proveedor, basado en `ab_proveedores_mix` × budget MP local)
+- `GET /kpis`, `GET /resumen`
+- `GET /conciliacion/debitos`, `GET /conciliacion/pendientes`,
+  `POST /conciliacion`
+
+### Lógica clave
+- **Distribución automática**: al confirmar, suma `fac_presupuestada`
+  de los locales de la sociedad del mes (lunes de la semana ISO).
+  Cada local recibe importe × (fac_local / sum_fac). Si nadie tiene
+  presupuesto, fallback a partes iguales.
+- **Cascada precio real**: al actualizar `precio_real` de una línea
+  → recalcula `importe_real` de la línea, de la cabecera (SUM
+  COALESCE real, estimado) y de la distribución (mismos %). Si la
+  desviación >5% y el caller pidió `actualizar_catalogo=true`,
+  inserta en histórico + actualiza precio de referencia.
+- **Conciliación 1:N**: un débito puede cubrir N pedidos. Se asigna
+  `movimiento_banco_id` + `diferencia_conciliacion` + `nota` (esta
+  última obligatoria si la diferencia es > 1c). Marca todos los
+  pedidos como `pagado`.
+
+### Permisos (lib/roles.js)
+| Permiso | Roles |
+|---|---|
+| `mp2_view` | admin, socio, gerente, pedidos |
+| `mp2_w` (crear/editar borradores, confirmar) | admin, socio, gerente, pedidos |
+| `mp2_avanzado_w` (recibido/facturado/pagado, distribución, reabrir) | admin, socio, gerente |
+| `mp2_conciliar_w` | admin, socio, gerente |
+| `mp2_catalogo_w` | admin, socio, gerente |
+| `mp2_delete` | admin, socio |
+
+Fabricio (`pedidos`) ve lista + crea/edita sus borradores + ve catálogo
+(read) + NO ve conciliación + NO ve distribución por local detallada.
+Agustina (`personal`) → 403 en todo `/api/v1/mp2/*`.
+
+### Frontend (`public/js/pedidos-mp2.js` + 5 secciones HTML)
+- Lista de pedidos con KPIs + filtros semana/sociedad/estado +
+  semáforo por proveedor.
+- Modal nuevo pedido / edición con sección cabecera + líneas
+  editables (datalist autocomplete catálogo + autocompletar
+  precio) + preview distribución informativa.
+- Auto-guardado cada 30s mientras el modal está abierto (punto verde
+  discreto, sin notificación intrusiva).
+- Conciliación: doble panel (débitos sin conciliar / pedidos pendientes)
+  con suma en vivo y nota obligatoria si hay diferencia.
+- Catálogo agrupado por proveedor con badge "+45d" si no se actualiza
+  hace tiempo. Edición inline con motivo obligatorio.
+- Vista resumen: pivot local × proveedor desde distribución (read-only).
+
+### Smoke E2E (`scripts/utils/e2e-mp2.js`)
+15 checks pasaron contra DB de producción:
+- Control de acceso por rol (admin/gerente/pedidos ven; personal 403)
+- Catálogo seed 4 items
+- Crear pedido → confirmar → distribución 5 locales murcia = 2 124€
+- Fabricio NO ve distribución (cabecera sí)
+- precio_real 8.20→8.80 (desvía 7,3%) cascadea + actualiza catálogo
+- Semáforo: Mulas est 2 124€ vs presup 18 653€ → rojo
+- Permisos avanzados: pedidos NO puede recibido (403), gerente sí (200),
+  gerente NO puede borrar (403), admin sí (200).
