@@ -933,3 +933,55 @@ producción 2026-05-23):
 
 El control admin confirma que el bloqueo NO es global — admin/socio
 siguen viendo Raba para gestión interna.
+
+
+## Auditoría de acceso /bancos — gaps cerrados (2026-05-24)
+
+### Gaps detectados (pre-fix)
+
+Auditoría con `scripts/utils/e2e-auditoria-acceso.js` reveló 6
+brechas en `/api/v1/bancos/*`:
+
+| Endpoint | Gap |
+|---|---|
+| router-level | sin `requirePerm('bancos')` → `pedidos` y `personal` (no autorizados según `PERMS.bancos`) podían llamar todo |
+| `/movimientos` | leak categoría FINANCIERO + Raba para 4 roles no-admin |
+| `/gastos-por-proveedor` | leak GASTOS_DIRECCION |
+| `/proveedores-lista` | leak FINANCIERO + GASTOS_DIRECCION (cache global sin rol) |
+| `/resumen` | `detalle_categorias` exponía NOMINAS_DIRECCION, PRESTAMOS, etc. |
+| `/reglas-normalizacion` GET | leak Raba Buildings + categorías sensibles |
+| `/reclasificar`, `/reglas-normalizacion DELETE`, `/recalc` | sin permission check |
+
+### Fixes aplicados
+
+1. **`router.use(requirePerm('bancos'))`** a nivel router — `pedidos` y
+   `personal` reciben 403 en TODO `/bancos/*`.
+2. **`clausulaVisibilidadParaRol(req)`** helper: cláusula SQL que excluye
+   INTRAGRUPO, CATEGORIAS_DIRECCION_FUSE y RABA_NOMBRES para no-admin.
+   Aplicado en `/movimientos` y `/gastos-por-proveedor`.
+3. **`/proveedores-lista`** cache por rol (admin vs noadmin) + filtro
+   post-derivación.
+4. **`/resumen`** filtra `detalle_categorias` para no-admin (oculta las
+   categorías sensibles; el total no se ajusta).
+5. **`/reclasificar`** valida origen y destino: no-admin no puede tocar
+   conceptos categorizados como sensibles ni asignar a categorías
+   sensibles / Raba / "Gastos Dirección" como destino.
+6. **`/reglas-normalizacion GET`** filtra reglas sensibles para no-admin.
+7. **`/reglas-normalizacion DELETE`** y **`/recalc`** ahora requieren
+   `requireAdminLike` (admin/socio).
+
+### E2E post-fix (`e2e-auditoria-acceso.js`)
+
+| Rol | Endpoint | Resultado esperado | Resultado |
+|---|---|---|---|
+| gerente (Luciano) | 7 endpoints sensibles | sin leaks | ✓ |
+| administrativo (facturación) | 7 endpoints | sin leaks | ✓ |
+| pedidos (Fabricio) | 7 endpoints | HTTP 403 router | ✓ |
+| personal (Agustina) | 7 endpoints | HTTP 403 router | ✓ |
+| gerente | POST `/reclasificar` destino sensible | 403 | ✓ |
+| gerente | POST `/reclasificar` destino normal | 200 | ✓ |
+| pedidos/personal | POST `/reclasificar` | 403 router | ✓ |
+
+`detectarLeaks()` recorre recursivamente la respuesta JSON buscando
+`categoria` o `proveedor*` con valores sensibles. Pre-fix: 24
+violaciones distintas. Post-fix: 0.

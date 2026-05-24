@@ -58,6 +58,20 @@ function esAdminLike(req) {
   return ROLES_ADMIN.has(req.session?.user?.role);
 }
 
+// Helper: cláusula SQL para excluir movimientos sensibles cuando el rol
+// no es admin/socio. Cubre Raba Buildings (intra-grupo persistido como
+// PROVEEDOR_OTROS), todas las categorías que se fusionan en "Gastos
+// Dirección" (NOMINAS_DIRECCION, GASTOS_DIRECCION, PRESTAMOS, FINANCIERO)
+// y la categoría INTRAGRUPO completa. Devuelve { sql, vals } o null si
+// el rol no requiere filtro.
+function clausulaVisibilidadParaRol(req, paramIndex) {
+  if (esAdminLike(req)) return null;
+  const sql = `categoria NOT IN ('INTRAGRUPO', 'NOMINAS_DIRECCION', 'GASTOS_DIRECCION', 'PRESTAMOS', 'FINANCIERO')
+               AND (proveedor_normalizado IS NULL
+                    OR proveedor_normalizado NOT IN ('Raba Buildings', 'Raba'))`;
+  return { sql, vals: [] };
+}
+
 // Aplica el suelo de periodo para roles no-admin/socio. Recibe los
 // params crudos y devuelve los valores efectivos a usar en la query.
 // Si el rango entero queda fuera del suelo, devuelve { fueraDeRango: true }
@@ -95,7 +109,13 @@ function perteneceAGastosDireccion(proveedor, categoria, overrides) {
 }
 
 const router = express.Router();
+// Defense in depth: requireAuth garantiza sesión; requirePerm('bancos')
+// bloquea roles que NO tienen acceso al módulo (PERMS.bancos en
+// lib/roles.js — actualmente sólo admin/socio/gerente/administrativo).
+// Sin esta línea, pedidos/personal podían hacer GET a cualquier endpoint
+// /api/v1/bancos/* aunque el frontend les escondiera la pestaña.
 router.use(requireAuth);
+router.use(requirePerm('bancos'));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -245,6 +265,9 @@ router.get('/movimientos', async (req, res) => {
     if (banco)       { where.push(`banco=$${vals.length+1}`);       vals.push(banco); }
     if (local_id)    { where.push(`local_id=$${vals.length+1}`);    vals.push(local_id); }
     if (search)      { where.push(`concepto ILIKE $${vals.length+1}`); vals.push(`%${search}%`); }
+    // Filtro de visibilidad: no-admin no ve INTRAGRUPO/Raba/categorías de dirección.
+    const visCl = clausulaVisibilidadParaRol(req, vals.length + 1);
+    if (visCl) { where.push(visCl.sql); vals.push(...visCl.vals); }
     const W = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
     const totalRow = await one(
@@ -282,6 +305,22 @@ router.get('/resumen', async (req, res) => {
     if (sociedad_id) { sql += ' WHERE sociedad_id=$1'; vals.push(sociedad_id); }
     sql += ' ORDER BY sociedad_id, periodo';
     const rows = await many(sql, vals);
+    // Para no-admin: ocultar categorías sensibles del detalle_categorias.
+    // El total_gastos/neto NO se ajustan a propósito (siguen reflejando
+    // la realidad financiera; sólo se oculta el desglose por categoría).
+    if (!esAdminLike(req)) {
+      for (const r of rows) {
+        if (r.detalle_categorias && typeof r.detalle_categorias === 'object') {
+          const filtrado = {};
+          for (const k of Object.keys(r.detalle_categorias)) {
+            if (CATEGORIAS_DIRECCION_FUSE.has(k)) continue;
+            if (k === 'INTRAGRUPO') continue;
+            filtrado[k] = r.detalle_categorias[k];
+          }
+          r.detalle_categorias = filtrado;
+        }
+      }
+    }
     res.json({ resumen: rows });
   } catch (e) {
     console.error('[bancos.resumen]', e);
@@ -297,6 +336,8 @@ router.get('/gastos-por-proveedor', async (req, res) => {
     const where = ['importe < 0']; const vals = [];
     if (sociedad_id) { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
     if (periodo)     { where.push(`periodo=$${vals.length+1}`);     vals.push(periodo); }
+    const visCl = clausulaVisibilidadParaRol(req, vals.length + 1);
+    if (visCl) { where.push(visCl.sql); vals.push(...visCl.vals); }
     const W = 'WHERE ' + where.join(' AND ');
     const rows = await many(
       `SELECT COALESCE(subcategoria, concepto) AS proveedor,
@@ -772,26 +813,37 @@ router.get('/proveedor-evolucion', async (req, res) => {
 });
 
 // Lista de proveedores disponibles para autocompletado.
-// Cachea por hora — cambia poco entre uploads.
-const provCache = { ts: 0, rows: null };
+// Cache por rol (admin/noadmin) — el filtro de visibilidad cambia el set
+// y un cache global filtraría sensibles a admin.
+const provCache = { admin: { ts: 0, rows: null }, noadmin: { ts: 0, rows: null } };
 router.get('/proveedores-lista', async (req, res) => {
   try {
     const now = Date.now();
-    if (provCache.rows && (now - provCache.ts) < 60 * 60 * 1000) {
-      return res.json({ proveedores: provCache.rows });
+    const key = esAdminLike(req) ? 'admin' : 'noadmin';
+    const c = provCache[key];
+    if (c.rows && (now - c.ts) < 60 * 60 * 1000) {
+      return res.json({ proveedores: c.rows });
     }
     const rows = await many(
-      `SELECT concepto, categoria FROM ab_movimientos WHERE importe<0`
+      `SELECT concepto, categoria, proveedor_normalizado FROM ab_movimientos WHERE importe<0`
     );
     const set = new Map();
+    const noAdmin = !esAdminLike(req);
     for (const r of rows) {
-      if (esIntraGrupo(r.concepto)) continue;
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
       const { proveedor, categoria } = normalizarProveedor(r.concepto, r.categoria);
-      if (!set.has(proveedor)) set.set(proveedor, { proveedor, categoria });
+      const provFinal = r.proveedor_normalizado || proveedor;
+      // No-admin: excluir Raba + categorías de dirección.
+      if (noAdmin) {
+        if (RABA_NOMBRES.has(provFinal)) continue;
+        if (CATEGORIAS_DIRECCION_FUSE.has(categoria)) continue;
+        if (CATEGORIAS_DIRECCION_FUSE.has(r.categoria)) continue;
+      }
+      if (!set.has(provFinal)) set.set(provFinal, { proveedor: provFinal, categoria });
     }
     const out = [...set.values()].sort((a, b) => a.proveedor.localeCompare(b.proveedor));
-    provCache.rows = out;
-    provCache.ts = now;
+    c.rows = out;
+    c.ts = now;
     res.json({ proveedores: out });
   } catch (e) {
     console.error('[bancos.proveedores-lista]', e);
@@ -1358,6 +1410,24 @@ router.post('/reclasificar', express.json(), async (req, res) => {
     if (!concepto || !categoria_nueva || !proveedor_nuevo) {
       return res.status(400).json({ error: 'concepto, categoria_nueva y proveedor_nuevo requeridos' });
     }
+    // Restricciones para no-admin:
+    //   1) No pueden tocar conceptos que ya pertenecen a categorías sensibles
+    //      (NOMINAS_DIRECCION, GASTOS_DIRECCION, PRESTAMOS, FINANCIERO, INTRAGRUPO)
+    //      ni a Raba Buildings.
+    //   2) No pueden asignar a categoría sensible ni a Raba como destino.
+    if (!esAdminLike(req)) {
+      const blocked = ['INTRAGRUPO', ...CATEGORIAS_DIRECCION_FUSE];
+      if (blocked.includes(categoria_nueva) || RABA_NOMBRES.has(proveedor_nuevo) || proveedor_nuevo === FUSE_PROVEEDOR) {
+        return res.status(403).json({ error: 'Destino restringido: requiere admin/socio' });
+      }
+      const actual = await one(
+        'SELECT MAX(categoria) AS cat, MAX(proveedor_normalizado) AS prov FROM ab_movimientos WHERE concepto=$1',
+        [concepto]
+      );
+      if (actual?.cat && (blocked.includes(actual.cat) || RABA_NOMBRES.has(actual.prov))) {
+        return res.status(403).json({ error: 'Concepto restringido: requiere admin/socio' });
+      }
+    }
     // "Gastos Dirección" es un destino canónico hacia el slice fusionado:
     // forzamos categoria=GASTOS_DIRECCION para que el movimiento quede
     // dentro del grupo protegido (default-by-category de la fusión),
@@ -1429,14 +1499,20 @@ router.post('/reclasificar', express.json(), async (req, res) => {
 });
 
 // Listado de reglas persistentes (activas e inactivas).
+// Para no-admin: ocultar reglas que apunten a categorías sensibles o a
+// Raba Buildings (exponerlas filtraría la composición de Gastos Dirección).
 router.get('/reglas-normalizacion', async (req, res) => {
   try {
-    const rows = await many(
+    let rows = await many(
       `SELECT id, patron, tipo_match, categoria, proveedor_normalizado,
               prioridad, activo, creado_en
          FROM ab_reglas_normalizacion
         ORDER BY prioridad DESC, id ASC`
     );
+    if (!esAdminLike(req)) {
+      const blocked = new Set(['INTRAGRUPO', ...CATEGORIAS_DIRECCION_FUSE]);
+      rows = rows.filter((r) => !blocked.has(r.categoria) && !RABA_NOMBRES.has(r.proveedor_normalizado));
+    }
     res.json({ reglas: rows });
   } catch (e) {
     console.error('[bancos.reglas.list]', e);
@@ -1445,7 +1521,8 @@ router.get('/reglas-normalizacion', async (req, res) => {
 });
 
 // Borrar regla (hard delete — no soft, para no acumular ruido).
-router.delete('/reglas-normalizacion/:id', async (req, res) => {
+// Reservado a admin/socio (cambios estructurales sobre la pipeline).
+router.delete('/reglas-normalizacion/:id', requireAdminLike, async (req, res) => {
   try {
     const id = +req.params.id;
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'id inválido' });
@@ -1457,8 +1534,9 @@ router.delete('/reglas-normalizacion/:id', async (req, res) => {
   }
 });
 
-// Recalcular todo (útil tras cambios manuales).
-router.post('/recalc', async (req, res) => {
+// Recalcular todo (útil tras cambios manuales). Admin/socio only — toca
+// totales agregados que se sirven a todos los roles.
+router.post('/recalc', requireAdminLike, async (req, res) => {
   try {
     const sociedad_id = req.body.sociedad_id;
     const periodo = req.body.periodo;
