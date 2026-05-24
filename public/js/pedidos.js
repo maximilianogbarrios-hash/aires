@@ -66,6 +66,9 @@
     categorias_mp: ['Carnes','Lácteos','Verduras','Bebidas','Packaging','Limpieza','Otros MP'],
     locales: [],
     mix: [],
+    // Lista blanca de proveedores visibles en MP. Compartida con MP v2.
+    // Se carga junto al bootstrap; si la API falla queda como null → no filtrar.
+    proveedoresActivos: null,
     mp: null,
     personal: null,
     cmp: null,
@@ -87,13 +90,20 @@
   async function ensureBootstrap() {
     if (pState.initialized) return;
     try {
-      const data = await Api.pedidosBootstrap({ anio: pState.week.anio, semana_iso: pState.week.semana_iso });
+      const [data, provAct] = await Promise.all([
+        Api.pedidosBootstrap({ anio: pState.week.anio, semana_iso: pState.week.semana_iso }),
+        Api.pedidosProveedoresActivos().catch(() => null),
+      ]);
       pState.config = data.config || {};
       pState.locales = data.locales || [];
       pState.mix = data.mix || [];
       pState.categorias_mp = data.categorias_mp || pState.categorias_mp;
       pState.week = data.week || pState.week;
       pState.user = data.user || null;
+      // Si la API falla (rol sin permiso, network), no filtramos — mostramos todo.
+      pState.proveedoresActivos = provAct && Array.isArray(provAct.proveedores)
+        ? new Set(provAct.proveedores)
+        : null;
       pState.initialized = true;
       adjustPerms();
     } catch (e) {
@@ -191,9 +201,14 @@
     if ($('ped-k-exec-eur')) $('ped-k-exec-eur').textContent = `${eur(k.total_pedido_real)} de ${eur(k.total_budget_mp)}`;
 
     // Conjunto de proveedores únicos para columnas dinámicas.
+    // Filtrado por lista blanca ab_mp_proveedores_activos cuando está disponible
+    // (admin/admin-like). Si pState.proveedoresActivos es null (rol sin perm
+    // o fetch falló), no filtramos — se muestra todo como antes.
     const provs = new Set();
     items.forEach((it) => it.proveedores.forEach((p) => provs.add(p.proveedor)));
-    const provList = [...provs];
+    const provList = pState.proveedoresActivos
+      ? [...provs].filter((p) => pState.proveedoresActivos.has(p))
+      : [...provs];
 
     if (!items.length) {
       $('ped-mp-table').innerHTML = '<p style="font-size:12px;color:var(--text-2);padding:1rem">Sin datos para esta semana. Cargá presupuesto mensual y mix de proveedores.</p>';

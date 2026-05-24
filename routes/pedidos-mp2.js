@@ -615,6 +615,98 @@ router.get('/semaforo', async (req, res) => {
   }
 });
 
+// ─── BUDGET MP POR SEMANA + POR PROVEEDOR ───────────────────────────
+// GET /budget-semana?anio=&semana=&sociedad_id?
+// Calcula:
+//   - total_budget_mp: budget MP de la semana (Σ por local: fac_estim_semana × pctMP)
+//   - por_proveedor: budget MP por proveedor en esa semana usando el mix activo
+// Útil para:
+//   (a) KPI "Budget MP semana" en el header (acumulado pedidos vs budget total)
+//   (b) Aviso naranja cuando la suma de pedidos a un proveedor en la semana
+//       supera su budget asignado (multiples pedidos al mismo proveedor).
+router.get('/budget-semana', async (req, res) => {
+  try {
+    const anio = +req.query.anio;
+    const semana = +req.query.semana;
+    if (!anio || !semana) return res.status(400).json({ error: 'anio y semana requeridos' });
+    const socFiltro = req.query.sociedad_id || null;
+
+    // Locales a considerar (filtrados por sociedad si vino).
+    let localIds;
+    if (socFiltro) {
+      const soc = findSociedad(socFiltro);
+      if (!soc) return res.status(400).json({ error: 'sociedad_id inválido' });
+      localIds = soc.locales;
+    } else {
+      const allLoc = await many('SELECT id FROM ab_locales');
+      localIds = allLoc.map((l) => l.id);
+    }
+    if (!localIds.length) return res.json({ anio, semana, total_budget_mp: 0, por_proveedor: {} });
+
+    // pctMP desde config.
+    const cfg = await one("SELECT valor FROM ab_config WHERE clave='pctMP'");
+    const pctMP = (+cfg?.valor || 38) / 100;
+
+    // Días de la semana ISO repartidos por mes (la semana puede tocar dos meses).
+    const monday = mondayOfIsoWeek(anio, semana);
+    const monthDays = new Map();
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(monday); day.setUTCDate(day.getUTCDate() + i);
+      const k = `${day.getUTCFullYear()}-${day.getUTCMonth() + 1}`;
+      monthDays.set(k, (monthDays.get(k) || 0) + 1);
+    }
+    const pairs = [...monthDays.keys()].map((k) => k.split('-').map(Number));
+    const placeholders = pairs.map((_, i) => `($${i * 2 + 2}, $${i * 2 + 3})`).join(',');
+    const presRows = await many(
+      `SELECT local_id, anio, mes, fac_presupuestada::float8 AS fac
+         FROM ab_presupuesto
+        WHERE local_id = ANY($1::text[])
+          AND (anio, mes) IN (${placeholders})`,
+      [localIds, ...pairs.flat()]
+    );
+    const presMap = new Map();
+    for (const r of presRows) presMap.set(`${r.local_id}|${r.anio}|${r.mes}`, +r.fac || 0);
+
+    // Fac semana por local = Σ fac_mes × (días_en_semana / días_del_mes).
+    const facSem = new Map();
+    for (const lid of localIds) {
+      let fs = 0;
+      for (const [k, dias] of monthDays.entries()) {
+        const [a, mm] = k.split('-').map(Number);
+        const fac = presMap.get(`${lid}|${a}|${mm}`) || 0;
+        const last = new Date(Date.UTC(a, mm, 0)).getUTCDate();
+        fs += fac * (dias / last);
+      }
+      facSem.set(lid, fs);
+    }
+    const totalBudgetMp = [...facSem.values()].reduce((s, v) => s + v * pctMP, 0);
+
+    // Mix activo por local → reparto por proveedor.
+    const mix = await many(
+      `SELECT local_id, proveedor, porcentaje::float8 AS pct
+         FROM ab_proveedores_mix
+        WHERE activo = TRUE AND local_id = ANY($1::text[])`,
+      [localIds]
+    );
+    const porProv = {};
+    for (const m of mix) {
+      const b = (facSem.get(m.local_id) || 0) * pctMP;
+      const aporte = b * ((+m.pct || 0) / 100);
+      porProv[m.proveedor] = (porProv[m.proveedor] || 0) + aporte;
+    }
+    for (const k of Object.keys(porProv)) porProv[k] = round2(porProv[k]);
+
+    res.json({
+      anio, semana,
+      total_budget_mp: round2(totalBudgetMp),
+      por_proveedor: porProv,
+    });
+  } catch (e) {
+    console.error('[mp2.budget-semana]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // ─── KPIs cabecera (vista lista) ─────────────────────────────────────
 // GET /kpis?anio=&semana=&anio_mes=
 router.get('/kpis', async (req, res) => {

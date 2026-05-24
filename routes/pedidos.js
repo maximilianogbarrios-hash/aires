@@ -130,6 +130,26 @@ router.get('/bootstrap', requirePerm('pedidos_view'), async (req, res) => {
   }
 });
 
+// ─── PROVEEDORES ACTIVOS ────────────────────────────────────────────────
+// Lista blanca de proveedores autorizados en Materia Prima (v1 y v2).
+// Compartido entre las dos vistas para que cualquier filtro/autocomplete
+// muestre exactamente el mismo set. Modificable mañana desde un panel admin
+// editando ab_mp_proveedores_activos sin tocar código.
+router.get('/proveedores-activos', requirePerm('pedidos_view'), async (req, res) => {
+  try {
+    const rows = await many(
+      `SELECT proveedor, orden
+         FROM ab_mp_proveedores_activos
+        WHERE activo = TRUE
+        ORDER BY orden, proveedor`
+    );
+    res.json({ proveedores: rows.map((r) => r.proveedor) });
+  } catch (e) {
+    console.error('[pedidos.proveedores-activos]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // ─── PROVEEDORES MIX ────────────────────────────────────────────────────
 router.get('/proveedores-mix', requirePerm('pedidos_view'), async (req, res) => {
   try {

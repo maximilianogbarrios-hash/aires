@@ -148,6 +148,7 @@ window.Api = (function () {
     const qs = new URLSearchParams(q).toString();
     return jsonFetch('/api/v1/pedidos/ranking-eficiencia' + (qs ? '?' + qs : ''));
   };
+  const pedidosProveedoresActivos = () => jsonFetch('/api/v1/pedidos/proveedores-activos');
 
   // ─── MP v2 (módulo por volumen) ─────────────────────────────────────
   const mp2 = {
@@ -163,6 +164,7 @@ window.Api = (function () {
     pedidoLineaUpdate:   (id, lineaId, body) => jsonFetch(`/api/v1/mp2/pedidos/${id}/lineas/${lineaId}`, { method: 'PUT', body: JSON.stringify(body) }),
     pedidoDelete:        (id) => jsonFetch('/api/v1/mp2/pedidos/' + id, { method: 'DELETE' }),
     semaforo:            (q={}) => jsonFetch('/api/v1/mp2/semaforo' + qs(q)),
+    budgetSemana:        (q={}) => jsonFetch('/api/v1/mp2/budget-semana' + qs(q)),
     kpis:                (q={}) => jsonFetch('/api/v1/mp2/kpis' + qs(q)),
     conciliacionDebitos: (q={}) => jsonFetch('/api/v1/mp2/conciliacion/debitos' + qs(q)),
     conciliacionPendientes: (q={}) => jsonFetch('/api/v1/mp2/conciliacion/pendientes' + qs(q)),
@@ -182,7 +184,7 @@ window.Api = (function () {
     pedidosBootstrap, pedidosMP, pedidosPersonal,
     pedidosMix, pedidosMixSave, pedidosMixCopy, pedidosMixImport,
     pedidosSavePedido, pedidosConfirmar, pedidosMarcarPagado, pedidosCmpBancos,
-    pedidosHistorial, pedidosRanking,
+    pedidosHistorial, pedidosRanking, pedidosProveedoresActivos,
     mp2,
     logout, debouncedSave, flushPending, pill,
   };

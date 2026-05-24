@@ -39,8 +39,9 @@
     meta: null,           // { sociedades, user, flags }
     week: isoWeekToday(),
     pedidos: [],
-    semaforo: {},         // proveedor → { semaforo, presupuesto_mes, ... }
-    proveedoresNorm: [],  // cache de proveedores normalizados (autocomplete)
+    semaforo: {},         // proveedor → { semaforo, presupuesto_mes, ... } (vista mensual)
+    budgetSemana: null,   // { total_budget_mp, por_proveedor:{prov:€} } de la semana actual
+    proveedoresNorm: [],  // proveedores activos (lista blanca para autocomplete)
     catalogo: [],         // por proveedor
     catalogoIdx: {},      // proveedor → [{ producto, unidad, precio_ref }]
     modal: { open: false, pedido: null, lineas: [], autosaveTimer: null },
@@ -80,18 +81,11 @@
 
   async function refreshProveedoresNorm() {
     try {
-      // Reutilizamos el endpoint del módulo bancario (/proveedores-normalizados).
-      // Es admin/socio/gerente only; el rol 'pedidos' (Fabricio) recibirá 403
-      // porque /bancos exige bancos en PERMS. Para él armamos lista desde
-      // los pedidos existentes (fallback). En el primer load, intentamos.
-      const r = await fetch('/api/v1/bancos/proveedores-normalizados?limit=500', { credentials: 'same-origin' });
-      if (r.ok) {
-        const j = await r.json();
-        state.proveedoresNorm = (j.proveedores || []).map((p) => p.nombre);
-      } else {
-        // Fallback: tomar proveedores únicos de los pedidos cargados
-        state.proveedoresNorm = [...new Set(state.pedidos.map((p) => p.proveedor_normalizado))];
-      }
+      // Lista blanca compartida con MP v1 — administrable desde DB
+      // (tabla ab_mp_proveedores_activos). Permiso pedidos_view cubre
+      // todos los roles que ven MP (admin/socio/gerente/administrativo/pedidos).
+      const j = await Api.pedidosProveedoresActivos();
+      state.proveedoresNorm = j.proveedores || [];
     } catch {
       state.proveedoresNorm = [];
     }
@@ -135,19 +129,24 @@
       estado: $('mp2-f-estado').value || undefined,
     };
     try {
-      const [j, kj, sj] = await Promise.all([
+      // budget-semana sustituye el roundtrip a /pedidos/materia-prima:
+      // devuelve total_budget_mp y por_proveedor en una sola query.
+      const [j, kj, sj, bj] = await Promise.all([
         Api.mp2.pedidosList(f),
         Api.mp2.kpis({ anio: f.anio, semana: f.semana, anio_mes: anioMesActual() }),
         Api.mp2.semaforo({ anio_mes: anioMesActual() }),
+        Api.mp2.budgetSemana({ anio: f.anio, semana: f.semana, sociedad_id: f.sociedad_id }),
       ]);
       state.pedidos = j.pedidos || [];
       state.semaforo = Object.fromEntries((sj.proveedores || []).map((p) => [p.proveedor, p]));
+      state.budgetSemana = bj || { total_budget_mp: 0, por_proveedor: {} };
       const k = kj.kpis || {};
-      // Budget MP semana viene del módulo pedidos original (re-usamos endpoint)
-      try {
-        const mp = await Api.pedidosMP({ anio: f.anio, semana_iso: f.semana });
-        $('mp2-k-budget').textContent = eur(mp?.kpis?.total_budget_mp);
-      } catch { $('mp2-k-budget').textContent = '—'; }
+      // Budget MP semana ahora muestra el acumulado de pedidos de la semana
+      // (todas las filas, no por pedido) vs el budget total.
+      const acumSemana = k.estimado_semana || 0;
+      const budgetTot = state.budgetSemana.total_budget_mp || 0;
+      const exceso = budgetTot > 0 && acumSemana > budgetTot;
+      $('mp2-k-budget').innerHTML = `<span style="color:${exceso ? '#dc2626' : 'inherit'}">${eur(acumSemana)}</span><span style="font-size:11px;color:var(--text-2);font-weight:400"> / ${eur(budgetTot)}</span>`;
       $('mp2-k-conf').textContent = k.confirmados ?? '—';
       $('mp2-k-borr').textContent = k.borradores ?? '—';
       $('mp2-k-est').textContent = eur(k.estimado_semana);
@@ -172,6 +171,103 @@
       return;
     }
     const f = state.meta?.flags || {};
+    const budgetProv = state.budgetSemana?.por_proveedor || {};
+
+    // Agrupar por proveedor + sociedad para soportar pedidos múltiples
+    // al mismo proveedor en la misma semana. El botón "+ Otro pedido"
+    // precarga (proveedor + sociedad), por eso esa es la unidad de grupo.
+    const grupos = new Map(); // key='prov||soc' → { proveedor, sociedad_id, pedidos:[], sumEst }
+    for (const p of state.pedidos) {
+      const k = `${p.proveedor_normalizado}||${p.sociedad_id}`;
+      const g = grupos.get(k) || {
+        proveedor: p.proveedor_normalizado,
+        sociedad_id: p.sociedad_id,
+        pedidos: [],
+      };
+      g.pedidos.push(p);
+      grupos.set(k, g);
+    }
+    // Total por proveedor (cross-sociedad) en la semana: el budget asignado
+    // es uno solo por proveedor — la suma de pedidos a ese proveedor (todas
+    // las sociedades) es lo que se compara contra el budget.
+    const sumPorProv = new Map();
+    for (const p of state.pedidos) {
+      sumPorProv.set(p.proveedor_normalizado,
+        (sumPorProv.get(p.proveedor_normalizado) || 0) + (+p.importe_estimado || 0));
+    }
+
+    // Mantener orden estable: por proveedor alfabético, luego sociedad, luego id.
+    const gruposArr = [...grupos.values()]
+      .map((g) => {
+        g.pedidos.sort((a, b) => a.id - b.id);
+        g.sumEst = g.pedidos.reduce((s, p) => s + (+p.importe_estimado || 0), 0);
+        return g;
+      })
+      .sort((a, b) =>
+        a.proveedor.localeCompare(b.proveedor) || a.sociedad_id.localeCompare(b.sociedad_id)
+      );
+
+    // Mostrar el aviso de exceso de budget una sola vez por proveedor
+    // (en el primer grupo donde aparece). El badge usa el total cross-sociedad.
+    const provVistos = new Set();
+    const filas = [];
+    for (const g of gruposArr) {
+      const multi = g.pedidos.length > 1;
+      // Aviso naranja una vez por proveedor (en su primer grupo): la suma
+      // de todos los pedidos al proveedor en la semana (cross-sociedad)
+      // supera el budget asignado a ese proveedor. No bloquea — sólo informa.
+      const budget = +budgetProv[g.proveedor] || 0;
+      const sumProv = sumPorProv.get(g.proveedor) || 0;
+      const excede = budget > 0 && sumProv > budget;
+      const esPrimerGrupoProv = !provVistos.has(g.proveedor);
+      provVistos.add(g.proveedor);
+      const avisoBadge = (excede && esPrimerGrupoProv)
+        ? `<span title="Suma de pedidos al proveedor en la semana (${eur(sumProv)}) supera el budget asignado (${eur(budget)})" style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;background:#FFEDD5;color:#9A3412;font-size:9px;font-weight:500">⚠ +${eur(sumProv - budget)} sobre budget</span>`
+        : '';
+
+      g.pedidos.forEach((p, idx) => {
+        const st = ESTADO_STYLE[p.estado] || ESTADO_STYLE.borrador;
+        const sem = state.semaforo[p.proveedor_normalizado];
+        const semDot = sem
+          ? `<span class="sem sem-${sem.semaforo === 'verde' ? 'v' : sem.semaforo === 'amarillo' ? 'a' : sem.semaforo === 'rojo' ? 'r' : 'x'}" title="Presup mes ${eur(sem.presupuesto_mes)} · Est mes ${eur(sem.estimado_mes)} · Pag mes ${eur(sem.pagado_mes)}"></span>`
+          : '<span class="sem sem-x"></span>';
+        const accDel = f.mp2_delete ? `<button class="tgl" onclick="mp2DeletePedido(${p.id})" title="Eliminar">×</button>` : '';
+        // Botón "+ Otro pedido a este proveedor" — sólo en filas no-borrador
+        // (un borrador todavía se está editando; no tiene sentido duplicar).
+        const accOtro = (f.mp2_w && p.estado !== 'borrador')
+          ? `<button class="tgl" onclick="mp2NuevoPedidoConProveedor('${escJs(p.proveedor_normalizado)}','${escJs(p.sociedad_id)}')" title="Crear otro pedido al mismo proveedor en esta semana">+ Otro</button>`
+          : '';
+
+        // Visual de grupo:
+        //  - Primer pedido del grupo: borde superior + nombre del proveedor visible
+        //  - Pedidos siguientes (mismo proveedor+sociedad): nombre tenue/elidido
+        //    con marca "·· mismo proveedor" para indicar continuación
+        const isFirst = idx === 0;
+        const rowStyle = isFirst
+          ? `border-top:1px solid var(--border-2)`
+          : `border-top:1px dashed var(--border-3);background:var(--bg-secondary)`;
+        const provCell = isFirst
+          ? `<td style="font-weight:500">${p.proveedor_normalizado}${multi ? ` <span style="font-size:9px;font-weight:400;color:var(--text-2)">(${g.pedidos.length} pedidos)</span>` : ''}${avisoBadge}</td>`
+          : `<td style="color:var(--text-2);padding-left:1.25rem;font-style:italic">·· ${p.proveedor_normalizado}</td>`;
+
+        filas.push(`<tr style="${rowStyle}">
+          <td>${p.id}</td>
+          ${provCell}
+          <td>${isFirst ? p.sociedad_id : `<span style="color:var(--text-2)">${p.sociedad_id}</span>`}</td>
+          <td style="text-align:right">${p.n_lineas}</td>
+          <td style="text-align:right">${eur(p.importe_estimado)}</td>
+          <td style="text-align:right">${p.importe_real != null ? eur(p.importe_real) : '—'}</td>
+          <td style="text-align:center"><span class="ped-estado" style="background:${st.bg};color:${st.fg}">${p.estado}</span></td>
+          <td style="text-align:center">${semDot}</td>
+          <td class="no-print" style="white-space:nowrap">
+            <button class="tgl" onclick="mp2OpenPedido(${p.id})">Ver</button>
+            ${accOtro}
+            ${accDel}
+          </td>
+        </tr>`);
+      });
+    }
+
     const html = `
       <table>
         <thead><tr>
@@ -185,34 +281,24 @@
           <th style="text-align:center" title="Semáforo presupuesto del mes para ese proveedor">●</th>
           <th class="no-print"></th>
         </tr></thead>
-        <tbody>
-        ${state.pedidos.map((p) => {
-          const st = ESTADO_STYLE[p.estado] || ESTADO_STYLE.borrador;
-          const sem = state.semaforo[p.proveedor_normalizado];
-          const semDot = sem
-            ? `<span class="sem sem-${sem.semaforo === 'verde' ? 'v' : sem.semaforo === 'amarillo' ? 'a' : sem.semaforo === 'rojo' ? 'r' : 'x'}" title="Presup ${eur(sem.presupuesto_mes)} · Est ${eur(sem.estimado_mes)} · Pag ${eur(sem.pagado_mes)}"></span>`
-            : '<span class="sem sem-x"></span>';
-          const accDel = f.mp2_delete ? `<button class="tgl" onclick="mp2DeletePedido(${p.id})" title="Eliminar">×</button>` : '';
-          return `<tr>
-            <td>${p.id}</td>
-            <td style="font-weight:500">${p.proveedor_normalizado}</td>
-            <td>${p.sociedad_id}</td>
-            <td style="text-align:right">${p.n_lineas}</td>
-            <td style="text-align:right">${eur(p.importe_estimado)}</td>
-            <td style="text-align:right">${p.importe_real != null ? eur(p.importe_real) : '—'}</td>
-            <td style="text-align:center"><span class="ped-estado" style="background:${st.bg};color:${st.fg}">${p.estado}</span></td>
-            <td style="text-align:center">${semDot}</td>
-            <td class="no-print" style="white-space:nowrap">
-              <button class="tgl" onclick="mp2OpenPedido(${p.id})">Ver</button>
-              ${accDel}
-            </td>
-          </tr>`;
-        }).join('')}
-        </tbody>
+        <tbody>${filas.join('')}</tbody>
       </table>
     `;
     $('mp2-tabla').innerHTML = html;
   }
+
+  // Crear otro pedido al mismo proveedor + sociedad en la misma semana.
+  // No hay UNIQUE en (semana,anio,sociedad,proveedor) → backend admite N filas.
+  window.mp2NuevoPedidoConProveedor = function (prov, soc) {
+    state.modal.pedido = {
+      id: null, semana: state.week.semana, anio: state.week.anio,
+      sociedad_id: soc || '', proveedor_normalizado: prov || '',
+      notas: '', estado: 'borrador',
+    };
+    state.modal.lineas = [];
+    state.modal.distribucion = null;
+    abrirModal();
+  };
 
   window.mp2DeletePedido = async function (id) {
     if (!confirm(`¿Eliminar pedido #${id}? Esta acción no se puede deshacer.`)) return;
