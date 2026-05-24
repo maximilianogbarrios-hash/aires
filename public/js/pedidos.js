@@ -200,15 +200,21 @@
     if ($('ped-k-exec'))     $('ped-k-exec').textContent     = (k.pct_ejecutado ?? 0).toFixed(1).replace('.', ',') + '%';
     if ($('ped-k-exec-eur')) $('ped-k-exec-eur').textContent = `${eur(k.total_pedido_real)} de ${eur(k.total_budget_mp)}`;
 
-    // Conjunto de proveedores únicos para columnas dinámicas.
-    // Filtrado por lista blanca ab_mp_proveedores_activos cuando está disponible
-    // (admin/admin-like). Si pState.proveedoresActivos es null (rol sin perm
-    // o fetch falló), no filtramos — se muestra todo como antes.
-    const provs = new Set();
-    items.forEach((it) => it.proveedores.forEach((p) => provs.add(p.proveedor)));
-    const provList = pState.proveedoresActivos
-      ? [...provs].filter((p) => pState.proveedoresActivos.has(p))
-      : [...provs];
+    // Columnas dinámicas = lista blanca ab_mp_proveedores_activos, ordenadas
+    // alfabéticamente. Independiente de qué proveedores aparezcan en el mix o
+    // en pedidos históricos: SIEMPRE los activos. Reactivar un proveedor desde
+    // el panel admin lo vuelve a mostrar automáticamente. El backend ya filtró
+    // it.proveedores al subset activo (INNER JOIN con la lista blanca), así
+    // que para locales sin mix de un proveedor activo el lookup da "—".
+    // Fallback (fetch de proveedores-activos falló) → derivar del mix.
+    let provList;
+    if (pState.proveedoresActivos) {
+      provList = [...pState.proveedoresActivos].sort((a, b) => a.localeCompare(b));
+    } else {
+      const provs = new Set();
+      items.forEach((it) => it.proveedores.forEach((p) => provs.add(p.proveedor)));
+      provList = [...provs];
+    }
 
     if (!items.length) {
       $('ped-mp-table').innerHTML = '<p style="font-size:12px;color:var(--text-2);padding:1rem">Sin datos para esta semana. Cargá presupuesto mensual y mix de proveedores.</p>';

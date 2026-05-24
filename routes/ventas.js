@@ -210,6 +210,27 @@ router.get('/kpis', async (req, res) => {
     const ventaParaMg = aggMargen.venta_para_margen || 0;
     const pct_margen_medio = ventaParaMg > 0 ? margen_total / ventaParaMg : null;
 
+    // Margen real: usa costos de ab_ventas_costos en lugar del campo
+    // margen del TPV (que tiene errores en filas de promo 2x1). Sólo
+    // considera productos que tienen costo cargado — a medida que se
+    // completen los costos, el cálculo se vuelve más representativo.
+    // Match case-insensitive + trim para tolerar variaciones del TPV.
+    const margenReal = await one(
+      `SELECT
+         SUM(v.cantidad * (COALESCE(v.total,0)/NULLIF(v.cantidad,0) - c.costo_total))::float8 AS margen_real,
+         SUM(COALESCE(v.total,0))::float8                                                     AS venta_cubierta,
+         COUNT(DISTINCT LOWER(TRIM(v.producto)))::int                                         AS n_productos_con_costo,
+         SUM(v.cantidad)::float8                                                              AS uds_cubiertas
+       FROM ab_ventas_tpv v
+       JOIN ab_ventas_costos c ON LOWER(TRIM(c.producto)) = LOWER(TRIM(v.producto))
+       ${where}`,
+      vals
+    );
+    const totalProductos = await one(
+      `SELECT COUNT(DISTINCT LOWER(TRIM(producto)))::int AS n FROM ab_ventas_tpv ${where}`,
+      vals
+    );
+
     res.json({
       venta_total,
       venta_glovo,
@@ -218,6 +239,12 @@ router.get('/kpis', async (req, res) => {
       neto_glovo,
       margen_bruto_total: margen_total,
       pct_margen_medio,
+      // Margen real basado en ab_ventas_costos (no en el campo margen del TPV).
+      margen_real: margenReal.margen_real || 0,
+      venta_cubierta: margenReal.venta_cubierta || 0,
+      pct_margen_real: margenReal.venta_cubierta > 0 ? margenReal.margen_real / margenReal.venta_cubierta : null,
+      n_productos_con_costo: margenReal.n_productos_con_costo || 0,
+      n_productos_total: totalProductos.n || 0,
       n_lineas: agg.n_lineas,
       n_lineas_anomalas: anomalas.n,
       mostrar_aviso_anomalas: anomalas.n > 0,
@@ -413,6 +440,178 @@ router.get('/camareros', async (req, res) => {
 });
 
 // UPLOADS: historial de imports (admin only).
+// ─── COSTOS ───────────────────────────────────────────────────────────
+// Lista todos los productos vendidos en el TPV con su costo cargado (si
+// lo tienen). El match es case-insensitive + trim. Orden por uds DESC.
+router.get('/costos', async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    const familia = (req.query.familia || '').trim();
+    const estado = req.query.estado || 'all'; // all | con-costo | sin-costo
+    const where = ['v.importe IS NOT NULL OR v.cantidad IS NOT NULL', '1=1'];
+    const vals = [];
+    // No usamos buildWhere acá porque queremos TODO el dataset (catálogo,
+    // no filtro temporal). Sólo filtros sobre el producto en sí.
+    let extra = '';
+    if (q) { extra += ` AND LOWER(v.producto) LIKE LOWER($${vals.length + 1})`; vals.push('%' + q + '%'); }
+    if (familia) { extra += ` AND v.familia = $${vals.length + 1}`; vals.push(familia); }
+    const rows = await many(
+      `SELECT v.producto, v.familia,
+              SUM(v.cantidad)::float8           AS uds_vendidas,
+              SUM(COALESCE(v.total,0))::float8  AS venta_total,
+              CASE WHEN SUM(v.cantidad)>0 THEN SUM(COALESCE(v.total,0))/SUM(v.cantidad) END::float8 AS pvp_medio,
+              c.id              AS costo_id,
+              c.costo_mp::float8      AS costo_mp,
+              c.mano_obra::float8     AS mano_obra,
+              c.costo_fritura::float8 AS costo_fritura,
+              c.costo_total::float8   AS costo_total,
+              c.notas                 AS notas,
+              c.updated_at::text      AS updated_at,
+              au.email                AS actualizado_por_email,
+              (c.id IS NOT NULL)      AS tiene_costo
+         FROM ab_ventas_tpv v
+         LEFT JOIN ab_ventas_costos c ON LOWER(TRIM(c.producto)) = LOWER(TRIM(v.producto))
+         LEFT JOIN ab_users au        ON au.id = c.actualizado_por
+        WHERE v.producto IS NOT NULL ${extra}
+        GROUP BY v.producto, v.familia, c.id, c.costo_mp, c.mano_obra, c.costo_fritura,
+                 c.costo_total, c.notas, c.updated_at, au.email
+        ORDER BY uds_vendidas DESC NULLS LAST
+        LIMIT 2000`,
+      vals
+    );
+    // Filtro estado en JS (más simple que mezclar con la query).
+    let filtered = rows;
+    if (estado === 'con-costo') filtered = rows.filter((r) => r.tiene_costo);
+    else if (estado === 'sin-costo') filtered = rows.filter((r) => !r.tiene_costo);
+    // Margen PVP por producto (sólo donde hay costo y pvp).
+    filtered = filtered.map((r) => {
+      const margen_pvp = (r.pvp_medio != null && r.costo_total != null && r.pvp_medio > 0)
+        ? (r.pvp_medio - r.costo_total) / r.pvp_medio
+        : null;
+      return { ...r, margen_pvp };
+    });
+    const stats = {
+      total: rows.length,
+      con_costo: rows.filter((r) => r.tiene_costo).length,
+      sin_costo: rows.filter((r) => !r.tiene_costo).length,
+    };
+    stats.pct_cubierto = stats.total > 0 ? stats.con_costo / stats.total : 0;
+    res.json({ productos: filtered, stats });
+  } catch (e) {
+    console.error('[ventas.costos.list]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Detalle de un producto: costo + receta + métricas de venta agregadas.
+router.get('/costos/:producto', async (req, res) => {
+  try {
+    const prod = decodeURIComponent(req.params.producto || '');
+    if (!prod) return res.status(400).json({ error: 'producto requerido' });
+    const costo = await one(
+      `SELECT c.*, au.email AS actualizado_por_email
+         FROM ab_ventas_costos c
+         LEFT JOIN ab_users au ON au.id = c.actualizado_por
+        WHERE LOWER(TRIM(c.producto)) = LOWER(TRIM($1))`,
+      [prod]
+    );
+    const recetas = costo ? await many(
+      `SELECT id, ingrediente, costo_unitario::float8 AS costo_unitario,
+              formato::float8 AS formato, rendimiento::float8 AS rendimiento,
+              costo_por_gr::float8 AS costo_por_gr, cantidad_receta::float8 AS cantidad_receta,
+              subtotal::float8 AS subtotal, orden
+         FROM ab_ventas_recetas
+        WHERE costo_id = $1
+        ORDER BY orden, id`,
+      [costo.id]
+    ) : [];
+    const ventas = await one(
+      `SELECT SUM(cantidad)::float8           AS uds_vendidas,
+              SUM(COALESCE(total,0))::float8   AS venta_total,
+              CASE WHEN SUM(cantidad)>0 THEN SUM(COALESCE(total,0))/SUM(cantidad) END::float8 AS pvp_medio
+         FROM ab_ventas_tpv
+        WHERE LOWER(TRIM(producto)) = LOWER(TRIM($1))`,
+      [prod]
+    );
+    res.json({ producto: prod, costo, recetas, ventas });
+  } catch (e) {
+    console.error('[ventas.costos.detail]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Crear / actualizar costo de un producto. Requiere ventas_costos_edit.
+router.put('/costos/:producto', express.json(), requirePerm('ventas_costos_edit'), async (req, res) => {
+  try {
+    const prod = decodeURIComponent(req.params.producto || '').trim();
+    if (!prod) return res.status(400).json({ error: 'producto requerido' });
+    const { familia, costo_mp, mano_obra, costo_fritura, costo_total, notas } = req.body || {};
+    // Si no viene costo_total explícito, lo derivamos de los 3 componentes.
+    const mp = costo_mp != null ? +costo_mp : null;
+    const mo = mano_obra != null ? +mano_obra : 0.65;
+    const cf = costo_fritura != null ? +costo_fritura : 0;
+    const total = costo_total != null ? +costo_total
+                 : (mp != null ? (mp + mo + cf) : null);
+    const userId = req.session?.user?.id || null;
+    const row = await one(
+      `INSERT INTO ab_ventas_costos
+         (producto, familia, costo_mp, mano_obra, costo_fritura, costo_total, notas, actualizado_por, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+       ON CONFLICT (producto) DO UPDATE
+         SET familia = EXCLUDED.familia,
+             costo_mp = EXCLUDED.costo_mp,
+             mano_obra = EXCLUDED.mano_obra,
+             costo_fritura = EXCLUDED.costo_fritura,
+             costo_total = EXCLUDED.costo_total,
+             notas = EXCLUDED.notas,
+             actualizado_por = EXCLUDED.actualizado_por,
+             updated_at = NOW()
+       RETURNING id`,
+      [prod, familia || null, mp, mo, cf, total, notas || null, userId]
+    );
+    res.json({ ok: true, costo_id: row.id });
+  } catch (e) {
+    console.error('[ventas.costos.put]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// Reemplazar la receta entera del producto (delete + insert). Requiere
+// ventas_costos_edit. Body: { lineas: [{ingrediente, costo_unitario, ...}] }
+router.post('/costos/:producto/receta', express.json(), requirePerm('ventas_costos_edit'), async (req, res) => {
+  try {
+    const prod = decodeURIComponent(req.params.producto || '').trim();
+    if (!prod) return res.status(400).json({ error: 'producto requerido' });
+    const lineas = Array.isArray(req.body?.lineas) ? req.body.lineas : [];
+    const costo = await one('SELECT id FROM ab_ventas_costos WHERE LOWER(TRIM(producto)) = LOWER(TRIM($1))', [prod]);
+    if (!costo) return res.status(404).json({ error: 'producto sin costo cargado — usá PUT /costos/:producto primero' });
+    await query('DELETE FROM ab_ventas_recetas WHERE costo_id = $1', [costo.id]);
+    let i = 0;
+    for (const l of lineas) {
+      const ing = (l.ingrediente || '').trim();
+      if (!ing) continue;
+      const cu = l.costo_unitario != null ? +l.costo_unitario : null;
+      const fmt = l.formato != null ? +l.formato : null;
+      const rend = l.rendimiento != null ? +l.rendimiento : null;
+      const cpg = l.costo_por_gr != null ? +l.costo_por_gr
+                 : (cu != null && fmt > 0 && rend > 0 ? (cu / fmt / rend) : null);
+      const cant = l.cantidad_receta != null ? +l.cantidad_receta : null;
+      const sub = l.subtotal != null ? +l.subtotal
+                  : (cpg != null && cant != null ? cpg * cant : null);
+      await query(
+        `INSERT INTO ab_ventas_recetas
+          (costo_id, ingrediente, costo_unitario, formato, rendimiento, costo_por_gr, cantidad_receta, subtotal, orden)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [costo.id, ing, cu, fmt, rend, cpg, cant, sub, i++]
+      );
+    }
+    res.json({ ok: true, lineas: i });
+  } catch (e) {
+    console.error('[ventas.costos.receta]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
 router.get('/uploads', requirePerm('ventas_upload'), async (req, res) => {
   try {
     const rows = await many(

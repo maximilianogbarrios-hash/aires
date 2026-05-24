@@ -343,12 +343,19 @@ router.get('/materia-prima', requirePerm('pedidos_view'), async (req, res) => {
       return est;
     }
 
-    // Mix por local.
+    // Mix por local — filtrado contra la lista blanca ab_mp_proveedores_activos.
+    // El INNER JOIN garantiza que sólo proveedores activos lleguen a la respuesta:
+    // las columnas dinámicas de la grilla y los totales por local se derivan
+    // exclusivamente de proveedores activos. Pedidos históricos a proveedores
+    // ya inactivos siguen en ab_pedidos_semana pero no aparecen en la vista.
     const mixRows = await many(
-      `SELECT local_id, proveedor, categoria, porcentaje::float8 AS porcentaje, activo
-         FROM ab_proveedores_mix
-        WHERE local_id = ANY($1::text[]) AND activo = TRUE
-        ORDER BY local_id, categoria, proveedor`,
+      `SELECT m.local_id, m.proveedor, m.categoria,
+              m.porcentaje::float8 AS porcentaje, m.activo
+         FROM ab_proveedores_mix m
+         INNER JOIN ab_mp_proveedores_activos a
+           ON a.proveedor = m.proveedor AND a.activo = TRUE
+        WHERE m.local_id = ANY($1::text[]) AND m.activo = TRUE
+        ORDER BY m.local_id, m.categoria, m.proveedor`,
       [localIds]
     );
     const mixByLocal = new Map();
