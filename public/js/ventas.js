@@ -61,7 +61,7 @@
     sucursalSort: { col: 'venta_total', dir: -1 },
     promoSort: { col: 'venta_total', dir: -1 },
     camareroSort: { col: 'venta_total', dir: -1 },
-    cache: { productos: null, sucursales: null, promociones: null, diahora: null, camareros: null, costos: null },
+    cache: { productos: null, sucursales: null, promociones: null, diahora: null, camareros: null, costos: null, estimacion: null },
     charts: {},   // Chart.js instances keyed by canvas id (destruir antes de re-crear)
     camarerosAccess: true,    // se vuelve false en el primer 403
     refreshTimer: null,
@@ -70,6 +70,12 @@
     costosSort: { col: 'uds_vendidas', dir: -1 },
     costosPage: 0,
     costosPageSize: 50,
+    // Toggle global: incluir mano de obra en los cálculos de Costos y
+    // Estimación MP. Default false = sólo materia prima. NO toca DB,
+    // sólo afecta los cálculos visuales del frontend.
+    usarManoObra: false,
+    // Estado del tab Estimación MP
+    estimacionExpandido: new Set(),
   };
 
   // Permiso para editar costos (admin/socio/gerente)
@@ -112,9 +118,10 @@
   function aplicarAccessControl() {
     const r = vt.role;
     const tabs = document.querySelectorAll('#sect-ventas .vt-tab');
-    let permitidos = ['productos', 'graficos', 'sucursales', 'promociones', 'diahora', 'camareros', 'costos'];
-    // Pedidos: sólo Productos + Costos (sin margen/M.Obra, sólo costo MP).
-    if (r === 'pedidos')  permitidos = ['productos', 'costos'];
+    let permitidos = ['productos', 'graficos', 'sucursales', 'promociones', 'diahora', 'camareros', 'costos', 'estimacion'];
+    // Pedidos: sólo Productos + Costos + Estimación MP (todos con columnas
+    // reducidas — sin €/margen).
+    if (r === 'pedidos')  permitidos = ['productos', 'costos', 'estimacion'];
     // Personal: sólo Día y Hora.
     if (r === 'personal') permitidos = ['diahora'];
     // Camareros sólo admin/socio/gerente.
@@ -428,6 +435,7 @@
     if (name === 'diahora')     return loadDiaHora();
     if (name === 'camareros')   return loadCamareros();
     if (name === 'costos')      return loadCostos();
+    if (name === 'estimacion')  return loadEstimacion();
   }
 
   function _paneSkel(id) {
@@ -948,11 +956,23 @@
   function renderCostos(j) {
     const reducido = vt.role === 'pedidos';
     const puedeEditar = puedeEditarCostos();
+    const conMO = !!vt.usarManoObra;
     const f = vt.costosFiltros;
-    let rows = j.productos || [];
+    // Aplicamos el toggle a los costos antes del sort, así el ordenamiento
+    // por costo_total / margen_pvp respeta la vista activa.
+    let rows = (j.productos || []).map((r) => {
+      const mo = conMO ? (r.mano_obra || 0) : 0;
+      const ct = r.costo_mp != null ? r.costo_mp + mo + (r.costo_fritura || 0) : r.costo_total;
+      const mp = (r.pvp_medio != null && ct != null && r.pvp_medio > 0) ? (r.pvp_medio - ct) / r.pvp_medio : null;
+      return { ...r, _mano_obra_vista: mo, _costo_total_vista: r.tiene_costo ? ct : null, _margen_pvp_vista: r.tiene_costo ? mp : null };
+    });
     const { col, dir } = vt.costosSort;
+    // Mapeamos las columnas dinámicas a sus campos vista para que el sort coincida.
+    const sortCol = col === 'mano_obra' ? '_mano_obra_vista'
+                  : col === 'costo_total' ? '_costo_total_vista'
+                  : col === 'margen_pvp' ? '_margen_pvp_vista' : col;
     rows = [...rows].sort((a, b) => {
-      const av = a[col], bv = b[col];
+      const av = a[sortCol], bv = b[sortCol];
       if (av == null && bv == null) return 0;
       if (av == null) return 1; if (bv == null) return -1;
       if (typeof av === 'string') return dir * av.localeCompare(bv);
@@ -979,6 +999,13 @@
             </span>
           </div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            ${reducido ? '' : `
+            <span style="font-size:10px;color:var(--vt-muted);text-transform:uppercase;letter-spacing:.5px">M. Obra:</span>
+            <div class="vt-tog-row">
+              <button class="vt-tog ${!conMO ? 'active' : ''}" id="vt-cs-mo-sin">Sin</button>
+              <button class="vt-tog ${conMO ? 'active' : ''}" id="vt-cs-mo-con">Con</button>
+            </div>
+            <span style="width:1px;height:18px;background:var(--vt-border)"></span>`}
             <input id="vt-cs-q" class="vt-search" style="max-width:200px" placeholder="🔍 buscar producto…" value="${esc(f.q)}">
             <select id="vt-cs-fam" class="vt-search" style="max-width:180px">
               <option value="">Todas las familias</option>
@@ -1021,9 +1048,9 @@
                   <td class="r">${num0(r.uds_vendidas)}</td>
                   <td class="r">${r.costo_mp != null ? eur2(r.costo_mp) : '<span style="color:var(--vt-red)">—</span>'}</td>
                   ${reducido ? '' : `
-                  <td class="r" style="color:var(--vt-muted)">${r.mano_obra != null ? eur2(r.mano_obra) : '—'}</td>
-                  <td class="r"><strong>${r.costo_total != null ? eur2(r.costo_total) : '<span style="color:var(--vt-red)">—</span>'}</strong></td>
-                  <td class="r" style="color:${_margenColor(r.margen_pvp)}">${r.margen_pvp != null ? pct1(r.margen_pvp) : '—'}</td>`}
+                  <td class="r" style="color:var(--vt-muted)">${r.tiene_costo ? eur2(r._mano_obra_vista) : '—'}</td>
+                  <td class="r"><strong>${r._costo_total_vista != null ? eur2(r._costo_total_vista) : '<span style="color:var(--vt-red)">—</span>'}</strong></td>
+                  <td class="r" style="color:${_margenColor(r._margen_pvp_vista)}">${r._margen_pvp_vista != null ? pct1(r._margen_pvp_vista) : '—'}</td>`}
                   <td style="text-align:right;white-space:nowrap">
                     ${r.tiene_costo
                       ? `<button class="vt-btn-link" onclick="vtVerReceta('${esc(r.producto).replace(/'/g, '&#39;')}')">📋 receta</button>${puedeEditar ? `<button class="vt-btn-link" onclick="vtEditarCosto('${esc(r.producto).replace(/'/g, '&#39;')}')">✏️ editar</button>` : ''}`
@@ -1057,6 +1084,8 @@
     document.querySelectorAll('#vt-pane-costos .vt-tog[data-est]').forEach((b) => b.onclick = () => {
       f.estado = b.dataset.est; vt.costosPage = 0; loadCostos();
     });
+    const $moSin = $('vt-cs-mo-sin'); if ($moSin) $moSin.onclick = () => vtSetUsarManoObra(false);
+    const $moCon = $('vt-cs-mo-con'); if ($moCon) $moCon.onclick = () => vtSetUsarManoObra(true);
     $('vt-cs-prev').onclick = () => { vt.costosPage = Math.max(0, vt.costosPage - 1); renderCostos(j); };
     $('vt-cs-next').onclick = () => { vt.costosPage = Math.min(pages - 1, vt.costosPage + 1); renderCostos(j); };
   }
@@ -1254,6 +1283,173 @@
       }
     };
   }
+
+  // Toggle global M.Obra: re-renderiza cualquier tab activa que dependa
+  // del flag (Costos y Estimación MP). Cache no se invalida — los datos
+  // crudos del backend no cambian; sólo el cálculo en el cliente.
+  window.vtSetUsarManoObra = function (v) {
+    vt.usarManoObra = !!v;
+    if (vt.currentTab === 'costos'     && vt.cache.costos)     renderCostos(vt.cache.costos);
+    if (vt.currentTab === 'estimacion' && vt.cache.estimacion) renderEstimacion(vt.cache.estimacion);
+  };
+
+  // ─── Estimación MP por local ───────────────────────────────────────
+  async function loadEstimacion() {
+    _paneSkel('vt-pane-estimacion');
+    try {
+      const j = vt.cache.estimacion || await api('/api/v1/ventas/estimacion-mp?' + buildQS());
+      vt.cache.estimacion = j;
+      renderEstimacion(j);
+    } catch (e) { _paneError('vt-pane-estimacion', e); }
+  }
+
+  function _semaforoMp(pct, objetivo) {
+    if (pct == null) return { color: 'var(--vt-muted)', icon: '—' };
+    if (pct <= objetivo)        return { color: 'var(--vt-green)', icon: '🟢' };
+    if (pct <= objetivo + 0.03) return { color: 'var(--vt-amber)', icon: '🟡' };
+    return { color: 'var(--vt-red)', icon: '🔴' };
+  }
+
+  function renderEstimacion(j) {
+    const reducido = vt.role === 'pedidos';
+    const conMO = !!vt.usarManoObra;
+    const objetivo = j.objetivo_pct_mp || 0.30;
+    const locales = j.locales || [];
+    const total = j.total || {};
+    // Aplicar toggle a totales + por local (suma costo MP + opcional M.Obra).
+    const costoTotalRed = total.costo_mp_estimado + (conMO ? total.mano_obra_estimada : 0);
+    const pctTotal = total.facturacion_real > 0 ? costoTotalRed / total.facturacion_real : null;
+    const rows = locales.map((l) => {
+      const costoVista = (l.costo_mp_estimado || 0) + (conMO ? (l.mano_obra_estimada || 0) : 0);
+      const pctVista = l.facturacion_real > 0 ? costoVista / l.facturacion_real : null;
+      return { ...l, _costo_vista: costoVista, _pct_vista: pctVista };
+    });
+
+    $('vt-pane-estimacion').innerHTML = `
+      <div class="vt-card">
+        <div class="vt-card-head">
+          <div>
+            <span class="vt-card-title">📊 Estimación MP por local</span>
+            <span class="vt-cov-pill" style="margin-left:8px">
+              ${total.productos_con_costo} / ${total.productos_total} productos con costo
+            </span>
+          </div>
+          ${reducido ? '' : `
+          <div style="display:flex;gap:6px;align-items:center">
+            <span style="font-size:10px;color:var(--vt-muted);text-transform:uppercase;letter-spacing:.5px">M. Obra:</span>
+            <div class="vt-tog-row">
+              <button class="vt-tog ${!conMO ? 'active' : ''}" id="vt-em-mo-sin">Sin</button>
+              <button class="vt-tog ${conMO ? 'active' : ''}" id="vt-em-mo-con">Con</button>
+            </div>
+          </div>`}
+        </div>
+        ${reducido ? '' : `
+        <div class="vt-kpis" style="grid-template-columns:repeat(3,1fr)">
+          <div class="vt-kpi">
+            <div class="vt-kpi-lbl">Costo ${conMO ? 'MP + M.Obra' : 'MP'} estimado</div>
+            <div class="vt-kpi-val">${eur0(costoTotalRed)}</div>
+            <div class="vt-kpi-sub">de ${eur0(total.facturacion_real)} facturados</div>
+          </div>
+          <div class="vt-kpi vt-kpi-real">
+            <div class="vt-kpi-lbl">% ${conMO ? 'MP+MO' : 'MP'} medio red</div>
+            <div class="vt-kpi-val" style="color:${_semaforoMp(pctTotal, objetivo).color}">${pct1(pctTotal)}</div>
+            <div class="vt-kpi-sub">${_semaforoMp(pctTotal, objetivo).icon} objetivo ${pct1(objetivo)}</div>
+          </div>
+          <div class="vt-kpi">
+            <div class="vt-kpi-lbl">Cobertura productos</div>
+            <div class="vt-kpi-val">${total.productos_con_costo} / ${total.productos_total}</div>
+            <div class="vt-kpi-sub">${pct1(total.productos_total > 0 ? total.productos_con_costo / total.productos_total : 0)} con costo cargado</div>
+          </div>
+        </div>`}
+        <p style="font-size:11px;color:var(--vt-muted);margin-bottom:10px">📌 Las unidades con precio 0 € (promociones 2×1) se incluyen en el costo porque la materia prima se consumió igual.</p>
+        <div class="vt-tbl-wrap">
+          <table class="vt-tbl">
+            <thead><tr>
+              <th>Local</th>
+              ${reducido ? '' : `<th class="r">Facturación</th>`}
+              <th class="r">Costo ${conMO ? 'MP+MO' : 'MP'} est.</th>
+              ${reducido ? '' : `
+              <th class="r">% ${conMO ? 'MP+MO' : 'MP'} real</th>
+              <th class="r">Obj. ${pct1(objetivo)}</th>
+              <th>Desvío</th>`}
+              <th>Cobertura</th>
+              <th style="width:30px"></th>
+            </tr></thead>
+            <tbody>
+              ${rows.map((l) => {
+                const sem = _semaforoMp(l._pct_vista, objetivo);
+                const desvio = l._pct_vista != null ? l._pct_vista - objetivo : null;
+                const expanded = vt.estimacionExpandido.has(l.local);
+                return `
+                <tr onclick="vtToggleEstimacionLocal('${esc(l.local).replace(/'/g, '&#39;')}')" style="cursor:pointer">
+                  <td><strong>${esc(l.local)}</strong></td>
+                  ${reducido ? '' : `<td class="r">${eur0(l.facturacion_real)}</td>`}
+                  <td class="r">${eur0(l._costo_vista)}</td>
+                  ${reducido ? '' : `
+                  <td class="r" style="color:${sem.color};font-weight:700">${pct1(l._pct_vista)}</td>
+                  <td class="r" style="color:var(--vt-muted)">${pct1(objetivo)}</td>
+                  <td style="color:${sem.color}">${sem.icon} ${desvio != null ? (desvio >= 0 ? '+' : '') + (desvio * 100).toFixed(1).replace('.', ',') + '%' : '—'}</td>`}
+                  <td style="color:var(--vt-muted);font-size:10px">${l.productos_con_costo} / ${l.productos_total} prod (${pct1(l.pct_cobertura)})</td>
+                  <td style="color:var(--vt-muted);text-align:center">${expanded ? '▾' : '▸'}</td>
+                </tr>
+                ${expanded ? `
+                <tr><td colspan="${reducido ? 4 : 8}" style="background:var(--vt-card2);padding:0">
+                  <div style="padding:12px 16px">
+                    <p style="font-size:10px;color:var(--vt-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;font-weight:700">Top 10 productos por consumo de MP</p>
+                    ${l.top_productos.length === 0 ? '<p style="font-size:11px;color:var(--vt-muted)">Sin productos con costo cargado en este local</p>' : `
+                    <table class="vt-tbl" style="background:transparent">
+                      <thead><tr>
+                        <th>Producto</th>
+                        <th class="r">Uds. totales</th>
+                        <th class="r">Uds. gratis</th>
+                        <th class="r">Costo/ud${conMO ? ' (MP+MO)' : ' MP'}</th>
+                        <th class="r">Costo ${conMO ? 'MP+MO' : 'MP'} total</th>
+                      </tr></thead>
+                      <tbody>
+                        ${l.top_productos.map((p) => {
+                          const cu = (p.costo_mp || 0) + (conMO ? (p.mano_obra || 0) : 0);
+                          const ct = (p.uds_totales || 0) * cu;
+                          return `<tr>
+                            <td>${esc(p.producto)}</td>
+                            <td class="r">${num0(p.uds_totales)}</td>
+                            <td class="r" style="color:var(--vt-amber)">${num0(p.uds_gratis)}</td>
+                            <td class="r">${eur2(cu)}</td>
+                            <td class="r"><strong>${eur0(ct)}</strong></td>
+                          </tr>`;
+                        }).join('')}
+                      </tbody>
+                    </table>`}
+                  </div>
+                </td></tr>` : ''}`;
+              }).join('')}
+              ${reducido ? '' : `
+              <tr class="total" onclick="event.stopPropagation()">
+                <td>TOTAL</td>
+                <td class="r">${eur0(total.facturacion_real)}</td>
+                <td class="r">${eur0(costoTotalRed)}</td>
+                <td class="r" style="color:${_semaforoMp(pctTotal, objetivo).color}">${pct1(pctTotal)}</td>
+                <td class="r" style="color:var(--vt-muted)">${pct1(objetivo)}</td>
+                <td style="color:${_semaforoMp(pctTotal, objetivo).color}">${_semaforoMp(pctTotal, objetivo).icon}</td>
+                <td></td>
+                <td></td>
+              </tr>`}
+            </tbody>
+          </table>
+        </div>
+        <p style="font-size:10px;color:var(--vt-muted);margin-top:10px;font-style:italic">
+          Estimación basada en ${total.productos_con_costo} productos con costo cargado. Productos sin costo (bebidas, extras, salsas) no están incluidos — el % MP real es mayor. A medida que se cargan más costos, la estimación mejora.
+        </p>
+      </div>`;
+    const $moSin = $('vt-em-mo-sin'); if ($moSin) $moSin.onclick = () => vtSetUsarManoObra(false);
+    const $moCon = $('vt-em-mo-con'); if ($moCon) $moCon.onclick = () => vtSetUsarManoObra(true);
+  }
+
+  window.vtToggleEstimacionLocal = function (local) {
+    if (!local) return;
+    if (vt.estimacionExpandido.has(local)) vt.estimacionExpandido.delete(local);
+    else vt.estimacionExpandido.add(local);
+    if (vt.cache.estimacion) renderEstimacion(vt.cache.estimacion);
+  };
 
   // Expose entry point
   window.vtInit = vtInit;

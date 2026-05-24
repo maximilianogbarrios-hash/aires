@@ -1453,3 +1453,86 @@ POST receta ⇒ 200 OK · 2 líneas persistidas con costo_por_gr y subtotal auto
 A medida que admin/gerente carguen costos para más productos, el
 margen real se vuelve más representativo (hoy cubre el 60,8% de la
 venta total — con 17 productos hits sobre 396 SKUs únicos).
+
+## Módulo Ventas — tab Estimación MP por local + toggle M.Obra (2026-05-24)
+
+Dos cambios en el módulo Ventas → Costos:
+
+**Cambio 1 — Toggle global Con/Sin mano de obra**
+
+Toggle en el header de la tabla Costos:
+```
+M. Obra:  [ Sin · Con ]
+```
+
+- **Sin** (default al cargar la página): la columna M.Obra muestra 0,00 €
+  para todos. Costo Total = sólo Costo MP. Margen PVP se recalcula
+  en tiempo real con ese costo reducido.
+- **Con**: M.Obra muestra el valor real cargado (0,50 € o 0,65 €
+  según producto). Costo Total = MP + M.Obra (+ fritura si tiene).
+
+El toggle **no toca la base de datos** — es un flag visual del frontend
+(`vt.usarManoObra`, default `false`). Compartido globalmente entre los
+tabs **Costos** y **Estimación MP** — cambiar el toggle en uno
+refresca el otro automáticamente sin pegarle al backend.
+
+Los cálculos derivados (`_mano_obra_vista`, `_costo_total_vista`,
+`_margen_pvp_vista`) se computan en `renderCostos()` antes del sort
+para que ordenar por "Costo Total" o "Margen PVP" use los valores
+de la vista activa, no los de la DB.
+
+**Cambio 2 — Nueva tab "📊 Estimación MP"**
+
+Endpoint nuevo `GET /api/v1/ventas/estimacion-mp` (gated por
+`requirePerm('ventas')` como el resto). Cruza `ab_ventas_tpv` con
+`ab_ventas_costos` (LOWER(TRIM) match), incluye **filas con
+`total = 0`** (promociones 2×1, regalos) porque la MP se consumió igual.
+
+Devuelve por local:
+- `facturacion_real`, `costo_mp_estimado`, `mano_obra_estimada`
+- `pct_mp`, `pct_mp_co` (con mano obra)
+- `productos_con_costo / productos_total`, `pct_cobertura`
+- `top_productos[10]` por costo MP consumido — con `uds_totales`,
+  `uds_gratis` (filas a 0€), `costo_mp`, `mano_obra`, `costo_total`,
+  `costo_mp_total`. Resuelto con `ROW_NUMBER() OVER (PARTITION BY
+  local ...)` en una sola query (evita N+1).
+
+Más el objeto `total` con la suma de la red + objetivo (0.30).
+
+**Vista frontend**:
+- 3 KPIs globales: Costo MP estimado · % MP medio · Cobertura.
+- Tabla por local con **semáforo de desvío**:
+  🟢 verde (% MP ≤ objetivo) · 🟡 amarillo (objetivo a +3pp) ·
+  🔴 rojo (> objetivo + 3pp).
+- Click en una fila de local → expande con los top 10 productos por
+  consumo de MP en ese local (uds totales, uds gratis, costo/ud,
+  costo MP total).
+- Toggle Con/Sin M.Obra en el header (sincronizado con Costos).
+- Nota al pie: "Estimación basada en X productos con costo cargado.
+  Productos sin costo (bebidas, extras, salsas) no están incluidos —
+  el % MP real es mayor."
+- Fila TOTAL al pie en negrita con sus propios cálculos + semáforo.
+
+**Access control**:
+- admin / socio / gerente: todo.
+- pedidos: ve la tabla sin las columnas de facturación / % MP /
+  desvío / objetivo. Sólo Local, Costo MP est., Cobertura, drill-down
+  de top productos (sin precio medio).
+- personal: sin acceso.
+
+**E2E verificado**:
+
+```
+estimacion-mp sin filtros (admin):
+  total fac: 1 567 696 €
+  costo MP estimado: 264 611 € (16,9%)
+  costo MP+MO estimado: 322 831 € (20,6%)
+  top local: SANTO DOMINGO · 241 744 € · 10 productos drill-down
+estimacion-mp?semanas=15 (admin):
+  total fac: 120 366 € · 14 locales con datos
+estimacion-mp (pedidos): 200 (perm `ventas` OK, columnas filtra el front)
+```
+
+El % MP global (16,9 %) es bajo porque sólo 17 de 396 SKUs tienen
+costo cargado. A medida que se completen los costos en la tab
+Costos, el % MP se acerca al real (~28-32 %).

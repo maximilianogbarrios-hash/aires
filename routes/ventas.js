@@ -612,6 +612,88 @@ router.post('/costos/:producto/receta', express.json(), requirePerm('ventas_cost
   }
 });
 
+// ─── ESTIMACIÓN MP por local ──────────────────────────────────────────
+// Cruza ab_ventas_tpv con ab_ventas_costos para estimar el costo de
+// materia prima por local. Las líneas con `total=0` (promos 2x1, regalos)
+// se INCLUYEN en el costo porque la MP se consumió igual — esa es la
+// razón de existir de este endpoint contra el `margen` directo del TPV.
+//
+// Devuelve por local: facturación real, costo MP estimado, % MP, cobertura,
+// + top 10 productos por costo MP consumido (para drill-down).
+router.get('/estimacion-mp', async (req, res) => {
+  try {
+    const { sql: where, vals } = buildWhere(req.query);
+    // Por local: agregados básicos.
+    const porLocal = await many(
+      `SELECT t.local,
+              SUM(COALESCE(t.total, 0))::float8                                                  AS facturacion_real,
+              SUM(CASE WHEN c.costo_mp IS NOT NULL THEN t.cantidad * c.costo_mp ELSE 0 END)::float8 AS costo_mp_estimado,
+              SUM(CASE WHEN c.costo_mp IS NOT NULL THEN t.cantidad * COALESCE(c.mano_obra,0) ELSE 0 END)::float8 AS mano_obra_estimada,
+              COUNT(DISTINCT t.producto) FILTER (WHERE c.costo_mp IS NOT NULL)::int             AS productos_con_costo,
+              COUNT(DISTINCT t.producto)::int                                                    AS productos_total,
+              SUM(CASE WHEN c.costo_mp IS NOT NULL THEN t.cantidad ELSE 0 END)::float8           AS uds_con_costo,
+              SUM(t.cantidad)::float8                                                            AS uds_totales
+         FROM ab_ventas_tpv t
+         LEFT JOIN ab_ventas_costos c ON LOWER(TRIM(c.producto)) = LOWER(TRIM(t.producto))
+         ${where ? where + ' AND' : 'WHERE'} t.total >= 0
+        GROUP BY t.local
+        ORDER BY facturacion_real DESC NULLS LAST`,
+      vals
+    );
+    // Top 10 productos por costo MP consumido, por local (para drill-down).
+    // Una sola query con window function evita N+1.
+    const topProductos = await many(
+      `SELECT * FROM (
+         SELECT t.local,
+                t.producto,
+                c.costo_mp::float8                       AS costo_mp,
+                c.mano_obra::float8                      AS mano_obra,
+                c.costo_total::float8                    AS costo_total,
+                SUM(t.cantidad)::float8                  AS uds_totales,
+                SUM(CASE WHEN t.total = 0 THEN t.cantidad ELSE 0 END)::float8 AS uds_gratis,
+                (SUM(t.cantidad) * c.costo_mp)::float8   AS costo_mp_total,
+                ROW_NUMBER() OVER (PARTITION BY t.local ORDER BY (SUM(t.cantidad) * c.costo_mp) DESC NULLS LAST) AS rk
+           FROM ab_ventas_tpv t
+           JOIN ab_ventas_costos c ON LOWER(TRIM(c.producto)) = LOWER(TRIM(t.producto))
+           ${where ? where + ' AND' : 'WHERE'} t.total >= 0
+          GROUP BY t.local, t.producto, c.costo_mp, c.mano_obra, c.costo_total
+       ) x
+       WHERE rk <= 10
+       ORDER BY local, rk`,
+      vals
+    );
+    const porLocalTop = new Map();
+    for (const p of topProductos) {
+      if (!porLocalTop.has(p.local)) porLocalTop.set(p.local, []);
+      porLocalTop.get(p.local).push(p);
+    }
+    const locales = porLocal.map((l) => ({
+      ...l,
+      pct_mp:    l.facturacion_real > 0 ? l.costo_mp_estimado    / l.facturacion_real : null,
+      pct_mp_co: l.facturacion_real > 0 ? (l.costo_mp_estimado + l.mano_obra_estimada) / l.facturacion_real : null,
+      pct_cobertura: l.productos_total > 0 ? l.productos_con_costo / l.productos_total : 0,
+      top_productos: porLocalTop.get(l.local) || [],
+    }));
+    // Totales globales.
+    const total = {
+      facturacion_real:   locales.reduce((s, l) => s + (l.facturacion_real || 0), 0),
+      costo_mp_estimado:  locales.reduce((s, l) => s + (l.costo_mp_estimado || 0), 0),
+      mano_obra_estimada: locales.reduce((s, l) => s + (l.mano_obra_estimada || 0), 0),
+      productos_con_costo: porLocal.length ? Math.max(...porLocal.map((l) => l.productos_con_costo || 0)) : 0,
+      productos_total: await one(
+        `SELECT COUNT(DISTINCT LOWER(TRIM(producto)))::int AS n FROM ab_ventas_tpv ${where ? where + ' AND' : 'WHERE'} total >= 0`,
+        vals
+      ).then((r) => r.n),
+    };
+    total.pct_mp = total.facturacion_real > 0 ? total.costo_mp_estimado / total.facturacion_real : null;
+    total.pct_mp_co = total.facturacion_real > 0 ? (total.costo_mp_estimado + total.mano_obra_estimada) / total.facturacion_real : null;
+    res.json({ locales, total, objetivo_pct_mp: 0.30 });
+  } catch (e) {
+    console.error('[ventas.estimacion-mp]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
 router.get('/uploads', requirePerm('ventas_upload'), async (req, res) => {
   try {
     const rows = await many(
