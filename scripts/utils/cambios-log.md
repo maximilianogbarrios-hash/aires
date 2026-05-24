@@ -985,3 +985,44 @@ brechas en `/api/v1/bancos/*`:
 `detectarLeaks()` recorre recursivamente la respuesta JSON buscando
 `categoria` o `proveedor*` con valores sensibles. Pre-fix: 24
 violaciones distintas. Post-fix: 0.
+
+
+## Regla protegida Raba Buildings → GASTOS_DIRECCION (2026-05-24)
+
+Migración 13 (`regla_seed_raba_protegida`) crea una regla permanente
+con prioridad 999 que clasifica cualquier movimiento con "raba" en el
+concepto como `GASTOS_DIRECCION` / `Raba Buildings`. La columna nueva
+`ab_reglas_normalizacion.protegida` (boolean) blinda la regla contra
+borrado y contra reclasificación manual (incluso para admin).
+
+### Backfill aplicado por la migración
+- 14 movimientos · 75 804 € consolidados en categoría=`GASTOS_DIRECCION`
+  + proveedor_normalizado=`Raba Buildings`.
+- Query de verificación post-migración: **0 movimientos** con "raba" en
+  cualquier campo de texto que NO estén en GASTOS_DIRECCION.
+
+### Lógica de overrides
+- **Ingesta de extractos** (`/upload-extracto`): la regla protegida
+  override INTRAGRUPO (excepción a la regla general "no pisar
+  INTRAGRUPO"). Conceptos del tipo "Traspaso Aires A Raba Buildings"
+  van directo a GASTOS_DIRECCION en vez de quedar como INTRAGRUPO.
+- **POST `/reclasificar`**: si el concepto matchea regla protegida y
+  el destino propuesto no es el destino canónico de la regla, devuelve
+  HTTP 409 (con `{ regla: { categoria, proveedor } }`). Aplica a TODOS
+  los roles, admin incluido.
+- **DELETE `/reglas-normalizacion/:id`**: HTTP 409 si la regla es
+  protegida.
+- **GET `/reglas-normalizacion`**: para no-admin la regla queda oculta
+  por el filtro existente de categorías sensibles + Raba.
+
+### Smoke verificación
+- DELETE regla 127 (admin) → HTTP 409 ✓
+- POST /reclasificar "Pago Raba Buildings SL" → OTROS (admin) → HTTP 409 ✓
+- POST /reclasificar al destino correcto (GASTOS_DIRECCION/Raba) → HTTP 200 ✓
+- Gerente GET /reglas-normalizacion → 81 reglas, Raba oculta ✓
+- Admin GET /reglas-normalizacion → ve regla 127 con `protegida=true` ✓
+- Admin drill-down "Gastos Dirección" → ve "Raba Buildings" como miembro ✓
+
+Resultado: cualquier banco, sociedad o período → movs con "raba" van
+a Gastos Dirección de forma automática. Nadie puede revertirlo desde
+la UI ni la API.

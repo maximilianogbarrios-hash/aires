@@ -149,15 +149,15 @@ router.post('/upload-extracto', requirePerm('bancos_upload_admin'), upload.singl
     // hardcodeado. Protección sobre INTRAGRUPO: una regla que apunte a una
     // categoría DISTINTA de INTRAGRUPO NO puede pisar un mov ya marcado como
     // INTRAGRUPO (evita que una regla genérica de 'prestamo' o 'transferencia'
-    // misclasifique un Aires→Aires). Las reglas que apuntan a INTRAGRUPO sí
-    // se aplican — confirman la categoría y agregan proveedor_normalizado
-    // (caso típico: 'raba' → Raba Buildings).
+    // misclasifique un Aires→Aires). EXCEPCIÓN: las reglas marcadas como
+    // `protegida` (ej. Raba Buildings → GASTOS_DIRECCION) SÍ overrideán
+    // INTRAGRUPO — son la fuente de verdad permanente.
     const reglasDb = await loadReglas();
     let reglasAplicadas = 0;
     for (const m of parsed.movimientos) {
       const r = matchRegla(m.concepto, reglasDb);
       if (!r) continue;
-      if (m.categoria === 'INTRAGRUPO' && r.categoria !== 'INTRAGRUPO') continue;
+      if (m.categoria === 'INTRAGRUPO' && r.categoria !== 'INTRAGRUPO' && !r.protegida) continue;
       m.categoria = r.categoria;
       m.proveedor_normalizado = r.proveedor_normalizado;
       reglasAplicadas++;
@@ -1410,6 +1410,22 @@ router.post('/reclasificar', express.json(), async (req, res) => {
     if (!concepto || !categoria_nueva || !proveedor_nuevo) {
       return res.status(400).json({ error: 'concepto, categoria_nueva y proveedor_nuevo requeridos' });
     }
+    // Si el concepto matchea una regla protegida (ej. Raba), la regla
+    // gana siempre — nadie (ni admin) puede sobreescribir el destino.
+    // Esto blindar la seed Raba → GASTOS_DIRECCION contra cualquier
+    // intento de reclasificación manual.
+    const reglasDb = await loadReglas();
+    const reglaProtegida = matchRegla(concepto, reglasDb);
+    if (reglaProtegida?.protegida) {
+      const okDestino = categoria_nueva === reglaProtegida.categoria
+        && proveedor_nuevo === reglaProtegida.proveedor_normalizado;
+      if (!okDestino) {
+        return res.status(409).json({
+          error: 'Concepto regido por regla protegida',
+          regla: { categoria: reglaProtegida.categoria, proveedor: reglaProtegida.proveedor_normalizado },
+        });
+      }
+    }
     // Restricciones para no-admin:
     //   1) No pueden tocar conceptos que ya pertenecen a categorías sensibles
     //      (NOMINAS_DIRECCION, GASTOS_DIRECCION, PRESTAMOS, FINANCIERO, INTRAGRUPO)
@@ -1505,7 +1521,7 @@ router.get('/reglas-normalizacion', async (req, res) => {
   try {
     let rows = await many(
       `SELECT id, patron, tipo_match, categoria, proveedor_normalizado,
-              prioridad, activo, creado_en
+              prioridad, activo, creado_en, forzar_visible, protegida
          FROM ab_reglas_normalizacion
         ORDER BY prioridad DESC, id ASC`
     );
@@ -1522,10 +1538,16 @@ router.get('/reglas-normalizacion', async (req, res) => {
 
 // Borrar regla (hard delete — no soft, para no acumular ruido).
 // Reservado a admin/socio (cambios estructurales sobre la pipeline).
+// Las reglas marcadas `protegida=TRUE` no pueden borrarse (ej. la regla
+// seed Raba Buildings → GASTOS_DIRECCION).
 router.delete('/reglas-normalizacion/:id', requireAdminLike, async (req, res) => {
   try {
     const id = +req.params.id;
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'id inválido' });
+    const existente = await one('SELECT protegida FROM ab_reglas_normalizacion WHERE id=$1', [id]);
+    if (existente?.protegida) {
+      return res.status(409).json({ error: 'Regla protegida: no se puede borrar' });
+    }
     const r = await query('DELETE FROM ab_reglas_normalizacion WHERE id=$1', [id]);
     res.json({ ok: true, deleted: r.rowCount });
   } catch (e) {
