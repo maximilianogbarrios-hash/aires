@@ -1257,7 +1257,7 @@ function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.remove('on'));
   $(`sect-${name}`).classList.add('on');
   if (btn) btn.classList.add('on');
-  if (name === 'ventas') { updLocChart(); updIncid(); }
+  if (name === 'ventas' && typeof window.vtInit === 'function') window.vtInit();
   if (name === 'presupuesto') {
     fetchPresContexto().then(() => updPresupuesto()).catch(() => updPresupuesto());
   }

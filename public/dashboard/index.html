@@ -335,46 +335,164 @@
   </div>
 </div>
 
-<!-- VENTAS (antes EVOLUCION — renombrado, contenido inicial preservado;
-     el módulo Ventas TPV completo reemplazará el contenido en su iteración) -->
+<!-- VENTAS — dashboard TPV (ver public/js/ventas.js).
+     El layout 2-col (sidebar + main) y todos los controles se renderizan
+     en JS al entrar a la tab por primera vez. Estilos scoped con prefix
+     vt- para no chocar con el resto del dashboard. -->
+<style>
+#sect-ventas{--vt-bg:#111114;--vt-card:#1c1c21;--vt-card2:#242429;--vt-border:#2e2e35;
+  --vt-red:#e63946;--vt-amber:#f4a261;--vt-teal:#4cc9f0;--vt-green:#26a65b;
+  --vt-blue:#60a5fa;--vt-purple:#a78bfa;--vt-text:#f0ece6;--vt-muted:#8a8a96;
+  --vt-glovo:#f97316;--vt-jueves:#22d3ee;--vt-aires:#4cc9f0;--vt-chicken:#fb923c;
+  background:var(--vt-bg);color:var(--vt-text);margin:-1rem;padding:0;border-radius:8px;overflow:hidden}
+#sect-ventas.on{display:flex !important;gap:0;align-items:stretch;min-height:680px}
+#sect-ventas .vt-sidebar{width:268px;flex-shrink:0;background:var(--vt-card);border-right:1px solid var(--vt-border);padding:14px;overflow-y:auto;max-height:88vh}
+#sect-ventas .vt-sec{padding:10px 0;border-bottom:1px solid var(--vt-border)}
+#sect-ventas .vt-sec:last-child{border-bottom:0}
+#sect-ventas .vt-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.4px;color:var(--vt-muted);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+#sect-ventas .vt-lbl-btns{display:flex;gap:4px}
+#sect-ventas .vt-btn-xs{font-size:9px;padding:2px 7px;border-radius:5px;border:1px solid var(--vt-border);background:var(--vt-card2);color:var(--vt-muted);cursor:pointer}
+#sect-ventas .vt-btn-xs:hover{border-color:var(--vt-amber);color:var(--vt-amber)}
+#sect-ventas .vt-brand-btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+#sect-ventas .vt-brand-btn{padding:7px 4px;border-radius:8px;border:1px solid var(--vt-border);background:var(--vt-card2);color:var(--vt-muted);cursor:pointer;font-size:10px;font-weight:600;text-align:center}
+#sect-ventas .vt-brand-btn.active.b-all{background:rgba(244,162,97,.15);border-color:var(--vt-amber);color:var(--vt-amber)}
+#sect-ventas .vt-brand-btn.active.b-aires{background:rgba(76,201,240,.15);border-color:var(--vt-aires);color:var(--vt-aires)}
+#sect-ventas .vt-brand-btn.active.b-chicken{background:rgba(251,146,60,.15);border-color:var(--vt-chicken);color:var(--vt-chicken)}
+#sect-ventas .vt-date-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+#sect-ventas .vt-date-grid label{font-size:9px;color:var(--vt-muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:3px}
+#sect-ventas .vt-date-grid input{width:100%;background:var(--vt-card2);border:1px solid var(--vt-border);border-radius:6px;padding:5px 7px;color:var(--vt-text);font-size:10px;color-scheme:dark}
+#sect-ventas .vt-pills{display:flex;flex-wrap:wrap;gap:4px}
+#sect-ventas .vt-pill{font-size:10px;padding:4px 8px;border-radius:6px;border:1px solid var(--vt-border);background:var(--vt-card2);color:var(--vt-muted);cursor:pointer}
+#sect-ventas .vt-pill:hover{border-color:var(--vt-amber);color:var(--vt-text)}
+#sect-ventas .vt-pill.active{background:rgba(244,162,97,.15);border-color:var(--vt-amber);color:var(--vt-amber);font-weight:600}
+#sect-ventas .vt-jue{font-size:10px;padding:5px 9px;border-radius:6px;border:1px solid var(--vt-jueves);background:var(--vt-card2);color:var(--vt-jueves);cursor:pointer;width:100%;text-align:center;margin-top:5px}
+#sect-ventas .vt-jue.active{background:rgba(34,211,238,.15);font-weight:700}
+#sect-ventas .vt-tog{font-size:10px;padding:4px 10px;border-radius:6px;border:1px solid var(--vt-border);background:var(--vt-card2);color:var(--vt-muted);cursor:pointer}
+#sect-ventas .vt-tog:hover{border-color:var(--vt-amber);color:var(--vt-amber)}
+#sect-ventas .vt-tog.active{background:rgba(244,162,97,.15);border-color:var(--vt-amber);color:var(--vt-amber);font-weight:600}
+#sect-ventas .vt-tog.glv.active{background:rgba(249,115,22,.15);border-color:var(--vt-glovo);color:var(--vt-glovo)}
+#sect-ventas .vt-tog-row{display:flex;gap:5px;flex-wrap:wrap}
+#sect-ventas .vt-chk-list{display:flex;flex-direction:column;gap:1px;max-height:170px;overflow-y:auto;padding-right:2px}
+#sect-ventas .vt-chk-row{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:6px;cursor:pointer;font-size:11px;user-select:none}
+#sect-ventas .vt-chk-row:hover{background:var(--vt-card2)}
+#sect-ventas .vt-chk-row input{accent-color:var(--vt-amber);width:14px;height:14px;cursor:pointer}
+#sect-ventas .vt-search{width:100%;background:var(--vt-card2);border:1px solid var(--vt-border);border-radius:6px;padding:5px 8px;color:var(--vt-text);font-size:11px}
+#sect-ventas .vt-search:focus{outline:none;border-color:var(--vt-amber)}
+#sect-ventas .vt-foot{padding-top:10px}
+#sect-ventas .vt-foot-stat{display:flex;justify-content:space-between;font-size:10.5px;color:var(--vt-muted);margin-bottom:3px}
+#sect-ventas .vt-foot-stat strong{color:var(--vt-text);font-weight:600}
+#sect-ventas .vt-reset{width:100%;margin-top:9px;padding:9px;border-radius:8px;background:rgba(244,162,97,.1);border:1px solid rgba(244,162,97,.25);color:var(--vt-amber);font-size:11px;font-weight:700;cursor:pointer}
+#sect-ventas .vt-reset:hover{background:var(--vt-amber);color:#111}
+#sect-ventas .vt-main{flex:1;min-width:0;display:flex;flex-direction:column}
+#sect-ventas .vt-topbar{position:sticky;top:0;z-index:5;background:rgba(17,17,20,.93);backdrop-filter:blur(20px);border-bottom:1px solid var(--vt-border);padding:11px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+#sect-ventas .vt-tb-pill{font-size:11px;font-weight:800;padding:3px 10px;border-radius:20px;letter-spacing:.5px}
+#sect-ventas .vt-tb-pill.b-all{background:rgba(244,162,97,.15);color:var(--vt-amber);border:1px solid rgba(244,162,97,.3)}
+#sect-ventas .vt-tb-pill.b-aires{background:rgba(76,201,240,.15);color:var(--vt-aires);border:1px solid rgba(76,201,240,.3)}
+#sect-ventas .vt-tb-pill.b-chicken{background:rgba(251,146,60,.15);color:var(--vt-chicken);border:1px solid rgba(251,146,60,.3)}
+#sect-ventas .vt-tb-title{font-size:15px;font-weight:800}
+#sect-ventas .vt-tb-sub{font-size:10px;color:var(--vt-muted);margin-top:2px}
+#sect-ventas .vt-tb-badges{display:flex;gap:8px;flex-wrap:wrap}
+#sect-ventas .vt-tb-badge{font-size:10px;padding:4px 9px;border-radius:6px;background:var(--vt-card2);border:1px solid var(--vt-border);color:var(--vt-muted)}
+#sect-ventas .vt-tb-badge strong{color:var(--vt-text);font-weight:700;margin-left:4px}
+#sect-ventas .vt-content{padding:14px 18px;flex:1;overflow-y:auto;max-height:88vh}
+#sect-ventas .vt-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px}
+#sect-ventas .vt-kpi{background:var(--vt-card);border:1px solid var(--vt-border);border-radius:10px;padding:11px 13px}
+#sect-ventas .vt-kpi-lbl{font-size:9.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--vt-muted);margin-bottom:5px}
+#sect-ventas .vt-kpi-val{font-size:17px;font-weight:800}
+#sect-ventas .vt-kpi-sub{font-size:10px;color:var(--vt-muted);margin-top:3px}
+#sect-ventas .vt-kpi-glovo .vt-kpi-val{color:var(--vt-glovo)}
+#sect-ventas .vt-kpi-margen .vt-kpi-val{color:var(--vt-green)}
+#sect-ventas .vt-warn{padding:8px 12px;background:rgba(244,162,97,.12);border:1px solid rgba(244,162,97,.3);border-radius:8px;font-size:11px;color:var(--vt-amber);margin-bottom:14px}
+#sect-ventas .vt-tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--vt-border);margin-bottom:14px}
+#sect-ventas .vt-tab{padding:8px 14px;font-size:12px;background:transparent;border:none;color:var(--vt-muted);cursor:pointer;border-bottom:2px solid transparent;font-weight:600}
+#sect-ventas .vt-tab:hover{color:var(--vt-text)}
+#sect-ventas .vt-tab.active{color:var(--vt-amber);border-bottom-color:var(--vt-amber)}
+#sect-ventas .vt-card{background:var(--vt-card);border:1px solid var(--vt-border);border-radius:10px;padding:14px;margin-bottom:14px}
+#sect-ventas .vt-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:10px}
+#sect-ventas .vt-card-title{font-size:13px;font-weight:700}
+#sect-ventas table.vt-tbl{width:100%;border-collapse:collapse;font-size:11px}
+#sect-ventas table.vt-tbl th{position:sticky;top:0;background:var(--vt-card2);font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--vt-muted);text-align:left;padding:7px 8px;border-bottom:1px solid var(--vt-border);font-weight:700;cursor:pointer;white-space:nowrap}
+#sect-ventas table.vt-tbl th.r{text-align:right}
+#sect-ventas table.vt-tbl td{padding:6px 8px;border-bottom:1px solid var(--vt-border);vertical-align:middle}
+#sect-ventas table.vt-tbl td.r{text-align:right;font-variant-numeric:tabular-nums}
+#sect-ventas table.vt-tbl tr:hover td{background:rgba(255,255,255,.02)}
+#sect-ventas table.vt-tbl tr.total td{background:var(--vt-card2);font-weight:700;color:var(--vt-text);border-top:2px solid var(--vt-border)}
+#sect-ventas .vt-tbl-wrap{max-height:520px;overflow:auto;border:1px solid var(--vt-border);border-radius:8px}
+#sect-ventas .vt-margen-bar{display:inline-block;height:6px;border-radius:3px;background:var(--vt-card2);overflow:hidden;width:60px;vertical-align:middle;margin-right:6px}
+#sect-ventas .vt-margen-bar i{display:block;height:100%}
+#sect-ventas .vt-chip-canal{font-size:9px;padding:2px 6px;border-radius:10px;font-weight:700;letter-spacing:.4px}
+#sect-ventas .vt-chip-canal.glovo{background:rgba(249,115,22,.18);color:var(--vt-glovo)}
+#sect-ventas .vt-chip-canal.sala{background:rgba(76,201,240,.18);color:var(--vt-aires)}
+#sect-ventas .vt-paginator{display:flex;align-items:center;justify-content:space-between;padding:10px 6px;font-size:11px;color:var(--vt-muted)}
+#sect-ventas .vt-paginator button{padding:4px 10px;font-size:11px;border-radius:5px;border:1px solid var(--vt-border);background:var(--vt-card2);color:var(--vt-text);cursor:pointer;margin-left:4px}
+#sect-ventas .vt-paginator button:disabled{opacity:.4;cursor:not-allowed}
+#sect-ventas .vt-skel{background:linear-gradient(90deg,var(--vt-card2) 25%,var(--vt-border) 50%,var(--vt-card2) 75%);background-size:200% 100%;animation:vtSkel 1.4s infinite;border-radius:6px;height:14px;margin-bottom:8px}
+@keyframes vtSkel{0%{background-position:200% 0}100%{background-position:-200% 0}}
+#sect-ventas .vt-charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+#sect-ventas .vt-chart-h{position:relative;height:360px}
+#sect-ventas .vt-bar-list{display:flex;flex-direction:column;gap:7px}
+#sect-ventas .vt-bar-row{display:grid;grid-template-columns:80px 1fr 110px 60px;gap:10px;align-items:center;font-size:11px}
+#sect-ventas .vt-bar-row .vt-lblw{color:var(--vt-text);font-weight:600}
+#sect-ventas .vt-bar-row .vt-barw{background:var(--vt-card2);border-radius:4px;height:18px;overflow:hidden;position:relative}
+#sect-ventas .vt-bar-row .vt-barw i{display:block;height:100%;background:linear-gradient(90deg,var(--vt-amber),var(--vt-glovo))}
+#sect-ventas .vt-bar-row .vt-valw{text-align:right;color:var(--vt-text);font-variant-numeric:tabular-nums}
+#sect-ventas .vt-bar-row .vt-pctw{text-align:right;color:var(--vt-muted);font-size:10px}
+#sect-ventas .vt-tab-pane{display:none}
+#sect-ventas .vt-tab-pane.active{display:block}
+@media (max-width:900px){
+  #sect-ventas.on{flex-direction:column}
+  #sect-ventas .vt-sidebar{width:100%;max-height:none;border-right:0;border-bottom:1px solid var(--vt-border)}
+  #sect-ventas .vt-kpis{grid-template-columns:repeat(2,1fr)}
+  #sect-ventas .vt-charts-grid{grid-template-columns:1fr}
+}
+</style>
+
 <div id="sect-ventas" class="sect">
-  <div class="card" style="margin-bottom:1rem">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
-      <p style="font-size:13px;font-weight:500">Facturación total mensual · Ene 2024 a Abr 2026</p>
-      <div style="display:flex;gap:10px;font-size:11px">
-        <span class="lbl"><span class="lbl-sq" style="background:#B5D4F4"></span>2024</span>
-        <span class="lbl"><span class="lbl-sq" style="background:#185FA5"></span>2025</span>
-        <span class="lbl"><span class="lbl-sq" style="background:#BA7517"></span>2026</span>
-      </div>
-    </div>
-    <div style="position:relative;height:250px"><canvas id="ch-ev-tot">—</canvas></div>
+  <!-- Skeleton mientras carga filtros-meta + datos iniciales -->
+  <div id="vt-sidebar" class="vt-sidebar">
+    <div class="vt-skel" style="height:60px;margin-bottom:14px"></div>
+    <div class="vt-skel"></div><div class="vt-skel"></div><div class="vt-skel"></div>
+    <div class="vt-skel"></div><div class="vt-skel"></div>
   </div>
-  <div class="card">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.75rem">
-      <p style="font-size:13px;font-weight:500">Evolución por local — 2025</p>
-      <div style="display:flex;flex-wrap:wrap;gap:5px" id="loc-filter"></div>
-    </div>
-    <div id="leg-evloc" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px"></div>
-    <div style="position:relative;height:270px"><canvas id="ch-ev-loc">—</canvas></div>
-  </div>
-  <div class="card" style="margin-top:1.25rem">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:.75rem">
+  <div id="vt-main" class="vt-main">
+    <div class="vt-topbar">
       <div>
-        <p style="font-size:13px;font-weight:500">Incidencia por local — % sobre facturación total</p>
-        <p style="font-size:11px;color:var(--text-2)">Sin Chicken Thader ni Chicken Uncles · Locales activos únicamente</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span id="vt-tb-pill" class="vt-tb-pill b-all">Todas</span>
+          <span class="vt-tb-title">Ventas TPV</span>
+        </div>
+        <p class="vt-tb-sub" id="vt-tb-sub">cargando…</p>
       </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <button onclick="navMes(-1)" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:var(--r-md);cursor:pointer;background:transparent;font-size:14px">◀</button>
-        <span id="donut-mes-lbl" style="font-size:13px;font-weight:500;min-width:90px;text-align:center">—</span>
-        <button onclick="navMes(1)" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:var(--r-md);cursor:pointer;background:transparent;font-size:14px">▶</button>
+      <div class="vt-tb-badges">
+        <span class="vt-tb-badge">Venta <strong id="vt-tb-venta">—</strong></span>
+        <span class="vt-tb-badge">Glovo <strong id="vt-tb-glovo">—</strong></span>
+        <span class="vt-tb-badge">Margen <strong id="vt-tb-margen">—</strong></span>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:280px 1fr;gap:1.5rem;align-items:center">
-      <div style="position:relative;height:280px"><canvas id="ch-incid">—</canvas></div>
-      <div id="incid-legend" style="display:grid;grid-template-columns:1fr 1fr;gap:5px 16px"></div>
-    </div>
-    <div style="margin-top:.75rem;padding:.6rem .9rem;background:var(--bg-secondary);border-radius:var(--r-md)">
-      <p style="font-size:11px;color:var(--text-2)" id="incid-total-lbl">—</p>
+    <div class="vt-content" id="vt-content">
+      <div class="vt-kpis" id="vt-kpis">
+        <div class="vt-skel" style="height:74px;border-radius:10px"></div>
+        <div class="vt-skel" style="height:74px;border-radius:10px"></div>
+        <div class="vt-skel" style="height:74px;border-radius:10px"></div>
+        <div class="vt-skel" style="height:74px;border-radius:10px"></div>
+        <div class="vt-skel" style="height:74px;border-radius:10px"></div>
+        <div class="vt-skel" style="height:74px;border-radius:10px"></div>
+      </div>
+      <div id="vt-warn" class="vt-warn" style="display:none"></div>
+      <div class="vt-tabs" id="vt-tabs">
+        <button class="vt-tab active" data-vtab="productos" onclick="vtShowTab('productos',this)">Productos</button>
+        <button class="vt-tab" data-vtab="graficos"   onclick="vtShowTab('graficos',this)">Gráficos</button>
+        <button class="vt-tab" data-vtab="sucursales" onclick="vtShowTab('sucursales',this)">Por Sucursal</button>
+        <button class="vt-tab" data-vtab="promociones" onclick="vtShowTab('promociones',this)">Promociones</button>
+        <button class="vt-tab" data-vtab="diahora"    onclick="vtShowTab('diahora',this)">Día y Hora</button>
+        <button class="vt-tab" data-vtab="camareros"  onclick="vtShowTab('camareros',this)" id="vt-tab-camareros">Camareros</button>
+      </div>
+      <div id="vt-pane-productos"   class="vt-tab-pane active"></div>
+      <div id="vt-pane-graficos"    class="vt-tab-pane"></div>
+      <div id="vt-pane-sucursales"  class="vt-tab-pane"></div>
+      <div id="vt-pane-promociones" class="vt-tab-pane"></div>
+      <div id="vt-pane-diahora"     class="vt-tab-pane"></div>
+      <div id="vt-pane-camareros"   class="vt-tab-pane"></div>
     </div>
   </div>
 </div>
@@ -617,5 +735,6 @@
 <script src="/js/main.js"></script>
 <script src="/js/pedidos.js"></script>
 <script src="/js/pedidos-mp2.js"></script>
+<script src="/js/ventas.js"></script>
 </body>
 </html>

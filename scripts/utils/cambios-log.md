@@ -1242,3 +1242,124 @@ re-cálculo a nivel TPV y queda fuera del scope de esta entrega.
 con 6 tabs + Chart.js), Task 6 (upload UI con dropzone +
 validación), Task 7 (filtros granulares por columna para pedidos/
 personal), Task 8 (integraciones con Presupuesto/Personal/Parámetros).
+
+## Módulo Ventas — frontend completo 6 tabs (2026-05-21)
+
+Frontend del dashboard TPV de Ventas, construido encima de los
+endpoints `/api/v1/ventas/*` desplegados en `42efd9d`. Diseño basado
+en la referencia `dashboard_aires_v6.html` de Luciano (paleta oscura
+amber/cyan/glovo).
+
+**Estructura**:
+- `public/dashboard/index.html#sect-ventas`: layout 2-columnas con
+  sidebar de filtros (~268px) + main (topbar + KPIs + tabs + panes).
+  Estilos scoped con prefix `vt-` y palette propia (`--vt-bg`,
+  `--vt-amber`, `--vt-glovo`, etc.) para no chocar con el resto del
+  dashboard ni depender del tema light/dark global.
+- `public/js/ventas.js` (~950 líneas): controlador del módulo,
+  IIFE con `window.vtInit` como entry point. Invocado por
+  `main.js#showTab('ventas')` la primera vez.
+
+**Sidebar de filtros**:
+- Marca: 3 toggles (Todas/Aires/Chicken) — la marca se deriva del
+  campo `local ILIKE 'CHICKEN%'`.
+- Rango de fechas: 2 date pickers con defaults = rango completo del
+  dataset (devuelto por `/filtros-meta`).
+- Semanas: pills clickeables (multi-select) con botones `Todas /
+  Ninguna`. Tooltip muestra `fecha_min → fecha_max` por pill.
+  Toggle especial `Solo Jueves 2×1` (filtra `dia=4` ISO).
+- Franja horaria: 4 toggles (Todas / 12-16h / 16-19h / 19-2am).
+- Canal: 3 toggles (Todos / GLOVO / Sala-Terraza).
+- Locales: checkboxes con todos marcados por defecto + `Todas /
+  Ninguna`. Si están todos marcados, el query NO envía el filtro
+  (más rápido en backend).
+- Familias: igual que locales.
+- Productos: input de búsqueda (no checkboxes — 396 productos no
+  caben). Match parcial → toma hasta 15 matches y los manda como
+  `productos=...`.
+- Footer: stats vivos (registros / venta total / neto Glovo) +
+  botón `× Restablecer filtros`.
+
+**Refresh**:
+- Cualquier cambio dispara `scheduleRefresh()` con debounce de 300ms
+  → invalida caches → refresca KPIs + el tab activo (no todos).
+- Charts.js se destruyen antes de recrear (evita memory leaks).
+
+**Topbar**:
+- Pill de marca con color (`b-all` amber / `b-aires` cyan /
+  `b-chicken` orange).
+- Sub-título dinámico con rango de fechas + total de líneas en BD.
+- 3 badges: Venta / Glovo / Margen (sincronizados con KPIs).
+
+**6 KPIs cards**:
+Venta Total · Venta GLOVO (con % del total) · Comisión GLOVO (% del
+slider — fallback 5,94%) · Neto GLOVO · Margen Bruto (verde) · %
+Margen medio. Banner amber con aviso si hay líneas con
+`coste > 500`.
+
+**6 Tabs**:
+
+1. **Productos** — tabla paginada (50/pág) con sort por toda
+   columna + búsqueda en cliente + barra de % margen por fila
+   (verde >50% / amber 30-50% / red <30%). Columnas: Producto /
+   Familia / Canal / Uds / P.Medio / Costo·Ud / Com·Glovo·Ud /
+   Neto·Ud / Margen·Ud / %Margen / Venta Total / Margen Total /
+   Promo.
+
+2. **Gráficos** — 6 Chart.js horizontal bars derivados del payload
+   de `/productos` (agregando por producto los splits glovo/sala):
+   Top 20 Margen / Top 20 %Margen (mín 10 uds) / Top 20 Venta /
+   Top 20 Uds / Top 15 GLOVO neto / Top 15 Sala venta. Degradado
+   de color por posición.
+
+3. **Por Sucursal** — tabla con totales al pie + chart horizontal
+   de barras. Columnas: Sucursal / Uds / Venta / Glovo / Com /
+   Neto / Margen / %Margen / barra visual proporcional.
+
+4. **Promociones** — tabla con badge "JUEVES 2X1 (FIDELIZACIÓN)"
+   etc. y barra de % margen con coloreado por signo (negativo
+   marca rojo).
+
+5. **Día y Hora** — 2 bar lists con CSS (no Chart.js, más liviano):
+   por día de semana (Lun→Dom con nombres en español) y por franja
+   horaria. Cada barra muestra `valor € + % del total`.
+
+6. **Camareros** — tabla Usuario/Local/Uds/Venta. Si el endpoint
+   devuelve 403, el tab se oculta sin error y `currentTab` cae al
+   fallback (Productos o Día y Hora según rol).
+
+**Control de acceso** (replicado del backend, defensive UI):
+- `admin / socio / gerente` → todas las tabs.
+- `pedidos` → sólo Productos con columnas reducidas
+  (Producto / Familia / Uds — sin €, sin margen) + KPIs reducidos
+  (sólo Venta Total).
+- `personal` → sólo Día y Hora.
+- Otros roles → el backend devuelve 403 y el módulo no carga.
+
+**Convenciones del proyecto respetadas**:
+- Plain JS + `window` globals (no bundler).
+- Formato `es-ES`: `1.234,56 €` para montos.
+- Skeletons mientras carga (CSS keyframe scoped).
+- Sidebar colapsa a columna en `<900px` (responsive básico).
+
+**Verificación E2E** (admin, server local, dataset Ene-Abr 2026 ·
+211 830 líneas):
+
+| Endpoint           | Respuesta                                  |
+|--------------------|--------------------------------------------|
+| /filtros-meta      | 15 locales · 38 familias · 18 semanas · 396 productos |
+| /kpis (sin filtros)| 1 547 887,98 € venta · 291 626,81 € glovo  |
+| /kpis · marca=aires&canal=glovo&semanas=15 | 13 722,86 € (filtros compuestos correctamente) |
+| /productos         | 5 filas (con limit=5) · agregado por producto×canal |
+| /sucursales        | 15 sucursales con totales al pie           |
+| /promociones (Abr) | 104 filas de promo                          |
+| /dia-hora          | 7 días + 14 franjas                         |
+| /camareros (admin) | 151 filas usuario×local                     |
+
+**Pendiente (próximas iteraciones)**:
+- Integración con Presupuesto (Tarea 8 del plan original): badge
+  📊 TPV en `fac_real` cuando hay datos en `ab_ventas_tpv`.
+- Panel de upload UI (Tarea 6): dropzone + validación + historial.
+  El script `scripts/import-ventas-tpv.js` ya cubre el camino CLI;
+  falta el wrapper UI con multer route + barra de progreso.
+- Mobile hamburger fancy (hoy es columna stacked).
