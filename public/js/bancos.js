@@ -345,8 +345,11 @@ function initProvFiltros() {
       }
     }
   }
+  // Nota del suelo de fecha: visible sólo para rol 'admin' (no socio
+  // ni el resto). Es un texto interno/diagnóstico que no aporta a la
+  // experiencia de los demás roles.
   const note = $('prov-period-floor-note');
-  if (note) note.style.display = rolEsAdmin() ? 'none' : '';
+  if (note) note.style.display = state.user?.role === 'admin' ? '' : 'none';
 
   // Defaults aplicados sólo la PRIMERA vez que el usuario entra a la
   // pestaña. Después se respeta lo que el usuario haya elegido. El guard
@@ -388,14 +391,22 @@ function aplicarVistaSegunRol() {
   // Vista unificada para todos los roles: mismos slices, mismos totales,
   // mismos %. Diferencia: admin/socio puede expandir el slice fusionado
   // "Gastos Dirección" (drill-down), el resto ve 🔒.
+  // Badge + texto de ayuda del selector: visibles SÓLO para rol 'admin'
+  // (no socio ni el resto). Son textos internos/diagnóstico.
+  const esAdminEstricto = state.user?.role === 'admin';
   const badge = $('prov-vista-badge');
   if (badge) {
-    badge.textContent = rolEsAdmin()
-      ? 'Vista unificada · drill-down completo'
-      : 'Vista unificada · Gastos Dirección 🔒';
-    badge.style.background = rolEsAdmin() ? '#F3E8FF' : '#EAF3DE';
-    badge.style.color      = rolEsAdmin() ? '#7E22CE' : '#3B6D11';
+    if (esAdminEstricto) {
+      badge.textContent = 'Vista unificada · drill-down completo';
+      badge.style.background = '#F3E8FF';
+      badge.style.color = '#7E22CE';
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
   }
+  const help = $('prov-selector-help');
+  if (help) help.style.display = esAdminEstricto ? '' : 'none';
   // Botón ⚙ Gastos Dirección sólo visible para admin/socio.
   const btnGd = $('prov-btn-gd-manage');
   if (btnGd) btnGd.style.display = rolEsAdmin() ? '' : 'none';

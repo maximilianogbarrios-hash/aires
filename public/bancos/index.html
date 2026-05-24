@@ -177,7 +177,7 @@
   <div class="card" style="margin-bottom:1rem">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.5rem">
       <p style="font-size:13px;font-weight:500">Análisis de proveedores</p>
-      <span id="prov-vista-badge" style="font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;background:var(--bg-secondary);color:var(--text-2)">—</span>
+      <span id="prov-vista-badge" style="display:none;font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;background:var(--bg-secondary);color:var(--text-2)">—</span>
     </div>
     <div style="display:grid;grid-template-columns:200px 160px 160px auto auto;gap:8px;align-items:end">
       <select id="prov-sociedad" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
@@ -194,7 +194,7 @@
       <button onclick="loadProvRanking()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Aplicar</button>
       <button id="prov-btn-export" onclick="exportProveedoresCsv()" style="display:none;padding:6px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Export CSV</button>
     </div>
-    <p style="font-size:10px;color:var(--text-2);margin-top:.5rem">Selector "Desde" igual a "Hasta" → análisis de un solo mes. Rangos completos suman los meses elegidos. La vista se elige automáticamente según tu rol: admin/socio ven todos los gastos (impuestos, nóminas, etc.); el resto sólo ve proveedores operativos.</p>
+    <p id="prov-selector-help" style="display:none;font-size:10px;color:var(--text-2);margin-top:.5rem">Selector "Desde" igual a "Hasta" → análisis de un solo mes. Rangos completos suman los meses elegidos. La vista se elige automáticamente según tu rol: admin/socio ven todos los gastos (impuestos, nóminas, etc.); el resto sólo ve proveedores operativos.</p>
     <p id="prov-period-floor-note" style="display:none;font-size:10px;color:#7E22CE;margin-top:.25rem">Solo se pueden ver datos desde enero 2026.</p>
   </div>
 
