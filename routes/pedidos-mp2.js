@@ -26,11 +26,24 @@ const ESTADOS_AVANZADOS = new Set(['recibido', 'facturado', 'pagado']);
 // Roles helper
 const ADMIN_LIKE = new Set(['admin', 'socio']);
 function esAdminLike(req) { return ADMIN_LIKE.has(req.session?.user?.role); }
-function rolPuede(req, perm) {
-  const { hasPerm } = require('../lib/auth');
-  return hasPerm ? hasPerm(req.session?.user?.role, perm) : false;
-}
 const { hasPerm } = require('../lib/roles');
+
+// Conciliación bancaria es sensible: admin O Dani específicamente
+// (rol socio + email exacto). Otros socios futuros NO automático.
+const EMAIL_DANI = 'daniel.romeroarmada@gmail.com';
+function puedeConciliarMp2(req) {
+  const u = req.session?.user;
+  if (!u) return false;
+  if (u.role === 'admin') return true;
+  if (u.role === 'socio' && (u.email || '').toLowerCase() === EMAIL_DANI) return true;
+  return false;
+}
+function requireConciliarMp2(req, res, next) {
+  if (!puedeConciliarMp2(req)) {
+    return res.status(403).json({ error: 'Conciliación restringida: admin o Dani únicamente' });
+  }
+  return next();
+}
 
 function asNum(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -52,7 +65,10 @@ router.get('/meta', async (req, res) => {
       flags: {
         mp2_w:           hasPerm(role, 'mp2_w'),
         mp2_avanzado_w:  hasPerm(role, 'mp2_avanzado_w'),
-        mp2_conciliar_w: hasPerm(role, 'mp2_conciliar_w'),
+        // mp2_conciliar_w usa puedeConciliarMp2: admin o Dani específicamente.
+        // No basta con hasPerm(role,...) porque la matriz permite a todos
+        // los socios; el check fino requiere el email.
+        mp2_conciliar_w: puedeConciliarMp2(req),
         mp2_catalogo_w:  hasPerm(role, 'mp2_catalogo_w'),
         mp2_delete:      hasPerm(role, 'mp2_delete'),
       },
@@ -644,7 +660,7 @@ router.get('/kpis', async (req, res) => {
 // Devuelve movimientos bancarios (importe < 0) sin pedido vinculado en MP v2.
 // Heurística simple: subcategoria coincide con proveedor_normalizado o
 // el proveedor_normalizado del mov matchea con uno de los pedidos.
-router.get('/conciliacion/debitos', requirePerm('mp2_conciliar_w'), async (req, res) => {
+router.get('/conciliacion/debitos', requireConciliarMp2, async (req, res) => {
   try {
     const anio = +req.query.anio;
     const mes = +req.query.mes;
@@ -675,7 +691,7 @@ router.get('/conciliacion/debitos', requirePerm('mp2_conciliar_w'), async (req, 
 
 // GET /conciliacion/pendientes?proveedor=&sociedad_id=
 // Pedidos confirmados/facturados sin movimiento_banco_id.
-router.get('/conciliacion/pendientes', requirePerm('mp2_conciliar_w'), async (req, res) => {
+router.get('/conciliacion/pendientes', requireConciliarMp2, async (req, res) => {
   try {
     const where = [`estado IN ('confirmado','recibido','facturado')`, `movimiento_banco_id IS NULL`];
     const vals = [];
@@ -702,7 +718,7 @@ router.get('/conciliacion/pendientes', requirePerm('mp2_conciliar_w'), async (re
 // POST /conciliacion — body { movimiento_id, pedido_ids:[], nota? }
 // Marca los pedidos como pagados, asigna movimiento_banco_id y registra
 // diferencia (suma pedidos vs importe del débito).
-router.post('/conciliacion', requirePerm('mp2_conciliar_w'), async (req, res) => {
+router.post('/conciliacion', requireConciliarMp2, async (req, res) => {
   try {
     const movId = +req.body?.movimiento_id;
     const pedidoIds = Array.isArray(req.body?.pedido_ids) ? req.body.pedido_ids.map(Number).filter(Number.isFinite) : [];
