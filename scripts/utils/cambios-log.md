@@ -1116,3 +1116,129 @@ Agustina (`personal`) → 403 en todo `/api/v1/mp2/*`.
 - Semáforo: Mulas est 2 124€ vs presup 18 653€ → rojo
 - Permisos avanzados: pedidos NO puede recibido (403), gerente sí (200),
   gerente NO puede borrar (403), admin sí (200).
+
+## Módulo Ventas — dashboard TPV con importación mensual (2026-05-21)
+
+**Objetivo**: nuevo módulo "Ventas" que reemplaza la tab "Evolución" en
+el dashboard. Carga datos del TPV (Excel mensual) y los expone vía API
+para construir un dashboard con KPIs, productos, sucursales,
+promociones, día y hora, y camareros. Esta entrega cubre los cimientos
+(tareas 1-3, 5 del plan); el frontend (tarea 4), upload UI (6),
+control de acceso fino por columna (7) e integraciones (8) van en
+iteraciones posteriores.
+
+**Tarea 1 — Rename**: `evolucion` → `ventas` en
+`public/dashboard/index.html` (data-tab + id + label),
+`public/js/main.js` (branch del `showTab`), `lib/roles.js` (key en
+`TABS_DASHBOARD`). No había URL pública `/evolucion` (es sólo un
+data-tab interno) → sin redirect 301. El contenido del antiguo
+`sect-evolucion` queda preservado bajo `sect-ventas`; el módulo TPV
+completo lo reemplazará en su iteración.
+
+**Tarea 2 — Migration 15 + 16**:
+
+- `ab_ventas_uploads` (id, nombre_archivo, periodo_descripcion,
+  fecha_desde, fecha_hasta, total_lineas, locales_detectados JSONB,
+  estado CHECK IN ('pendiente','procesando','ok','error'),
+  error_detalle, subido_por → ab_users(id), created_at).
+- `ab_ventas_tpv` (25 cols: temporalidad + producto + cantidades +
+  ubicación + operador + comercial + upload_id FK ON DELETE CASCADE).
+  Columna `es_glovo` es `GENERATED ALWAYS AS UPPER(centro_venta)
+  LIKE '%GLOVO%' STORED`.
+- Migration 16 (`ventas_tpv_dia_iso`): fix del CHECK de `dia` —
+  el TPV usa ISO 1=Lunes…7=Domingo, no 0-6. El script de import falló
+  con la versión 0-6; corregido en migration 15 inline para fresh
+  deploys + migration 16 que hace el ALTER en deploys existentes.
+- Índices: fecha, (local,mes,anio), producto, upload_id,
+  (anio,semana), es_glovo.
+
+**Tarea 3 — Import script** (`scripts/import-ventas-tpv.js`):
+
+- Acepta uno o más .xlsx como argumentos.
+- Distingue 3 tipos de fila del TPV:
+  - Sub-total diario  → `col[0]='DD/MM/YYYY'` → ignorar
+  - Cabecera ticket   → `col[0]='DD/MM/YYYY -> T/NNNNNN'` → ignorar
+  - Línea de producto → `col[0]=null + col[8]='Producto'` → IMPORTAR
+- Parser numérico tolerante a "17,244.42" y "17.244,42".
+- Normaliza `local` (trim + collapse spaces + UPPER): "THADER  " →
+  "THADER".
+- Idempotencia: borra el upload anterior con mismo (nombre_archivo,
+  fecha_desde, fecha_hasta) antes de reimportar (cascade limpia
+  ab_ventas_tpv).
+- Flagea filas con `coste > 500` (anomalías del TPV) pero las
+  importa igual; resumen al final lista las primeras 5.
+- Batch insert por chunks de 400 filas (evita "too many parameters"
+  del driver pg).
+
+**Tarea 3b — Initial load**:
+
+```
+[import] Análisis de Ventas (7).xlsx: 211 830 productos · 3 416 tickets
+         · 119 subtotales diarios · 15 locales · 2025-12-31 → 2026-04-29
+[import] ✓ upload #2 · 211 830 líneas · 15 locales
+[import] ⚠️  807 líneas con coste > 500 (flagged, importadas)
+real    2m21s
+```
+
+Locales detectados (15): SANTO DOMINGO, ELCHE, THADER, BENIDORM,
+ALICANTE, ORIHUELA, ARENALES, SAN VICENTE, TORREVIEJA, SANTA POLA,
+CREVILLENTE, CHICKEN THADER, CHICKEN UNCLES, MURCIA MERCED, MADRID.
+
+(El archivo "Análisis de Ventas (6).xlsx" es la versión simple de 8
+columnas — no tiene Local/Centro Venta/Usuario/Promoción/Periodo, así
+que no es importable bajo este esquema. Sólo se carga el (7).)
+
+**Tarea 5 — Backend** (`routes/ventas.js`):
+
+- 7 endpoints: `/filtros-meta`, `/kpis`, `/productos`, `/sucursales`,
+  `/promociones`, `/dia-hora`, `/camareros`. Más `/uploads`
+  (historial de importaciones, gated con `ventas_upload`).
+- Filtros comunes vía `buildWhere()`: fecha_desde/hasta, semanas[],
+  locales[], familias[], productos[], canal (all|glovo|sala), marca
+  (all|aires|chicken — derivado de `local ILIKE 'CHICKEN%'`), franja
+  (12|16|19 — del campo `periodo` "HH-HH"), solo_jueves (dia=4 ISO).
+- KPIs excluyen filas con `coste>500` del cálculo de margen (sólo
+  margen, no de la venta total).
+- Comisión Glovo: lee `ab_config.pctComisionGlovo` si existe; sino
+  fallback a 22%×27% ≈ 5,94% (la constante actual del engine de
+  rentabilidad). No hardcodea 30% como advertía el spec.
+- Permisos nuevos en `lib/roles.js`:
+  - `ventas`: admin, socio, gerente, pedidos, personal.
+  - `ventas_upload`: admin (sólo).
+- `/camareros` además exige role ∈ {admin, socio, gerente} — defense
+  in depth contra acceso de pedidos/personal.
+
+**Access matrix verificada** (smoke E2E):
+
+| rol            | /kpis | /camareros | /uploads |
+|----------------|:-----:|:----------:|:--------:|
+| admin          |  200  |    200     |   200    |
+| socio          |  200  |    200     |   403    |
+| gerente        |  200  |    200     |   403    |
+| pedidos        |  200  |    403     |   403    |
+| personal       |  200  |    403     |   403    |
+| administrativo |  403  |    403     |   403    |
+
+**KPIs sin filtros (admin · todo el dataset Ene-Abr 2026)**:
+
+```
+venta_total:         1 547 887,98 €
+venta_glovo:           291 626,81 €  (18,8% del total)
+pct_comision_glovo:        5,94%    (fallback engine — no hay slider aún)
+neto_glovo:            274 304,18 €
+margen_bruto_total:   -816 413,68 € (negativo por promos 2x1 del TPV)
+n_lineas:                  211 830
+anomalas (coste>500):          807  (flagged + aviso)
+```
+
+El margen agregado negativo es porque el TPV duplica las filas de
+promoción 2x1: una con precio completo + margen positivo, otra con
+precio 0 € + margen negativo (coste del segundo item gratis). El
+spec dice mostrar aviso cuando hay anomalías de coste — eso ya se
+gatilla. Si se quiere normalizar el margen real de 2x1, sería un
+re-cálculo a nivel TPV y queda fuera del scope de esta entrega.
+
+**Pendiente para próximas iteraciones**: Task 4 (frontend completo
+con 6 tabs + Chart.js), Task 6 (upload UI con dropzone +
+validación), Task 7 (filtros granulares por columna para pedidos/
+personal), Task 8 (integraciones con Presupuesto/Personal/Parámetros).
