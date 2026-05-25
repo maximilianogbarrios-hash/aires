@@ -417,7 +417,7 @@
         fail += batches[i].length;
         if (e.code === 503) {
           // Falta API key → no tiene sentido seguir intentando.
-          feedback('Falta ANTHROPIC_API_KEY en el server', false);
+          feedback('Falta OPENROUTER_API_KEY en el server', false);
           break;
         }
       }
