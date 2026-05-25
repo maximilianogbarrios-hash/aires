@@ -421,6 +421,9 @@ function aplicarVistaSegunRol() {
   // Botón ⚙ Gastos Dirección sólo visible para admin/socio.
   const btnGd = $('prov-btn-gd-manage');
   if (btnGd) btnGd.style.display = rolEsAdmin() ? '' : 'none';
+  // Botón ⚙️ Gestionar reglas (drag & drop) sólo admin/socio.
+  const btnRp = $('prov-btn-reglas');
+  if (btnRp) btnRp.style.display = rolEsAdmin() ? '' : 'none';
 }
 
 async function loadProvRanking() {

@@ -1536,3 +1536,82 @@ estimacion-mp (pedidos): 200 (perm `ventas` OK, columnas filtra el front)
 El % MP global (16,9 %) es bajo porque sólo 17 de 396 SKUs tienen
 costo cargado. A medida que se completen los costos en la tab
 Costos, el % MP se acerca al real (~28-32 %).
+
+## Bancos — pantalla drag & drop de reglas de proveedores (2026-05-25)
+
+Nueva pantalla "⚙️ Reglas de Proveedores" en `/bancos` para clasificar
+proveedores en categorías de una vez para siempre, con drag & drop.
+Solo admin/socio (perm `bancos_reglas_admin`).
+
+**Acceso**: desde `/bancos` → tab Proveedores → botón "⚙️ Gestionar
+reglas" arriba a la derecha (sólo visible para admin/socio,
+controlado por `aplicarVistaSegunRol`). Click → ocultamos la
+tab-bar + cualquier sección activa, mostramos `#sect-reglas-prov`
+fullscreen. "← Volver a Proveedores" restaura.
+
+**Permiso nuevo** (`lib/roles.js`):
+- `bancos_reglas_admin`: `['admin','socio']`. En la práctica =
+  Maxi + Dani. Gerente NO tiene acceso (verificado con 403 E2E).
+
+**Backend** — 6 endpoints en `routes/bancos.js`:
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `GET /reglas-prov/categorias` | 32 categorías de gasto (CATEGORIAS_GASTO sin INTRAGRUPO) |
+| `GET /reglas-prov/sin-clasificar` | Proveedores únicos (post-pipeline canónico) que NO tienen regla — ordenados por importe DESC |
+| `GET /reglas-prov/clasificados` | Reglas activas agrupadas por categoría (con stats n_movs + total) |
+| `GET /reglas-prov/detalle/:proveedor` | Top 50 movimientos del proveedor (match: proveedor_normalizado exacto OR substring en concepto) |
+| `POST /reglas-prov/asignar` | Crea/upsertea regla + RECLASIFICA HISTÓRICOS + recalcula resumen + cruces |
+| `DELETE /reglas-prov/:id` | Quita la regla (NO revierte el histórico; respeta `protegida=TRUE`) |
+
+Detalle del POST asignar:
+1. Si ya hay regla con `patron=$prov AND proveedor_normalizado=$prov`,
+   la actualiza (no duplica). Sino INSERT con `prioridad=120`,
+   `tipo_match='ilike'`, `forzar_visible=TRUE`.
+2. UPDATE en `ab_movimientos` con `WHERE proveedor_normalizado = $prov
+   OR position(LOWER($prov) IN LOWER(concepto)) > 0` —
+   reclasifica todos los históricos sin importar categoría actual.
+3. Recalcula `recalcResumenMensual` + `recalcCrucesParaSociedadPeriodo`
+   para cada combo `(sociedad, periodo)` afectado.
+
+**Frontend** (`public/js/bancos-reglas.js` ~250 LOC + estilos scoped
+`rp-*` en `bancos/index.html`):
+
+- **Panel izquierdo "Sin clasificar"** con search en tiempo real,
+  ordenado por importe total DESC, badge `Nmv · €total`. Items
+  draggables con borde rojo izq (sin regla). Click sin arrastrar
+  abre modal de detalle con top 50 movimientos.
+- **Panel derecho "Categorías"** — grid `auto-fill minmax(280px,1fr)`
+  con todas las categorías como zonas de drop. Cada categoría
+  muestra sus reglas asignadas (borde verde izq, badge `Nmv · €`,
+  botón × para quitar). Reglas protegidas (Raba Buildings) muestran
+  🔒 y sin botón delete. Hover en zona de drop → highlight amber.
+- **Modal detalle**: click en item del panel izq → top 50 movs con
+  fecha / concepto / categoría actual / importe. Esc o × cierra.
+- **Feedback**: toast bottom-right verde/rojo con duración 2.5s.
+
+**E2E verificado**:
+
+```
+/categorias        → 200 · 32 categorías
+/sin-clasificar    → 200 · 458 proveedores sin regla
+   Top: Nóminas Personal 411k€ · Don Hamgus 248k€ · Makro 188k€
+   Eurofrits 127k€ · Coca-Cola 96k€
+/clasificados      → 200 · 151 reglas existentes
+/detalle/TGSS      → 200 · 50 movs · n=156 · total=443.649,92€
+gerente /categorias → 403 (perm OK)
+POST asignar __E2E__ → PUBLICIDAD → 200 ok regla_id=171
+DELETE regla 171   → 200 ok
+asset /js/bancos-reglas.js → 200
+```
+
+**Caveats conocidos**:
+- El UPDATE usa substring match en `concepto`, así que un nombre
+  corto / genérico ("Pago") sobre-matchearía. La spec lo pide así
+  (drag-drop simple), pero el admin debe usar nombres canónicos
+  específicos al crear reglas.
+- Borrar una regla NO revierte el histórico (consistencia
+  retroactiva). El admin puede reasignar a otra categoría con un
+  nuevo drag.
+- Reglas protegidas (`protegida=TRUE`, ej. Raba Buildings) no se
+  pueden borrar — 403 en `/reglas-prov/:id` DELETE.

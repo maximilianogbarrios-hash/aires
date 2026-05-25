@@ -1572,4 +1572,225 @@ router.post('/recalc', requireAdminLike, async (req, res) => {
   }
 });
 
+// ─── REGLAS DE PROVEEDORES (drag & drop admin) ────────────────────────
+// Pantalla admin para clasificar proveedores en categorías de una vez
+// para siempre. Crea/borra reglas en ab_reglas_normalizacion + actualiza
+// movimientos históricos. Sólo admin + socio (perm bancos_reglas_admin).
+const { CATEGORIAS_GASTO } = require('../lib/bank/categorizer');
+
+// Categorías ofrecidas como drop-zones. Excluye INTRAGRUPO (regla
+// distinta, no se asigna manualmente) e INGRESO_* (son ingresos).
+const CATEGORIAS_PARA_REGLAS = CATEGORIAS_GASTO.filter((c) => c !== 'INTRAGRUPO');
+
+router.get('/reglas-prov/categorias', requirePerm('bancos_reglas_admin'), (req, res) => {
+  res.json({ categorias: CATEGORIAS_PARA_REGLAS });
+});
+
+// Lista de proveedores únicos SIN regla en ab_reglas_normalizacion.
+// Deriva proveedor canónico via pipeline runtime (mismo que /proveedores)
+// para que la lista refleje la categorización efectiva actual.
+router.get('/reglas-prov/sin-clasificar', requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const limit = Math.min(+req.query.limit || 500, 2000);
+    const rows = await many(
+      `SELECT concepto, categoria, importe::float8 AS importe, proveedor_normalizado
+         FROM ab_movimientos
+        WHERE importe < 0`
+    );
+    const reglas = await loadReglas();
+    // Set de proveedor_normalizado que YA tienen al menos una regla.
+    const conRegla = new Set(reglas.map((r) => r.proveedor_normalizado));
+
+    const agg = new Map(); // proveedor → { n, total }
+    for (const r of rows) {
+      if (esIntraGrupo(r.concepto)) continue;
+      let proveedor;
+      if (r.proveedor_normalizado) {
+        proveedor = r.proveedor_normalizado;
+      } else {
+        const rule = matchRegla(r.concepto, reglas);
+        proveedor = rule
+          ? rule.proveedor_normalizado
+          : normalizarProveedor(r.concepto, r.categoria).proveedor;
+      }
+      if (!proveedor) continue;
+      if (proveedor === FUSE_PROVEEDOR) continue;            // virtual
+      if (proveedor === 'Proveedores Menores') continue;     // virtual
+      if (conRegla.has(proveedor)) continue;
+      if (!agg.has(proveedor)) agg.set(proveedor, { n: 0, total: 0 });
+      const o = agg.get(proveedor);
+      o.n++;
+      o.total += Math.abs(r.importe);
+    }
+    const proveedores = [...agg.entries()]
+      .map(([proveedor, x]) => ({ proveedor, n_movimientos: x.n, total_importe: x.total }))
+      .sort((a, b) => b.total_importe - a.total_importe)
+      .slice(0, limit);
+    res.json({ proveedores, total: agg.size });
+  } catch (e) {
+    console.error('[bancos.reglas-prov.sin-clasificar]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// Lista de proveedores YA clasificados, agrupados por categoría que
+// dicta la regla. Incluye stats agregadas (n_movs + total) calculadas
+// matcheando contra ab_movimientos.
+router.get('/reglas-prov/clasificados', requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const reglas = await many(
+      `SELECT id, patron, tipo_match, categoria, proveedor_normalizado,
+              prioridad, forzar_visible, protegida
+         FROM ab_reglas_normalizacion
+        WHERE activo = TRUE
+        ORDER BY categoria, proveedor_normalizado`
+    );
+    // Stats en una sola query: count + sum por proveedor_normalizado
+    // (incluye matches por nombre persistido o por ILIKE en concepto).
+    const stats = await many(
+      `SELECT proveedor_normalizado,
+              COUNT(*)::int             AS n_movimientos,
+              SUM(ABS(importe))::float8 AS total_importe
+         FROM ab_movimientos
+        WHERE proveedor_normalizado IS NOT NULL
+          AND importe < 0
+        GROUP BY proveedor_normalizado`
+    );
+    const statMap = new Map(stats.map((s) => [s.proveedor_normalizado, s]));
+    const enriched = reglas.map((r) => ({
+      ...r,
+      n_movimientos: statMap.get(r.proveedor_normalizado)?.n_movimientos || 0,
+      total_importe: statMap.get(r.proveedor_normalizado)?.total_importe || 0,
+    }));
+    // Agrupar por categoría
+    const porCategoria = {};
+    for (const c of CATEGORIAS_PARA_REGLAS) porCategoria[c] = [];
+    for (const r of enriched) {
+      if (!porCategoria[r.categoria]) porCategoria[r.categoria] = [];
+      porCategoria[r.categoria].push(r);
+    }
+    for (const c of Object.keys(porCategoria)) {
+      porCategoria[c].sort((a, b) => b.total_importe - a.total_importe);
+    }
+    res.json({ por_categoria: porCategoria, total_reglas: reglas.length });
+  } catch (e) {
+    console.error('[bancos.reglas-prov.clasificados]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// Detalle (top movimientos) para un proveedor — abre el mini-modal del
+// panel izquierdo. Match: proveedor_normalizado exacto OR substring en
+// concepto (defensive — captura filas sin proveedor_normalizado seteado).
+router.get('/reglas-prov/detalle/:proveedor', requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const prov = decodeURIComponent(req.params.proveedor || '').trim();
+    if (!prov) return res.status(400).json({ error: 'proveedor requerido' });
+    const rows = await many(
+      `SELECT id, fecha::text AS fecha, concepto, categoria,
+              importe::float8 AS importe, sociedad_id, proveedor_normalizado
+         FROM ab_movimientos
+        WHERE (proveedor_normalizado = $1 OR position(LOWER($1) IN LOWER(concepto)) > 0)
+          AND importe < 0
+        ORDER BY ABS(importe) DESC
+        LIMIT 50`,
+      [prov]
+    );
+    const total = await one(
+      `SELECT COUNT(*)::int AS n, SUM(ABS(importe))::float8 AS total
+         FROM ab_movimientos
+        WHERE (proveedor_normalizado = $1 OR position(LOWER($1) IN LOWER(concepto)) > 0)
+          AND importe < 0`,
+      [prov]
+    );
+    res.json({ proveedor: prov, movimientos: rows, total });
+  } catch (e) {
+    console.error('[bancos.reglas-prov.detalle]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// Asignar un proveedor a una categoría → crea regla + reclasifica
+// históricos. Idempotente: si ya hay regla para ese proveedor, la
+// actualiza (no inserta duplicada).
+router.post('/reglas-prov/asignar', express.json(), requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const proveedor = (req.body?.proveedor || '').trim();
+    const categoria = (req.body?.categoria || '').trim();
+    if (!proveedor || !categoria) return res.status(400).json({ error: 'proveedor y categoria requeridos' });
+    if (!CATEGORIAS_PARA_REGLAS.includes(categoria)) return res.status(400).json({ error: 'categoria inválida' });
+
+    // 1) Upsert regla. Si ya hay una con mismo proveedor_normalizado +
+    // patron == proveedor, la actualizamos para no acumular duplicadas.
+    let regla = await one(
+      `SELECT id FROM ab_reglas_normalizacion
+        WHERE proveedor_normalizado = $1 AND patron = $1 AND activo = TRUE
+        LIMIT 1`,
+      [proveedor]
+    );
+    if (regla) {
+      await query(
+        `UPDATE ab_reglas_normalizacion
+            SET categoria = $1, prioridad = 120, forzar_visible = TRUE
+          WHERE id = $2`,
+        [categoria, regla.id]
+      );
+    } else {
+      regla = await one(
+        `INSERT INTO ab_reglas_normalizacion
+           (patron, tipo_match, categoria, proveedor_normalizado, prioridad, forzar_visible)
+         VALUES ($1, 'ilike', $2, $1, 120, TRUE)
+         RETURNING id`,
+        [proveedor, categoria]
+      );
+    }
+
+    // 2) Reclasificar HISTÓRICOS: match por proveedor_normalizado exacto
+    // O substring case-insensitive en concepto. Todos a nueva categoría.
+    const upd = await query(
+      `UPDATE ab_movimientos
+          SET categoria = $1,
+              proveedor_normalizado = $2
+        WHERE (proveedor_normalizado = $2 OR position(LOWER($2) IN LOWER(concepto)) > 0)
+          AND importe < 0
+        RETURNING sociedad_id, periodo`,
+      [categoria, proveedor]
+    );
+    const affected = upd.rowCount || 0;
+    const combos = new Set((upd.rows || []).map((r) => `${r.sociedad_id}|${r.periodo}`));
+
+    // 3) Recalcular resumen + cruces para los combos tocados.
+    for (const c of combos) {
+      const [soc, per] = c.split('|');
+      try { await bankDb.recalcResumenMensual(soc, per); } catch (e) { /* tolerante */ }
+      try { await bankDb.recalcCrucesParaSociedadPeriodo(soc, per); } catch (e) { /* tolerante */ }
+    }
+
+    res.json({ ok: true, regla_id: regla.id, affected, combos: combos.size });
+  } catch (e) {
+    console.error('[bancos.reglas-prov.asignar]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// Borrar una regla (devuelve al proveedor al panel "sin clasificar").
+// NO revierte los movimientos históricos ya reclasificados — la spec
+// dice "eliminar la regla y devolverlo al panel izquierdo", el historial
+// queda en la categoría que se asignó (consistencia retro).
+router.delete('/reglas-prov/:id', requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const id = +req.params.id;
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'id inválido' });
+    // No borrar reglas protegidas (Raba Buildings).
+    const r = await one('SELECT protegida FROM ab_reglas_normalizacion WHERE id = $1', [id]);
+    if (!r) return res.status(404).json({ error: 'regla no existe' });
+    if (r.protegida) return res.status(403).json({ error: 'regla protegida, no se puede borrar' });
+    await query('DELETE FROM ab_reglas_normalizacion WHERE id = $1', [id]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[bancos.reglas-prov.delete]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
 module.exports = router;

@@ -210,6 +210,7 @@
       <p style="font-size:13px;font-weight:500">Distribución de gasto <span id="prov-donut-mode" style="color:var(--text-2);font-weight:400">(&gt; 1% + Otros)</span></p>
       <div style="display:flex;gap:6px;align-items:center">
         <button id="prov-btn-gd-manage" onclick="openGdManage()" style="display:none;padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);cursor:pointer;font-size:12px" title="Gestionar miembros del slice fusionado Gastos Dirección (admin/socio)">⚙ Gastos Dirección</button>
+        <button id="prov-btn-reglas" onclick="rpOpen()" style="display:none;padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);cursor:pointer;font-size:12px" title="Drag &amp; drop para clasificar proveedores en categorías (admin/socio)">⚙️ Gestionar reglas</button>
         <label style="font-size:11px;color:var(--text-2)">Umbral:</label>
         <select id="prov-donut-threshold" onchange="setDonutThreshold(this.value)" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
           <option value="0.10">&gt; 10%</option>
@@ -331,8 +332,71 @@
   <div id="prov-sb-body" style="padding:.75rem 1.25rem 2rem"></div>
 </aside>
 
+<!-- ─── REGLAS DE PROVEEDORES (drag & drop, admin/socio only) ─────────── -->
+<style>
+#sect-reglas-prov{--rp-amber:#f4a261;--rp-green:#26a65b;--rp-red:#e63946;--rp-purple:#a78bfa}
+#sect-reglas-prov.on{display:block !important}
+#sect-reglas-prov .rp-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+#sect-reglas-prov .rp-cols{display:grid;grid-template-columns:380px 1fr;gap:14px;align-items:flex-start}
+#sect-reglas-prov .rp-panel{background:var(--bg-primary);border:.5px solid var(--border-2);border-radius:8px;padding:10px 12px}
+#sect-reglas-prov .rp-panel h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-2);margin-bottom:8px}
+#sect-reglas-prov .rp-search{width:100%;padding:6px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px;margin-bottom:8px}
+#sect-reglas-prov .rp-list{max-height:72vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
+#sect-reglas-prov .rp-item{display:flex;align-items:center;gap:8px;padding:7px 9px;background:var(--bg-secondary);border:.5px solid var(--border-2);border-left:3px solid var(--rp-red);border-radius:6px;cursor:grab;font-size:12px;user-select:none}
+#sect-reglas-prov .rp-item:active{cursor:grabbing}
+#sect-reglas-prov .rp-item.dragging{opacity:.4}
+#sect-reglas-prov .rp-item .rp-name{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#sect-reglas-prov .rp-item .rp-badge{font-size:10px;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+#sect-reglas-prov .rp-cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
+#sect-reglas-prov .rp-cat{background:var(--bg-primary);border:.5px solid var(--border-2);border-radius:8px;padding:10px 12px;transition:all .15s}
+#sect-reglas-prov .rp-cat.drop-over{border-color:var(--rp-amber);background:rgba(244,162,97,.08);box-shadow:0 0 0 2px rgba(244,162,97,.25)}
+#sect-reglas-prov .rp-cat h4{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text);margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
+#sect-reglas-prov .rp-cat .rp-cat-count{font-size:10px;color:var(--text-2);font-weight:500}
+#sect-reglas-prov .rp-cat-drop{min-height:40px;padding:6px;border:1.5px dashed var(--border-3);border-radius:6px;font-size:10px;color:var(--text-2);text-align:center;display:flex;align-items:center;justify-content:center}
+#sect-reglas-prov .rp-cat-drop.has-items{border-style:solid;background:var(--bg-secondary);display:block;text-align:left}
+#sect-reglas-prov .rp-rule{display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--bg-primary);border:.5px solid var(--border-3);border-left:3px solid var(--rp-green);border-radius:5px;font-size:11px;margin-bottom:3px}
+#sect-reglas-prov .rp-rule .rp-name{flex:1;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#sect-reglas-prov .rp-rule .rp-badge{font-size:10px;color:var(--text-2)}
+#sect-reglas-prov .rp-rule button{background:transparent;border:none;color:var(--text-2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1}
+#sect-reglas-prov .rp-rule button:hover{color:var(--rp-red)}
+#sect-reglas-prov .rp-rule.protegida{border-left-color:var(--rp-purple)}
+#sect-reglas-prov .rp-pill{font-size:10px;padding:3px 8px;border-radius:10px;background:var(--bg-secondary);color:var(--text-2)}
+#sect-reglas-prov .rp-back{padding:5px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px}
+#sect-reglas-prov .rp-feedback{position:fixed;bottom:18px;right:18px;padding:10px 16px;border-radius:8px;font-size:12px;font-weight:600;box-shadow:0 6px 18px rgba(0,0,0,.3);z-index:80;animation:rpFeed .25s ease}
+#sect-reglas-prov .rp-feedback.ok{background:#DCFCE7;color:#166534;border:1px solid #4ade80}
+#sect-reglas-prov .rp-feedback.err{background:#FCE7E7;color:#991B1B;border:1px solid #f87171}
+@keyframes rpFeed{from{transform:translateY(8px);opacity:0}to{transform:translateY(0);opacity:1}}
+#rp-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:90}
+#rp-modal{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:640px;max-width:96vw;max-height:80vh;overflow-y:auto;background:var(--bg-primary);border:.5px solid var(--border-2);border-radius:10px;z-index:91;padding:18px 22px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+</style>
+
+<div id="sect-reglas-prov" class="sect">
+  <div class="rp-head">
+    <div>
+      <h2 style="font-size:18px;font-weight:700">⚙️ Reglas de Proveedores</h2>
+      <p style="font-size:11px;color:var(--text-2);margin-top:2px">Arrastrá proveedores desde la izquierda hasta una categoría para clasificarlos. La regla se aplica a TODOS los movimientos históricos y a los extractos futuros.</p>
+    </div>
+    <button class="rp-back" onclick="rpClose()">← Volver a Proveedores</button>
+  </div>
+  <div class="rp-cols">
+    <div class="rp-panel" id="rp-pane-sc">
+      <h3>Sin clasificar (<span id="rp-sc-n">—</span>)</h3>
+      <input type="text" id="rp-sc-q" class="rp-search" placeholder="🔍 buscar proveedor…">
+      <div class="rp-list" id="rp-sc-list">cargando…</div>
+    </div>
+    <div class="rp-panel" id="rp-pane-cat">
+      <h3>Categorías (<span id="rp-cat-n">—</span>) — soltar acá</h3>
+      <div class="rp-cats" id="rp-cats">cargando…</div>
+    </div>
+  </div>
+</div>
+
+<div id="rp-modal-overlay" onclick="rpCloseModal()"></div>
+<div id="rp-modal"></div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="/js/api.js"></script>
 <script src="/js/bancos.js"></script>
+<script src="/js/bancos-reglas.js"></script>
 </body>
 </html>
