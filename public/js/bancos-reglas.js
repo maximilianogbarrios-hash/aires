@@ -42,10 +42,19 @@
     sugerencias: new Map(),   // proveedor → { categoria, confianza, motivo } (post-IA)
     iaCorriendo: false,       // bloquea botones mientras se procesa
   };
-  // Detectar rol admin desde la sesión expuesta por el shell de bancos (state.user).
+  // Detectar rol admin desde la sesión expuesta por el shell de bancos
+  // (`const state` global en bancos.js). Importante: en scripts clásicos
+  // los `const` top-level NO se cuelgan en `window`, viven en el lexical
+  // scope global. Por eso accedemos directo a `state`, no a `window.state`
+  // (cuyo uso anterior siempre era undefined y dejaba el botón oculto
+  // incluso para admin).
   function esAdminEstricto() {
-    try { return (window.state && window.state.user && window.state.user.role === 'admin') || false; }
-    catch { return false; }
+    try {
+      if (typeof state !== 'undefined' && state && state.user) {
+        return state.user.role === 'admin';
+      }
+    } catch {}
+    return false;
   }
 
   // ─── Auto-scroll durante drag ──────────────────────────────────────
