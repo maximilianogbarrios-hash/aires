@@ -1492,8 +1492,35 @@ function _setRcFeedback(i, ok, html) {
   el.innerHTML = html;
 }
 
+// Anima fade-out + collapse de una fila del sidebar para que las siguientes
+// suban suavemente sin saltar. 300ms simultáneos sobre opacity y dimensiones.
+function _animateRowOut(row, onDone) {
+  if (!row) { onDone && onDone(); return; }
+  // Lock current height para que la transición a 0 funcione (height:auto no anima).
+  const h = row.offsetHeight;
+  row.style.overflow = 'hidden';
+  row.style.height = h + 'px';
+  // Forzar reflow antes de aplicar la transición — sino el browser
+  // colapsa start/end en el mismo frame y no hay animación visible.
+  // eslint-disable-next-line no-unused-expressions
+  row.offsetHeight;
+  row.style.transition = 'opacity 300ms ease, height 300ms ease, margin 300ms ease, padding 300ms ease, border-width 300ms ease';
+  row.style.opacity = '0';
+  row.style.height = '0';
+  row.style.marginTop = '0';
+  row.style.marginBottom = '0';
+  row.style.paddingTop = '0';
+  row.style.paddingBottom = '0';
+  row.style.borderWidth = '0';
+  setTimeout(() => {
+    row.remove();
+    onDone && onDone();
+  }, 320);
+}
+
 async function confirmReclasificar(i) {
-  const concepto = state._sbData?.conceptos?.[i]?.concepto;
+  const conceptoEntry = state._sbData?.conceptos?.[i];
+  const concepto = conceptoEntry?.concepto;
   if (!concepto) return;
   const categoria_nueva = $(`rc-cat-${i}`)?.value;
   const proveedor_nuevo = $(`rc-name-${i}`)?.value?.trim();
@@ -1508,31 +1535,59 @@ async function confirmReclasificar(i) {
       method: 'POST',
       body: JSON.stringify({ concepto, categoria_nueva, proveedor_nuevo, guardar_regla }),
     });
-    // Feedback intermedio: el UPDATE ya pasó pero el donut todavía no
-    // refleja el cambio. Mostramos "Actualizando donut..." mientras se
-    // refrescan los datos para que el usuario tenga señal inmediata de
-    // que la operación fue exitosa y el render del slice está en curso.
-    _setRcFeedback(i, true, '⏳ Actualizando donut...');
     Api.pill(`Reclasificadas: ${j.affected}` + (j.regla_id ? ' · regla creada' : ''));
     // Invalidar cache porque el set de nombres normalizados cambió.
     _rcNombresAllCache = null;
     _rcNombresCacheKey = null;
-    // Refresh donut + ranking (el UPDATE ya impactó a todos los períodos
-    // y sociedades — el donut re-agrupa y muestra el nuevo slice).
-    await loadProvRanking();
-    const nPer = (j.periodos_afectados || []).length;
-    const periodosTxt = nPer > 0
-      ? `${j.affected} movimiento${j.affected === 1 ? '' : 's'} actualizado${j.affected === 1 ? '' : 's'} en ${nPer === 1 ? 'el período ' + j.periodos_afectados[0] : `${nPer} períodos (${j.periodos_afectados[0]} … ${j.periodos_afectados[nPer - 1]})`}`
-      : `${j.affected} movimiento${j.affected === 1 ? '' : 's'} actualizado${j.affected === 1 ? '' : 's'}`;
-    const reglaMsg = (guardar_regla && j.regla_id)
-      ? ' Regla guardada para futuros extractos.'
-      : '';
-    _setRcFeedback(i, true, `✓ Movido a <strong>${proveedor_nuevo}</strong> (<code>${categoria_nueva}</code>). ${periodosTxt}.${reglaMsg}`);
-    // Refrescamos el sidebar — si el usuario está viendo el grupo
-    // origen, ahora verá que el concepto desapareció. Si reclasificó
-    // a un nuevo grupo, abrimos ese para ver el resultado.
-    const grupoTarget = (proveedor_nuevo !== grupoOriginal) ? grupoOriginal : proveedor_nuevo;
-    if (grupoTarget) setTimeout(() => openProvSidebar(grupoTarget), 700);
+
+    // Refresh donut + ranking en background (no await). El sidebar NO se
+    // re-renderiza para preservar scroll, posición y filtros: sólo se ajusta
+    // la fila reclasificada in-place (fade-out si el ítem cambió de grupo,
+    // update de categoría si se quedó en el mismo).
+    loadProvRanking().catch((err) => console.warn('[reclasif] donut refresh', err));
+
+    const itemMovedOut = (proveedor_nuevo !== grupoOriginal);
+    const row = document.querySelector(`#prov-sb-body [data-row="${i}"]`);
+
+    if (itemMovedOut) {
+      // El concepto salió del grupo actual: fade-out + collapse y remover
+      // del DOM. Los demás suben para ocupar el espacio sin saltar.
+      const importeRemovido = +conceptoEntry.total_importe || 0;
+      // Tombstone: ponemos null en el slot sin splice para preservar los
+      // índices de los demás conceptos (los onclick siguen apuntando bien).
+      state._sbData.conceptos[i] = null;
+      state._sbData.total = (state._sbData.total || 0) - importeRemovido;
+      state._sbData.num_conceptos = Math.max(0, (state._sbData.num_conceptos || 1) - 1);
+      // Actualizar meta line del sidebar con los nuevos totales.
+      const totProvTab = state.prov.total || 1;
+      const meta = $('prov-sb-meta');
+      if (meta) {
+        const pct = ((state._sbData.total / totProvTab) * 100).toFixed(1);
+        meta.textContent = `${eur2(state._sbData.total)} · ${state._sbData.num_conceptos} conceptos · ${pct}% del gasto filtrado`;
+      }
+      _animateRowOut(row);
+    } else {
+      // El concepto se queda en el grupo (cambió sólo la categoría):
+      // refrescar in-place el chip de categoría y cerrar el form, sin
+      // re-renderizar nada más.
+      conceptoEntry.categoria_actual = categoria_nueva;
+      if (row) {
+        const codeEl = row.querySelector('code');
+        if (codeEl) codeEl.textContent = categoria_nueva;
+      }
+      const nPer = (j.periodos_afectados || []).length;
+      const periodosTxt = nPer > 0
+        ? `${j.affected} movimiento${j.affected === 1 ? '' : 's'} actualizado${j.affected === 1 ? '' : 's'} en ${nPer === 1 ? 'el período ' + j.periodos_afectados[0] : `${nPer} períodos (${j.periodos_afectados[0]} … ${j.periodos_afectados[nPer - 1]})`}`
+        : `${j.affected} movimiento${j.affected === 1 ? '' : 's'} actualizado${j.affected === 1 ? '' : 's'}`;
+      const reglaMsg = (guardar_regla && j.regla_id) ? ' Regla guardada para futuros extractos.' : '';
+      _setRcFeedback(i, true, `✓ Categoría actualizada a <code>${categoria_nueva}</code>. ${periodosTxt}.${reglaMsg}`);
+      // Cerrar form de reclasificación tras un breve momento para que el
+      // usuario vea el feedback verde.
+      setTimeout(() => {
+        const form = $(`rc-form-${i}`);
+        if (form && form.style.display !== 'none') toggleReclasificar(i);
+      }, 1200);
+    }
   } catch (e) {
     _setRcFeedback(i, false, '✗ Error: ' + e.message);
     Api.pill('Error: ' + e.message, true);
