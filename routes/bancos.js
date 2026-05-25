@@ -1789,29 +1789,25 @@ router.post('/reglas-prov/asignar', express.json(), requirePerm('bancos_reglas_a
   }
 });
 
-// IA: clasifica un batch de proveedores con Claude. Frontend chunkea
-// y llama N veces para mostrar barra de progreso. Sólo admin (perm
-// bancos_reglas_ia). Requiere ANTHROPIC_API_KEY en el entorno.
+// IA: clasifica un batch de proveedores. Frontend chunkea y llama N
+// veces para mostrar barra de progreso. Sólo admin (perm
+// bancos_reglas_ia). Requiere OPENROUTER_API_KEY en el entorno.
 //
-// Usa prompt caching (cache_control:ephemeral) en el system prompt —
-// el contexto (categorías + reglas existentes) es idéntico entre
-// batches, así que las llamadas 2-N cuestan ~10× menos y vuelven
-// más rápido.
+// Transporte: OpenRouter (OpenAI-compatible). Modelo:
+// anthropic/claude-sonnet-4-6 — mismo Claude que usaríamos vía Anthropic
+// directo, servido por OpenRouter. NO hay prompt caching disponible
+// (OpenRouter no soporta cache_control de Anthropic), así que cada
+// batch paga el system completo. La lógica (prompt + parse + validación)
+// vive en lib/ai/classify-proveedores.js para mantener el route handler
+// fino y reutilizable desde otros call sites a futuro.
+const { classifyProveedores } = require('../lib/ai/classify-proveedores');
 router.post('/reglas-prov/ia-clasificar', express.json({ limit: '256kb' }), requirePerm('bancos_reglas_ia'), async (req, res) => {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      return res.status(503).json({
-        error: 'ANTHROPIC_API_KEY no configurada',
-        hint: 'Setear la variable de entorno en Railway / .env y reiniciar el server.',
-      });
-    }
     const proveedores = Array.isArray(req.body?.proveedores) ? req.body.proveedores : [];
     if (!proveedores.length) return res.json({ sugerencias: [] });
     if (proveedores.length > 60) return res.status(400).json({ error: 'máximo 60 proveedores por batch' });
 
-    // Reglas existentes como ejemplos (top 30 por uso histórico — más
-    // útiles como anclas que las raras). Cacheables porque son globales.
+    // Top 40 reglas existentes como ejemplos in-context.
     const reglasEjemplo = await many(
       `SELECT r.proveedor_normalizado, r.categoria
          FROM ab_reglas_normalizacion r
@@ -1819,107 +1815,29 @@ router.post('/reglas-prov/ia-clasificar', express.json({ limit: '256kb' }), requ
         ORDER BY r.prioridad DESC, r.id ASC
         LIMIT 40`
     );
-    const reglasTxt = reglasEjemplo
-      .map((r) => `  - "${r.proveedor_normalizado}" → ${r.categoria}`)
-      .join('\n');
-    const categoriasTxt = CATEGORIAS_PARA_REGLAS.map((c) => `  - ${c}`).join('\n');
 
-    const systemPrompt = `Eres un asistente de clasificación contable para Aires Burger, cadena de hamburgueserías en España.
-
-Categorías disponibles (DEBES elegir una de éstas exactamente):
-${categoriasTxt}
-
-Ejemplos de reglas existentes para guiar tu criterio:
-${reglasTxt}
-
-Responderás SOLO en JSON válido, sin texto extra antes ni después, con este formato exacto:
-[
-  {
-    "proveedor": "nombre exacto del input",
-    "categoria": "NOMBRE_CATEGORIA",
-    "confianza": "alta",
-    "motivo": "una línea explicando por qué"
-  }
-]
-
-Criterios de confianza:
-- "alta": el nombre del proveedor es inequívocamente una categoría conocida (ej: una marca de energía → SUMINISTROS_ENERGIA, una distribuidora de carne → PROVEEDOR_CARNES).
-- "media": hay una categoría probable pero el nombre podría caer en varias (ej: un nombre genérico tipo "Distribuciones X" sin contexto adicional).
-- "baja": el nombre es ambiguo, parece una transferencia genérica, o no se identifica un giro claro.
-
-Reglas:
-- Si no podés identificar el rubro con razonabilidad, usá "OTROS_GASTOS" o "PROVEEDOR_OTROS" con confianza "baja".
-- Para nóminas, sueldos o personal: NOMINAS o NOMINAS_DIRECCION (según contexto).
-- Para impuestos / AEAT / hacienda: IMPUESTOS.
-- Para Seguridad Social / TGSS: SS_LABORAL.
-- Para Glovo, Uber Eats, Just Eat: DELIVERY.
-- Para alquileres / arrendamientos: ALQUILER.`;
-
-    const proveedoresList = proveedores
-      .map((p, i) => `${i + 1}. "${p.proveedor}"${p.n_movimientos ? ` (${p.n_movimientos} mov, ${Math.round(p.total_importe || 0)}€)` : ''}`)
-      .join('\n');
-
-    const userPrompt = `Clasificá estos ${proveedores.length} proveedores. Respondé SOLO con el array JSON, sin texto extra.
-
-${proveedoresList}`;
-
-    // Llamada a Anthropic API. Cache en system para que los batches
-    // siguientes paguen ~10% del costo del primero.
-    const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        // Sonnet 4.6 = último estable y muy capaz para tareas de
-        // clasificación (el spec pedía 4-20250514, que es un snapshot
-        // viejo; 4.6 es mejor en accuracy y tiene mismo costo).
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8000,
-        temperature: 0,
-        system: [
-          { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
-        ],
-        messages: [{ role: 'user', content: userPrompt }],
-      }),
+    const result = await classifyProveedores({
+      proveedores,
+      reglasEjemplo,
+      categorias: CATEGORIAS_PARA_REGLAS,
     });
-
-    if (!apiRes.ok) {
-      const errTxt = await apiRes.text().catch(() => '');
-      console.error('[reglas-prov.ia] anthropic HTTP', apiRes.status, errTxt.slice(0, 500));
-      return res.status(502).json({ error: `Claude API ${apiRes.status}`, detalle: errTxt.slice(0, 200) });
-    }
-    const claudeJson = await apiRes.json();
-    const textBlocks = (claudeJson.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-    // Parse defensivo: a veces el modelo envuelve en ```json ... ```
-    let sugerencias = [];
-    try {
-      const cleaned = textBlocks.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-      sugerencias = JSON.parse(cleaned);
-      if (!Array.isArray(sugerencias)) throw new Error('respuesta no es array');
-    } catch (e) {
-      console.error('[reglas-prov.ia] JSON parse fail. raw:', textBlocks.slice(0, 500));
-      return res.status(502).json({ error: 'respuesta de Claude no parseable', raw: textBlocks.slice(0, 500) });
-    }
-    // Validación: cada item debe tener {proveedor, categoria, confianza, motivo}
-    // y la categoría debe estar en CATEGORIAS_PARA_REGLAS (sino degrada a baja).
-    const catSet = new Set(CATEGORIAS_PARA_REGLAS);
-    const norm = sugerencias.map((s) => {
-      const proveedor = String(s.proveedor || '').trim();
-      let categoria = String(s.categoria || '').trim().toUpperCase();
-      let confianza = String(s.confianza || 'baja').toLowerCase();
-      if (!['alta', 'media', 'baja'].includes(confianza)) confianza = 'baja';
-      if (!catSet.has(categoria)) { categoria = 'OTROS_GASTOS'; confianza = 'baja'; }
-      return { proveedor, categoria, confianza, motivo: String(s.motivo || '').slice(0, 200) };
-    }).filter((s) => s.proveedor);
-    return res.json({
-      sugerencias: norm,
-      usage: claudeJson.usage || null,
-      model: claudeJson.model || null,
-    });
+    return res.json(result);
   } catch (e) {
+    // Errores tipados del helper → mapeo a HTTP status.
+    if (e.type === 'no_api_key') {
+      return res.status(503).json({
+        error: 'OPENROUTER_API_KEY no configurada',
+        hint: 'Setear la variable de entorno en Railway / .env y reiniciar el server.',
+      });
+    }
+    if (e.type === 'http') {
+      console.error('[reglas-prov.ia] OpenRouter HTTP', e.status, e.body?.slice(0, 200));
+      return res.status(502).json({ error: `OpenRouter ${e.status}`, detalle: e.body?.slice(0, 200) });
+    }
+    if (e.type === 'parse') {
+      console.error('[reglas-prov.ia] parse fail, raw:', e.raw);
+      return res.status(502).json({ error: 'respuesta del modelo no parseable', raw: e.raw });
+    }
     console.error('[reglas-prov.ia-clasificar]', e);
     res.status(500).json({ error: e.message || 'internal' });
   }
