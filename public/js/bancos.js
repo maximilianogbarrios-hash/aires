@@ -1214,6 +1214,7 @@ async function openProvSidebar(grupo) {
   $('prov-sb-body').innerHTML = '';
   $('prov-sidebar-backdrop').style.display = '';
   $('prov-sidebar').style.display = '';
+  state._sbFilterQ = '';
   try {
     const params = buildGrupoDetalleQuery();
     params.set('grupo', grupo);
@@ -1222,7 +1223,15 @@ async function openProvSidebar(grupo) {
     const tot = j.total || 0;
     const totProvTab = state.prov.total || 1;
     $('prov-sb-meta').textContent = `${eur2(tot)} · ${j.num_conceptos} conceptos · ${((tot/totProvTab)*100).toFixed(1)}% del gasto filtrado`;
-    renderProvSidebarRows(j.conceptos);
+    // Layout: search bar (persistente) + summary banner (toggle) + rows.
+    // El input se renderiza UNA sola vez aquí; oninput sólo muta rows + banner
+    // para no perder foco / posición del cursor al tipear.
+    $('prov-sb-body').innerHTML = `
+      ${renderProvSearchBar()}
+      <div id="prov-sb-filter-summary"></div>
+      <div id="prov-sb-rows"></div>
+    `;
+    renderProvSidebarRows();
   } catch (e) {
     $('prov-sb-meta').textContent = 'Error: ' + e.message;
   }
@@ -1256,10 +1265,96 @@ function renderSociedadesBadges(sociedades) {
     + '</div>';
 }
 
-function renderProvSidebarRows(conceptos) {
-  const body = $('prov-sb-body');
+// Buscador del Detalle del Grupo — input persistente arriba del listado.
+// Se renderiza UNA vez por apertura del sidebar; el filtrado en vivo sólo
+// muta #prov-sb-filter-summary y #prov-sb-rows para preservar foco/cursor.
+function renderProvSearchBar() {
+  return `
+    <div id="prov-sb-search-wrap" style="position:relative;margin-bottom:10px">
+      <span aria-hidden="true" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text-2);font-size:13px;pointer-events:none">🔍</span>
+      <input type="text" id="prov-sb-search"
+        placeholder="Buscar por nombre o concepto…"
+        autocomplete="off" spellcheck="false"
+        oninput="onProvFilterInput(this.value)"
+        style="width:100%;padding:6px 32px 6px 30px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
+      <button id="prov-sb-search-clear" onclick="clearProvFilter()"
+        title="Limpiar búsqueda" aria-label="Limpiar búsqueda"
+        style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:var(--text-2);cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;display:none">×</button>
+    </div>
+  `;
+}
+
+// Aplica el filtro actual a state._sbData.conceptos. Devuelve las entradas
+// con su índice ORIGINAL preservado — los onclick="confirmReclasificar(i)"
+// dependen de que `i` mapee al slot exacto en state._sbData.conceptos[i].
+// Saltea tombstones (null) que dejan las reclasificaciones previas.
+function _filterConceptoEntries() {
+  const all = state._sbData?.conceptos || [];
+  const q = (state._sbFilterQ || '').trim().toLowerCase();
+  const out = [];
+  let sum = 0;
+  for (let i = 0; i < all.length; i++) {
+    const c = all[i];
+    if (!c) continue;
+    if (q) {
+      const nombre = (c.proveedor_canonico || '').toLowerCase();
+      const concepto = (c.concepto || '').toLowerCase();
+      if (!nombre.includes(q) && !concepto.includes(q)) continue;
+    }
+    out.push({ c, i });
+    sum += +c.total_importe || 0;
+  }
+  return { entries: out, q, sum };
+}
+
+function _escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Actualiza sólo el banner de resumen (sin tocar las filas). Llamado al
+// tipear, al limpiar, y después de cada reclasificación para que el conteo
+// y la suma queden frescos sin re-renderizar el listado (que cerraría forms
+// de reclasif que el usuario pudiera tener abiertos en otras filas).
+function renderFilterSummary() {
+  const summary = $('prov-sb-filter-summary');
+  if (!summary) return;
+  const { entries, q, sum } = _filterConceptoEntries();
+  if (!q) { summary.innerHTML = ''; return; }
+  summary.innerHTML = `
+    <div style="background:var(--bg-secondary);border:.5px solid var(--border-3);border-radius:6px;padding:6px 10px;margin-bottom:10px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <span><strong>${entries.length}</strong> ${entries.length === 1 ? 'resultado' : 'resultados'} · <strong>${eur2(sum)}</strong></span>
+      <span style="color:var(--text-2);font-size:10px">filtrando por "${_escHtml(q)}"</span>
+    </div>
+  `;
+}
+
+function renderProvSidebarRows() {
+  const rows = $('prov-sb-rows');
+  if (!rows) return;
   const esBucketMenores = !!state._sbData?.es_bucket_menores;
-  body.innerHTML = conceptos.map((c, i) => {
+  const { entries, q } = _filterConceptoEntries();
+
+  // Toggle del botón × del input según haya o no búsqueda activa.
+  const clearBtn = $('prov-sb-search-clear');
+  if (clearBtn) clearBtn.style.display = q ? '' : 'none';
+
+  renderFilterSummary();
+
+  // Empty state cuando hay búsqueda pero ningún match.
+  if (q && entries.length === 0) {
+    rows.innerHTML = `
+      <div style="padding:30px 12px;text-align:center;color:var(--text-2);font-size:12px">
+        <p style="font-size:24px;margin-bottom:6px">🔍</p>
+        <p style="margin-bottom:4px">Sin resultados para "<strong>${_escHtml(q)}</strong>"</p>
+        <p style="font-size:10px">Probá con otra parte del nombre o concepto, o limpiá la búsqueda.</p>
+      </div>
+    `;
+    return;
+  }
+
+  rows.innerHTML = entries.map(({ c, i }) => {
     const conceptoEsc = (c.concepto || '').replace(/"/g, '&quot;');
     // En "Proveedores Menores" cada fila pertenece a un proveedor distinto;
     // mostramos su nombre canónico como pista visual para que el usuario
@@ -1311,6 +1406,18 @@ function renderProvSidebarRows(conceptos) {
       </div>
     </div>`;
   }).join('');
+}
+
+function onProvFilterInput(val) {
+  state._sbFilterQ = val;
+  renderProvSidebarRows();
+}
+
+function clearProvFilter() {
+  state._sbFilterQ = '';
+  const input = $('prov-sb-search');
+  if (input) { input.value = ''; input.focus(); }
+  renderProvSidebarRows();
 }
 
 function toggleReclasificar(i) {
@@ -1565,7 +1672,9 @@ async function confirmReclasificar(i) {
         const pct = ((state._sbData.total / totProvTab) * 100).toFixed(1);
         meta.textContent = `${eur2(state._sbData.total)} · ${state._sbData.num_conceptos} conceptos · ${pct}% del gasto filtrado`;
       }
-      _animateRowOut(row);
+      // Tras la animación, refrescar el banner de búsqueda (si hay filtro
+      // activo, el count/sum debe restar el ítem que acaba de salir).
+      _animateRowOut(row, renderFilterSummary);
     } else {
       // El concepto se queda en el grupo (cambió sólo la categoría):
       // refrescar in-place el chip de categoría y cerrar el form, sin
@@ -1779,6 +1888,7 @@ Object.assign(window, {
   toggleProvSelection, clearProvSelection,
   // Sidebar de detalle / reclasificación
   openProvSidebar, closeProvSidebar, toggleReclasificar, confirmReclasificar, rcRefreshNombres,
+  onProvFilterInput, clearProvFilter,
   // Panel de gestión Gastos Dirección (admin/socio)
   openGdManage, gdSetOverride, gdRemoveOverride, gdAddProveedor,
   // Evolución temporal
