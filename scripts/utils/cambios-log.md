@@ -1615,3 +1615,58 @@ asset /js/bancos-reglas.js → 200
   nuevo drag.
 - Reglas protegidas (`protegida=TRUE`, ej. Raba Buildings) no se
   pueden borrar — 403 en `/reglas-prov/:id` DELETE.
+
+## Bancos / Reglas — auto-scroll en drag + consistencia stats (2026-05-25)
+
+Dos correcciones en la pantalla "Reglas de Proveedores":
+
+**Fix 1 — Auto-scroll durante drag**:
+
+HTML5 drag&drop no scrollea el viewport por defecto cuando el item
+arrastrado se acerca a los bordes — el user no podía llegar a las
+categorías que estaban más abajo en el panel derecho. Implementado
+en `public/js/bancos-reglas.js`:
+
+- Listener `dragover` global a nivel `document` que mide `clientY`.
+- Zonas "calientes" en los últimos 100 px del viewport (superior +
+  inferior). Velocidad escala linealmente con la proximidad al borde
+  (0 → 18 px por frame en el borde mismo).
+- `requestAnimationFrame` loop dispara `window.scrollBy(0, delta)` a
+  ritmo consistente (no cada `dragover`, que vendría a 60+ Hz).
+- Safety net: `dragend` y `drop` a nivel document limpian el RAF
+  aunque el item específico no haya disparado dragend.
+
+**Fix 2 — `/clasificados` usaba match literal de
+`proveedor_normalizado`** — stats podían divergir del donut si una
+regla nueva nunca había hecho backfill, o si filas existentes con
+prov_norm=NULL eran derivadas por el pipeline al mismo proveedor.
+
+Reemplazado: ahora la query corre el **mismo pipeline** que
+`/proveedores` (matchRegla DB + normalizarProveedor + esIntraGrupo)
+y arma el map de stats por proveedor canónico. **Por construcción**
+los números de la pantalla de reglas y del donut coinciden,
+independientemente del estado de backfill en la columna.
+
+**Verificación E2E con Makro** (caso reportado):
+
+```
+Query del user (concepto OR prov_norm + fecha):  197.561,02 €  ·  660 movs
+  → 649 movs con prov_norm=NULL → derivado a 'Makro' (187.948 €)
+  → 11 movs con prov_norm='Equipamiento' (regla mala) (9.613 €)
+
+Donut /proveedores (pipeline):                   187.948 €     ·  649 movs
+/reglas-prov/clasificados (PRE-fix, literal):    0 € · 0 movs   ← bug
+/reglas-prov/clasificados (POST-fix, pipeline): 197.561,02 €   ·  660 movs ✓
+```
+
+Tras crear la regla Makro → PROVEEDOR_MAKRO con un drag&drop, el
+UPDATE histórico arrastra también las 11 mal clasificadas — la
+recategorización consolida todo Makro en su categoría correcta. Esto
+también hace que las stats del donut ahora muestren 660/197.561 €
+(antes 649/187.948 €) porque el UPDATE ya pasó el `position(LOWER
+($1) IN LOWER(concepto)) > 0` y reclasificó el universo entero.
+
+El **principio de diseño** queda más limpio: una sola lógica de
+agregación (el pipeline runtime) sirve tanto al donut como al panel
+de reglas. Cualquier nueva vista que necesite agrupar por proveedor
+debe usar el mismo helper.

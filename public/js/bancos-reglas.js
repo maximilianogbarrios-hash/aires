@@ -37,7 +37,51 @@
     searchQ: '',
     dragging: null,           // proveedor name being dragged
     prevSection: null,        // id de la sección activa antes de abrir reglas (para volver)
+    autoScrollRaf: null,      // requestAnimationFrame id para el auto-scroll del drag
+    autoScrollDelta: 0,       // px por frame (signo: + abajo / − arriba)
   };
+
+  // ─── Auto-scroll durante drag ──────────────────────────────────────
+  // HTML5 drag&drop NO hace auto-scroll cuando el item se acerca a los
+  // bordes del viewport — el usuario queda trabado si la lista es larga.
+  // Implementamos scroll manual con requestAnimationFrame mientras
+  // dragover entra a la zona "caliente" (últimos 100px superior/inferior).
+  // La velocidad escala linealmente con la cercanía al borde (px/frame).
+  const SCROLL_EDGE = 100;     // px desde el borde donde activa el scroll
+  const SCROLL_MAX_SPEED = 18; // px por frame en el borde mismo
+
+  function _scrollLoop() {
+    if (!rp.autoScrollDelta) {
+      rp.autoScrollRaf = null;
+      return;
+    }
+    // Si la pantalla está dentro de #sect-reglas-prov, scrollea su
+    // contenedor scrollable más cercano O la ventana, según corresponda.
+    window.scrollBy(0, rp.autoScrollDelta);
+    rp.autoScrollRaf = requestAnimationFrame(_scrollLoop);
+  }
+
+  function _updateAutoScroll(clientY) {
+    if (!rp.dragging) { rp.autoScrollDelta = 0; return; }
+    const vh = window.innerHeight;
+    let delta = 0;
+    if (clientY < SCROLL_EDGE) {
+      // Cerca del top → scroll hacia arriba (negativo).
+      const intensity = (SCROLL_EDGE - clientY) / SCROLL_EDGE; // 1.0 en el borde, 0 al límite
+      delta = -Math.round(SCROLL_MAX_SPEED * Math.max(0, Math.min(1, intensity)));
+    } else if (clientY > vh - SCROLL_EDGE) {
+      // Cerca del bottom → scroll hacia abajo (positivo).
+      const intensity = (clientY - (vh - SCROLL_EDGE)) / SCROLL_EDGE;
+      delta = Math.round(SCROLL_MAX_SPEED * Math.max(0, Math.min(1, intensity)));
+    }
+    rp.autoScrollDelta = delta;
+    if (delta !== 0 && !rp.autoScrollRaf) rp.autoScrollRaf = requestAnimationFrame(_scrollLoop);
+  }
+
+  function _stopAutoScroll() {
+    rp.autoScrollDelta = 0;
+    if (rp.autoScrollRaf) { cancelAnimationFrame(rp.autoScrollRaf); rp.autoScrollRaf = null; }
+  }
 
   function feedback(msg, ok) {
     const div = document.createElement('div');
@@ -127,7 +171,11 @@
         ev.dataTransfer.effectAllowed = 'move';
         ev.dataTransfer.setData('text/plain', prov);
       });
-      el.addEventListener('dragend', () => { el.classList.remove('dragging'); rp.dragging = null; });
+      el.addEventListener('dragend', () => {
+        el.classList.remove('dragging');
+        rp.dragging = null;
+        _stopAutoScroll();
+      });
       // Click sin arrastre → modal de detalle. Usamos timeout para no
       // disparar al inicio del drag.
       let clickTimer = null;
@@ -275,4 +323,20 @@
       else if ($('sect-reglas-prov').classList.contains('on')) rpClose();
     }
   });
+
+  // Auto-scroll global mientras se está arrastrando un proveedor.
+  // dragover dispara muy frecuentemente (cada movimiento del mouse),
+  // así que sólo actualizamos el delta y dejamos que el RAF loop
+  // haga el scroll a un ritmo consistente.
+  document.addEventListener('dragover', (ev) => {
+    if (!rp.dragging) return;
+    // ev.preventDefault() acá NO — sólo en los drop zones específicos.
+    // Si lo hacemos global, el browser muestra el cursor "drop" en
+    // cualquier zona y confunde al user. Sólo necesitamos clientY.
+    _updateAutoScroll(ev.clientY);
+  }, true);
+  // Safety net: si el drag se cancela (Esc, drop fuera, etc.) o termina
+  // limpiamos el RAF aunque el dragend del item no haya disparado.
+  document.addEventListener('dragend', _stopAutoScroll, true);
+  document.addEventListener('drop', _stopAutoScroll, true);
 })();

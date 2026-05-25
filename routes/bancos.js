@@ -1638,26 +1638,42 @@ router.get('/reglas-prov/sin-clasificar', requirePerm('bancos_reglas_admin'), as
 // matcheando contra ab_movimientos.
 router.get('/reglas-prov/clasificados', requirePerm('bancos_reglas_admin'), async (req, res) => {
   try {
-    const reglas = await many(
+    const reglasActivas = await many(
       `SELECT id, patron, tipo_match, categoria, proveedor_normalizado,
               prioridad, forzar_visible, protegida
          FROM ab_reglas_normalizacion
         WHERE activo = TRUE
         ORDER BY categoria, proveedor_normalizado`
     );
-    // Stats en una sola query: count + sum por proveedor_normalizado
-    // (incluye matches por nombre persistido o por ILIKE en concepto).
-    const stats = await many(
-      `SELECT proveedor_normalizado,
-              COUNT(*)::int             AS n_movimientos,
-              SUM(ABS(importe))::float8 AS total_importe
+    // Stats vía MISMO PIPELINE que /proveedores (matchRegla +
+    // normalizarProveedor), no por proveedor_normalizado literal.
+    // Garantiza que los números mostrados acá coincidan exactamente
+    // con el donut, sin importar si el backfill se materializó o no
+    // en la columna proveedor_normalizado. Sin filtro de fecha
+    // (la pantalla cubre todo el histórico).
+    const rows = await many(
+      `SELECT concepto, categoria, importe::float8 AS importe, proveedor_normalizado
          FROM ab_movimientos
-        WHERE proveedor_normalizado IS NOT NULL
-          AND importe < 0
-        GROUP BY proveedor_normalizado`
+        WHERE importe < 0`
     );
-    const statMap = new Map(stats.map((s) => [s.proveedor_normalizado, s]));
-    const enriched = reglas.map((r) => ({
+    const reglasPipeline = await loadReglas();
+    const statMap = new Map();
+    for (const r of rows) {
+      if (esIntraGrupo(r.concepto)) continue;
+      let prov;
+      if (r.proveedor_normalizado) prov = r.proveedor_normalizado;
+      else {
+        const rule = matchRegla(r.concepto, reglasPipeline);
+        prov = rule ? rule.proveedor_normalizado
+                    : normalizarProveedor(r.concepto, r.categoria).proveedor;
+      }
+      if (!prov) continue;
+      if (!statMap.has(prov)) statMap.set(prov, { n_movimientos: 0, total_importe: 0 });
+      const s = statMap.get(prov);
+      s.n_movimientos++;
+      s.total_importe += Math.abs(r.importe);
+    }
+    const enriched = reglasActivas.map((r) => ({
       ...r,
       n_movimientos: statMap.get(r.proveedor_normalizado)?.n_movimientos || 0,
       total_importe: statMap.get(r.proveedor_normalizado)?.total_importe || 0,
@@ -1672,7 +1688,7 @@ router.get('/reglas-prov/clasificados', requirePerm('bancos_reglas_admin'), asyn
     for (const c of Object.keys(porCategoria)) {
       porCategoria[c].sort((a, b) => b.total_importe - a.total_importe);
     }
-    res.json({ por_categoria: porCategoria, total_reglas: reglas.length });
+    res.json({ por_categoria: porCategoria, total_reglas: reglasActivas.length });
   } catch (e) {
     console.error('[bancos.reglas-prov.clasificados]', e);
     res.status(500).json({ error: e.message || 'internal' });
