@@ -388,6 +388,7 @@
   window.rpClasificarConIA = async function () {
     if (rp.iaCorriendo) return;
     const items = (rp.sinClasificar || []).filter((p) => !rp.sugerencias.has(p.proveedor));
+    console.log('[ia-debug] sinClasificar:', (rp.sinClasificar || []).length, 'items:', items.length, 'sugerencias ya:', rp.sugerencias.size);
     if (!items.length) {
       feedback('No hay proveedores nuevos para clasificar (todos ya tienen sugerencia)', false);
       return;
