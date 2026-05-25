@@ -39,7 +39,14 @@
     prevSection: null,        // id de la sección activa antes de abrir reglas (para volver)
     autoScrollRaf: null,      // requestAnimationFrame id para el auto-scroll del drag
     autoScrollDelta: 0,       // px por frame (signo: + abajo / − arriba)
+    sugerencias: new Map(),   // proveedor → { categoria, confianza, motivo } (post-IA)
+    iaCorriendo: false,       // bloquea botones mientras se procesa
   };
+  // Detectar rol admin desde la sesión expuesta por el shell de bancos (state.user).
+  function esAdminEstricto() {
+    try { return (window.state && window.state.user && window.state.user.role === 'admin') || false; }
+    catch { return false; }
+  }
 
   // ─── Auto-scroll durante drag ──────────────────────────────────────
   // HTML5 drag&drop NO hace auto-scroll cuando el item se acerca a los
@@ -103,6 +110,9 @@
     const tabsBar = document.querySelector('.tabs');
     if (tabsBar) tabsBar.style.display = 'none';
     $('sect-reglas-prov').classList.add('on');
+    // Botón IA sólo admin (no socio).
+    const btnIA = $('rp-btn-ia');
+    if (btnIA) btnIA.style.display = esAdminEstricto() ? '' : 'none';
     if (!rp.booted) {
       await loadAll();
       rp.booted = true;
@@ -135,6 +145,7 @@
       renderSinClasificar();
       renderCategorias();
       $('rp-cat-n').textContent = rp.categorias.length;
+      _updateBulkButtonVisibility();
     } catch (e) {
       feedback('Error cargando reglas: ' + e.message, false);
       $('rp-sc-list').innerHTML = `<p style="color:var(--rp-red);padding:8px;font-size:11px">${esc(e.message)}</p>`;
@@ -156,10 +167,31 @@
     $('rp-sc-list').innerHTML = rows.map((p) => {
       const provEsc = esc(p.proveedor);
       const provAttr = String(p.proveedor).replace(/"/g, '&quot;');
-      return `<div class="rp-item" draggable="true" data-prov="${provAttr}" title="Click para ver detalle · Arrastrar a una categoría">
-        🔴
-        <span class="rp-name">${provEsc}</span>
-        <span class="rp-badge">${p.n_movimientos}mv · ${eur0(p.total_importe)}</span>
+      const sug = rp.sugerencias.get(p.proveedor);
+      const sugClass = sug ? ` has-sug sug-${sug.confianza}` : '';
+      const icon = sug
+        ? (sug.confianza === 'alta' ? '🟢' : sug.confianza === 'media' ? '🟡' : '🔴')
+        : '🔴';
+      const sugBlock = sug ? `
+        <div class="rp-sug-line">
+          <span class="rp-sug-arrow">→</span>
+          <span class="rp-sug-cat ${sug.confianza}">${esc(sug.categoria)}</span>
+          <span style="font-size:9.5px;color:var(--text-2);text-transform:uppercase;letter-spacing:.3px">conf. ${sug.confianza}</span>
+          <div class="rp-sug-actions">
+            ${sug.confianza !== 'baja'
+              ? `<button class="rp-sug-btn accept" onclick="rpAceptarSug('${provAttr}', event)" title="Aplicar esta clasificación">✓ Aceptar</button>`
+              : `<button class="rp-sug-btn" onclick="rpEditarSug('${provAttr}', event)" title="Elegir categoría manual">⚙ manual</button>`}
+            <button class="rp-sug-btn reject" onclick="rpRechazarSug('${provAttr}', event)" title="Descartar sugerencia">✗</button>
+          </div>
+        </div>
+        ${sug.motivo ? `<div class="rp-sug-motivo">💡 ${esc(sug.motivo)}</div>` : ''}` : '';
+      return `<div style="display:flex;flex-direction:column;gap:0">
+        <div class="rp-item${sugClass}" draggable="true" data-prov="${provAttr}" title="Click para ver detalle · Arrastrar a una categoría">
+          ${icon}
+          <span class="rp-name">${provEsc}</span>
+          <span class="rp-badge">${p.n_movimientos}mv · ${eur0(p.total_importe)}</span>
+        </div>
+        ${sugBlock}
       </div>`;
     }).join('');
     // Wire drag + click
@@ -315,6 +347,148 @@
       renderSinClasificar();
     }
   });
+
+  // ─── IA: clasificación con Claude ─────────────────────────────────
+  function _updateProgress(done, total, extra) {
+    const bar = $('rp-progress'); const txt = $('rp-progress-text'); const fill = $('rp-progress-fill');
+    if (!bar) return;
+    if (total === 0) { bar.classList.remove('on'); return; }
+    bar.classList.add('on');
+    const pct = total > 0 ? (done / total) * 100 : 0;
+    fill.style.width = pct.toFixed(1) + '%';
+    txt.textContent = `Procesando con Claude… batch ${done} de ${total}${extra ? ' · ' + extra : ''}`;
+  }
+  function _hideProgress() {
+    const bar = $('rp-progress'); if (bar) bar.classList.remove('on');
+  }
+  function _updateBulkButtonVisibility() {
+    let verdes = 0;
+    for (const s of rp.sugerencias.values()) if (s.confianza === 'alta') verdes++;
+    const btn = $('rp-btn-accept-all');
+    if (btn) {
+      btn.style.display = verdes > 0 ? '' : 'none';
+      btn.textContent = `✓ Aceptar todas las verdes (${verdes})`;
+    }
+    const clr = $('rp-btn-clear-sug');
+    if (clr) clr.style.display = rp.sugerencias.size > 0 ? '' : 'none';
+  }
+
+  window.rpClasificarConIA = async function () {
+    if (rp.iaCorriendo) return;
+    const items = (rp.sinClasificar || []).filter((p) => !rp.sugerencias.has(p.proveedor));
+    if (!items.length) {
+      feedback('No hay proveedores nuevos para clasificar (todos ya tienen sugerencia)', false);
+      return;
+    }
+    if (!confirm(`Vamos a pedirle a Claude que clasifique ${items.length} proveedores. Esto consume tokens de la API y puede tardar 1–2 min. ¿Continuar?`)) return;
+
+    rp.iaCorriendo = true;
+    const btnIA = $('rp-btn-ia'); if (btnIA) btnIA.disabled = true;
+    const BATCH = 50;
+    const batches = [];
+    for (let i = 0; i < items.length; i += BATCH) batches.push(items.slice(i, i + BATCH));
+    _updateProgress(0, batches.length);
+    let ok = 0, fail = 0;
+    for (let i = 0; i < batches.length; i++) {
+      try {
+        const r = await api('/api/v1/bancos/reglas-prov/ia-clasificar', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ proveedores: batches[i] }),
+        });
+        for (const s of r.sugerencias || []) {
+          if (s.proveedor) rp.sugerencias.set(s.proveedor, s);
+        }
+        ok += r.sugerencias?.length || 0;
+      } catch (e) {
+        console.error('[ia] batch', i, 'failed:', e);
+        fail += batches[i].length;
+        if (e.code === 503) {
+          // Falta API key → no tiene sentido seguir intentando.
+          feedback('Falta ANTHROPIC_API_KEY en el server', false);
+          break;
+        }
+      }
+      _updateProgress(i + 1, batches.length, `${ok} sugerencias`);
+      // Re-render parcial para que se vean apareciendo en vivo.
+      renderSinClasificar();
+      _updateBulkButtonVisibility();
+    }
+    _hideProgress();
+    rp.iaCorriendo = false;
+    if (btnIA) btnIA.disabled = false;
+    feedback(`✓ ${ok} sugerencias generadas${fail ? ` · ${fail} fallaron` : ''}`, !fail);
+  };
+
+  window.rpAceptarSug = async function (proveedor, ev) {
+    if (ev) ev.stopPropagation();
+    const sug = rp.sugerencias.get(proveedor);
+    if (!sug) return;
+    try {
+      await api('/api/v1/bancos/reglas-prov/asignar', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ proveedor, categoria: sug.categoria }),
+      });
+      rp.sugerencias.delete(proveedor);
+      feedback(`✓ ${proveedor} → ${sug.categoria}`);
+      await loadAll();
+      _updateBulkButtonVisibility();
+    } catch (e) {
+      feedback('✗ ' + e.message, false);
+    }
+  };
+
+  window.rpRechazarSug = function (proveedor, ev) {
+    if (ev) ev.stopPropagation();
+    rp.sugerencias.delete(proveedor);
+    renderSinClasificar();
+    _updateBulkButtonVisibility();
+  };
+
+  window.rpEditarSug = function (proveedor, ev) {
+    if (ev) ev.stopPropagation();
+    feedback('Arrastrá el proveedor a la categoría que prefieras', true);
+  };
+
+  window.rpLimpiarSugerencias = function () {
+    if (!rp.sugerencias.size) return;
+    if (!confirm(`Descartar ${rp.sugerencias.size} sugerencias?`)) return;
+    rp.sugerencias.clear();
+    renderSinClasificar();
+    _updateBulkButtonVisibility();
+  };
+
+  window.rpAceptarTodasVerdes = async function () {
+    const verdes = [...rp.sugerencias.entries()]
+      .filter(([, s]) => s.confianza === 'alta')
+      .map(([proveedor, s]) => ({ proveedor, categoria: s.categoria }));
+    if (!verdes.length) return;
+    if (!confirm(`Aplicar ${verdes.length} sugerencias de confianza ALTA?\n\nCada una crea una regla y reclasifica todos los movimientos históricos que coincidan.`)) return;
+    rp.iaCorriendo = true;
+    const btn = $('rp-btn-accept-all'); if (btn) btn.disabled = true;
+    _updateProgress(0, verdes.length);
+    let ok = 0, fail = 0;
+    for (let i = 0; i < verdes.length; i++) {
+      try {
+        await api('/api/v1/bancos/reglas-prov/asignar', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(verdes[i]),
+        });
+        rp.sugerencias.delete(verdes[i].proveedor);
+        ok++;
+      } catch (e) {
+        console.error('bulk asignar fail', verdes[i], e);
+        fail++;
+      }
+      _updateProgress(i + 1, verdes.length, `${ok} OK${fail ? ' · ' + fail + ' fail' : ''}`);
+    }
+    _hideProgress();
+    rp.iaCorriendo = false;
+    if (btn) btn.disabled = false;
+    feedback(`✓ ${ok} reglas creadas${fail ? ` · ${fail} fallaron` : ''}`, !fail);
+    await loadAll();
+    _updateBulkButtonVisibility();
+  };
 
   // Esc para cerrar modal
   document.addEventListener('keydown', (ev) => {

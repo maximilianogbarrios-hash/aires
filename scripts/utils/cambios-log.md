@@ -1670,3 +1670,89 @@ El **principio de diseño** queda más limpio: una sola lógica de
 agregación (el pipeline runtime) sirve tanto al donut como al panel
 de reglas. Cualquier nueva vista que necesite agrupar por proveedor
 debe usar el mismo helper.
+
+## Bancos — clasificación automática de proveedores con IA (2026-05-25)
+
+Botón "✨ Clasificar con IA" en la pantalla "Reglas de Proveedores",
+visible sólo para admin (perm nuevo `bancos_reglas_ia: ['admin']` —
+incurre en costo de tokens de Anthropic).
+
+**Flujo end-to-end**:
+
+1. User admin click "✨ Clasificar con IA" → confirm modal.
+2. Frontend chunkea los proveedores sin clasificar en batches de 50.
+3. Por cada batch, POST a `/api/v1/bancos/reglas-prov/ia-clasificar`.
+4. Backend arma prompt + llama Claude API (`claude-sonnet-4-6`).
+5. Parse del JSON, validación de categoría contra
+   `CATEGORIAS_PARA_REGLAS`, devuelve `{ proveedor, categoria,
+   confianza, motivo }` por proveedor.
+6. Frontend muestra sugerencias inline en cada item con badge color
+   (🟢 alta / 🟡 media / 🔴 baja) + botones Aceptar / ✗ / manual.
+7. Barra de progreso violeta durante el procesamiento.
+8. Botón "✓ Aceptar todas las verdes (N)" aplica en bulk todas las
+   confianza alta — cada una crea regla + reclasifica histórico.
+
+**Backend** (`routes/bancos.js`):
+
+- Endpoint POST `/reglas-prov/ia-clasificar` gated por
+  `requirePerm('bancos_reglas_ia')`. Si `ANTHROPIC_API_KEY` no está
+  en el entorno → 503 con hint explícito.
+- System prompt incluye:
+  - Las 32 categorías disponibles literalmente.
+  - Top 40 reglas existentes (por prioridad) como ejemplos in-context.
+  - Criterios de confianza (alta/media/baja) detallados.
+  - Reglas heurísticas (TGSS → SS_LABORAL, Glovo → DELIVERY, etc.).
+- **Prompt caching** con `cache_control: ephemeral` en el system —
+  los batches 2 a N pagan ~10% del costo del primero porque el
+  contexto (categorías + ejemplos) es idéntico.
+- `temperature: 0` para determinismo en clasificación.
+- Parser defensivo: tolera respuesta envuelta en \`\`\`json …\`\`\`.
+- Validación: categoría inválida → degrada a OTROS_GASTOS / baja.
+- Limita 60 proveedores por request (front usa 50).
+- Modelo: `claude-sonnet-4-6` (último estable; el spec pedía
+  `claude-sonnet-4-20250514` que es snapshot viejo).
+
+**Frontend** (`public/js/bancos-reglas.js`):
+
+- Estado: `rp.sugerencias = Map<proveedor, { categoria, confianza, motivo }>`.
+- `rpClasificarConIA()` — chunkea, llama batch por batch, re-renderiza
+  parcial entre batches (las sugerencias aparecen apareciendo en vivo).
+  Bloquea botón mientras corre. Cancela si recibe 503 (no tiene sentido
+  reintentar sin API key).
+- `rpAceptarSug(prov)` — un click: POST `/asignar` con la categoría
+  sugerida.
+- `rpRechazarSug(prov)` — quita la sugerencia local (sin pegar al back).
+- `rpAceptarTodasVerdes()` — itera y aplica todas las `confianza='alta'`,
+  con barra de progreso, asíncrono pero serial para no saturar la DB.
+- `rpLimpiarSugerencias()` — descarta todas las sugerencias.
+- Visibilidad: botón IA sólo `role==='admin'`; botón "Aceptar todas
+  verdes" sólo aparece si hay verdes; "Limpiar" sólo si hay sugerencias.
+- Estilos: item con borde colorido por confianza, sugerencia debajo con
+  badge categoría + motivo + acciones.
+
+**Smoke test verificado**:
+
+```
+admin POST /ia-clasificar (sin ANTHROPIC_API_KEY)  → 503 · "ANTHROPIC_API_KEY no configurada"
+dani (socio) POST /ia-clasificar                   → 403 (perm bancos_reglas_ia)
+asset bancos-reglas.js                             → 200 · 23.6 KB
+```
+
+**Para activar en producción**:
+
+```bash
+# En Railway / .env
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Sin la key, el botón sigue visible pero el primer batch devuelve 503
+y se aborta con feedback claro al user.
+
+**Costos esperados**:
+- ~458 proveedores actuales / 50 por batch = 10 llamadas.
+- System cacheado: ~1.5k input tokens (categorías + 40 ejemplos)
+  cobrados full el batch 1, ~10% en batches 2-10.
+- User per batch: ~500-800 tokens.
+- Output: ~2-3k tokens por batch.
+- Estimación total: ~$0.10-0.20 USD por clasificar 458 proveedores
+  (Sonnet 4.6 con caching).
