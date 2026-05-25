@@ -424,6 +424,11 @@ function aplicarVistaSegunRol() {
   // Botón ⚙️ Gestionar reglas (drag & drop) sólo admin/socio.
   const btnRp = $('prov-btn-reglas');
   if (btnRp) btnRp.style.display = rolEsAdmin() ? '' : 'none';
+  // Botón "+ Proveedor" (alta manual) sólo admin/socio.
+  // El spec original pedía rolEsAdmin() || rolEsSocio() pero esta
+  // segunda función no existe — rolEsAdmin() ya cubre {admin, socio}.
+  const btnAddProv = $('prov-btn-add-prov');
+  if (btnAddProv) btnAddProv.style.display = rolEsAdmin() ? '' : 'none';
 }
 
 async function loadProvRanking() {
@@ -1879,6 +1884,75 @@ async function gdAddProveedor() {
   if (input) input.value = '';
 }
 
+// ─── Modal "+ Proveedor" (alta manual al donut) ───────────────────────
+// Inyecta un slice nuevo en state.prov.rows con flag _manual=true.
+// No persiste en DB — es una entrada visual local hasta que el user
+// la materialice creando una regla desde "Gestionar reglas" o desde
+// el sidebar de reclasificación de un mov real.
+function openAddProvModal() {
+  const existing = document.getElementById('add-prov-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'add-prov-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--bg-primary);border:0.5px solid var(--border-2);border-radius:12px;padding:24px;width:420px;max-width:90vw">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <span style="font-size:15px;font-weight:500">Agregar proveedor</span>
+        <button onclick="document.getElementById('add-prov-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text-2)">×</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Nombre del proveedor *</label>
+          <input id="add-prov-nombre" type="text" placeholder="Ej: Makro, Coca-Cola Iberian Partners..." style="width:100%;padding:8px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px;box-sizing:border-box">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Categoría</label>
+          <select id="add-prov-categoria" style="width:100%;padding:8px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px;box-sizing:border-box">
+            <option value="">— Sin categoría —</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Importe inicial (€)</label>
+          <input id="add-prov-importe" type="number" min="0" step="0.01" placeholder="0.00" style="width:100%;padding:8px 10px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px;box-sizing:border-box">
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px">
+        <button onclick="document.getElementById('add-prov-modal').remove()" style="padding:7px 16px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:13px">Cancelar</button>
+        <button onclick="submitAddProv()" style="padding:7px 16px;border:none;border-radius:6px;background:#7C3AED;color:#fff;cursor:pointer;font-size:13px;font-weight:500">Agregar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  // Llenar el select de categorías con las que ya existen en state.prov.rows.
+  // Spec pedía r.categoria_top pero el campo real en /proveedores es r.categoria.
+  const cats = [...new Set(state.prov.rows.map((r) => r.categoria).filter(Boolean))].sort();
+  const sel = document.getElementById('add-prov-categoria');
+  cats.forEach((c) => { const o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+  setTimeout(() => document.getElementById('add-prov-nombre')?.focus(), 50);
+}
+
+async function submitAddProv() {
+  const nombre = document.getElementById('add-prov-nombre')?.value.trim();
+  const categoria = document.getElementById('add-prov-categoria')?.value;
+  const importe = parseFloat(document.getElementById('add-prov-importe')?.value) || 0;
+  if (!nombre) { alert('El nombre del proveedor es obligatorio.'); return; }
+  // Inyectar en state.prov.rows como entrada manual y re-renderizar.
+  // Campo `categoria` (no `categoria_top`) para mantener la consistencia
+  // con el resto de la lógica de la tabla / donut.
+  state.prov.rows.push({
+    proveedor: nombre,
+    total_importe: importe,
+    num_transacciones: 0,
+    porcentaje: 0,
+    categoria: categoria || null,
+    _manual: true,
+  });
+  document.getElementById('add-prov-modal').remove();
+  renderProvDonut();
+  renderProvTabla();
+}
+
 Object.assign(window, {
   reload, showTab, toggleUpload, uploadExtracto, uploadCierres, loadMovs, changePage, exportCsv, logout,
   loadProvRanking, exportProveedoresCsv,
@@ -1891,6 +1965,8 @@ Object.assign(window, {
   onProvFilterInput, clearProvFilter,
   // Panel de gestión Gastos Dirección (admin/socio)
   openGdManage, gdSetOverride, gdRemoveOverride, gdAddProveedor,
+  // Modal alta manual de proveedor en el donut
+  openAddProvModal, submitAddProv,
   // Evolución temporal
   loadEvolucion, evRenderSugerencias, evSeleccionar, evQuitar, evAplicarTopMatch,
 });
