@@ -551,7 +551,13 @@ router.get('/proveedores', async (req, res) => {
 
     // Agrupar por proveedor normalizado, excluyendo intra-grupo.
     // Precedencia: ab_movimientos.proveedor_normalizado > regla DB > normalizarProveedor().
+    // En el mismo pase armamos también catAgg (por categoría canónica del
+    // pipeline) para alimentar el donut "32 categorías" que reemplaza al
+    // donut viejo de 97 proveedores. Usar el mismo bucle garantiza que
+    // ambas vistas (donut por cat y tabla por proveedor) salgan del mismo
+    // origen — sin desfase ni dependencia del rollup posterior.
     const agg = new Map(); // proveedor → { total, n, categorias: Map<cat, count>, ultima_fecha }
+    const catAgg = new Map(); // categoria_codigo → { total, n_movs, proveedores:Set }
     let totalExcluido = 0;
     let nExcluido = 0;
     for (const r of rows) {
@@ -608,6 +614,17 @@ router.get('/proveedores', async (req, res) => {
       a.n += 1;
       a.cats.set(categoria, (a.cats.get(categoria) || 0) + 1);
       if (!a.ultima_fecha || r.fecha > a.ultima_fecha) a.ultima_fecha = r.fecha;
+
+      // Agg por categoría canónica del movimiento (no top-cat del proveedor).
+      // Esto asegura que un mov de "Mercadona" categorizado como BEBIDAS
+      // aparezca bajo BEBIDAS en el donut por categoría, aunque Mercadona
+      // tenga la mayoría de sus movs en LIMPIEZA.
+      if (!catAgg.has(categoria)) catAgg.set(categoria, { codigo: categoria, total: 0, n_movs: 0, proveedores: new Set(), ultima_fecha: null });
+      const c = catAgg.get(categoria);
+      c.total += Math.abs(+r.importe);
+      c.n_movs += 1;
+      c.proveedores.add(proveedor);
+      if (!c.ultima_fecha || r.fecha > c.ultima_fecha) c.ultima_fecha = r.fecha;
     }
 
     // Anexamos métricas de pedidos cargados por el usuario
@@ -742,6 +759,70 @@ router.get('/proveedores', async (req, res) => {
       thresholds: { min_tx: minTx, min_eur: minEur, max_grupos: maxGrupos },
     } : null;
 
+    // ─── por_categoria: alimenta el donut nuevo (32 slices = categorías) ──
+    // Aplicamos sobre catAgg la fusión "Gastos Dirección" (las 4 cats sensibles
+    // colapsan en un único slice virtual con codigo='__GASTOS_DIRECCION_FUSE__')
+    // y resolvemos nombre_display desde ab_categorias.
+    let catDisplay = new Map();
+    try {
+      const cats = await many('SELECT codigo, nombre_display FROM ab_categorias');
+      catDisplay = new Map(cats.map((c) => [c.codigo, c.nombre_display]));
+    } catch (e) {
+      // Tolerante a migration 19 no aplicada todavía.
+      console.warn('[bancos.proveedores] ab_categorias no disponible:', e.message);
+    }
+
+    // Construir entradas individuales por categoría.
+    const catEntries = [...catAgg.values()].map((c) => ({
+      codigo: c.codigo,
+      nombre_display: catDisplay.get(c.codigo) || c.codigo,
+      total: c.total,
+      n_movs: c.n_movs,
+      n_proveedores: c.proveedores.size,
+      ultima_fecha: c.ultima_fecha,
+      porcentaje: totalGasto > 0 ? c.total / totalGasto : 0,
+      es_fusion: false,
+      _sensible: CATEGORIAS_DIRECCION_FUSE.has(c.codigo),
+    }));
+
+    // Fusión: las 4 cats sensibles → un slice virtual.
+    const sensiblesCat = catEntries.filter((c) => c._sensible);
+    const restantesCat = catEntries.filter((c) => !c._sensible);
+    let porCategoria = restantesCat;
+    let fusion_cat = null;
+    if (sensiblesCat.length > 0) {
+      const totFus = sensiblesCat.reduce((s, c) => s + c.total, 0);
+      const nMovsFus = sensiblesCat.reduce((s, c) => s + c.n_movs, 0);
+      const provsFus = new Set();
+      let ultFusFecha = null;
+      sensiblesCat.forEach((c) => {
+        const orig = catAgg.get(c.codigo);
+        if (orig) orig.proveedores.forEach((p) => provsFus.add(p));
+        if (c.ultima_fecha && (!ultFusFecha || c.ultima_fecha > ultFusFecha)) ultFusFecha = c.ultima_fecha;
+      });
+      porCategoria.push({
+        codigo: '__GASTOS_DIRECCION_FUSE__',
+        nombre_display: FUSE_PROVEEDOR,
+        total: totFus,
+        n_movs: nMovsFus,
+        n_proveedores: provsFus.size,
+        ultima_fecha: ultFusFecha,
+        porcentaje: totalGasto > 0 ? totFus / totalGasto : 0,
+        es_fusion: true,
+        miembros_codigos: sensiblesCat.map((c) => c.codigo),
+        puede_drilldown: esAdminLike(req),
+      });
+      fusion_cat = {
+        miembros: sensiblesCat.length,
+        miembros_codigos: sensiblesCat.map((c) => c.codigo),
+        puede_drilldown: esAdminLike(req),
+      };
+    }
+    // Limpiar el flag interno _sensible.
+    porCategoria = porCategoria
+      .map(({ _sensible, ...rest }) => rest)
+      .sort((a, b) => b.total - a.total);
+
     res.json({
       filtros: { sociedad_id, periodo, periodo_desde, periodo_hasta, vista },
       vista_efectiva: vista,
@@ -759,7 +840,16 @@ router.get('/proveedores', async (req, res) => {
         miembros: fusionados,
         puede_drilldown: esAdminLike(req),
       } : null,
+      // Fusión equivalente para el donut por CATEGORÍA (las 4 cats sensibles
+      // colapsan en un slice virtual __GASTOS_DIRECCION_FUSE__). Lo mismo
+      // que fusion_direccion pero a nivel categoría.
+      fusion_categoria: fusion_cat,
       proveedores: proveedoresFinal,
+      // Lista de categorías canónicas para el donut nuevo. Cada entrada con
+      // `codigo` (PK ab_categorias o '__GASTOS_DIRECCION_FUSE__' para la
+      // fusión), `nombre_display`, `total`, `n_movs`, `n_proveedores`,
+      // `porcentaje`. Ordenado por total desc.
+      por_categoria: porCategoria,
     });
   } catch (e) {
     console.error('[bancos.proveedores]', e);

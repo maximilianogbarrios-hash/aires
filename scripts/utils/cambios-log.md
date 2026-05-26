@@ -1954,3 +1954,124 @@ Esta Phase 2 cierra el ciclo del paquete:
 Las dos vistas (donut Gastos y panel Reglas) son ahora **una sola fuente
 de verdad efectiva**: la cadena pipeline + `ab_categorias.nombre_display`.
 
+
+## Bancos — donut Proveedores reemplazado por donut Categorías (Phase 3)
+
+**Fecha**: 2026-05-26 (Phase 3 del paquete sync donut + categorías,
+sigue Phase 1 `5e218a3` y Phase 2 `387758c`).
+
+**Pedido del usuario**: "en Gestionar Reglas veo 32 categorías… en la
+torta sigo viendo 97 proveedores únicos. Necesito que las 32 categorías
+se vean en el gráfico donde están los 97 proveedores."
+
+**Decisión**: reemplazar completamente el donut "Distribución de gasto"
+de la tab Proveedores. Antes: 97 slices, uno por proveedor canónico,
+click → sidebar con conceptos + reclasificación. Ahora: 32 slices
+(las categorías de `ab_categorias`, con fusión "Gastos Dirección" en
+1 slice virtual), click → sidebar con lista de proveedores de la cat
+→ click en un proveedor → sidebar histórico de conceptos + reclasificación.
+**Drill-down de dos niveles**: categoría → proveedores → conceptos.
+
+### Backend — `routes/bancos.js` `/proveedores`
+
+- **Agg dual en el bucle existente** (líneas ~557-625): además del `agg`
+  por proveedor (que ya existía), se mantiene `catAgg` por categoría
+  canónica del movimiento. Importante: el agg de cat usa la cat REAL
+  del movimiento (resultado del pipeline `loadReglas → matchRegla →
+  normalizarProveedor`), NO la "top-cat" del proveedor. Un mov de
+  Mercadona en BEBIDAS suma a BEBIDAS aunque Mercadona tenga la mayoría
+  de sus movs en LIMPIEZA.
+
+- **JOIN lazy con `ab_categorias`** (tolerante a migration 19 ausente)
+  para resolver `nombre_display`.
+
+- **Fusión "Gastos Dirección" por categoría**: las 4 cats sensibles
+  (`GASTOS_DIRECCION`, `NOMINAS_DIRECCION`, `PRESTAMOS`, `FINANCIERO`)
+  colapsan en un slice virtual con `codigo: '__GASTOS_DIRECCION_FUSE__'`
+  y `nombre_display: 'Gastos Dirección'`. Flag `puede_drilldown` según
+  `esAdminLike(req)`.
+
+- **Response** ahora incluye 2 campos nuevos:
+  ```js
+  por_categoria: [
+    { codigo, nombre_display, total, n_movs, n_proveedores,
+      ultima_fecha, porcentaje, es_fusion, puede_drilldown?, miembros_codigos? }
+  ],
+  fusion_categoria: { miembros, miembros_codigos, puede_drilldown } | null
+  ```
+
+### Frontend — `public/js/bancos.js`
+
+- **`loadProvRanking`**: pobla `state.prov.por_categoria` y
+  `state.prov.fusion_categoria` desde el response.
+
+- **`renderProvDonut` re-escrita**: source = `state.prov.por_categoria`
+  en lugar de `state.prov.rows`. Items normalizados a shape uniforme
+  `{label, key, value, count, porcentaje, n_proveedores, es_fusion,
+  puede_drilldown}`. modeLbl pasa de "(N proveedores, completo)" a
+  "(N categorías, completo)".
+
+- **Click handler nuevo**: `openCategoriaSidebar(codigo)` reemplaza al
+  `openProvSidebar(proveedor)` en los onclick de la leyenda y el slice.
+
+- **`partitionByThreshold` y `enterDonutDrill`** actualizadas para
+  trabajar sobre la shape de items normalizada (por categoría).
+
+- **`openCategoriaSidebar(codigo)` nueva**: abre el mismo `#prov-sidebar`
+  pero con contenido distinto:
+  - Title: nombre_display de la categoría
+  - Meta: `total · n_proveedores · n_movs · % del gasto filtrado`
+  - Body: lista clickeable de proveedores (filtra `state.prov.rows` por
+    `categoria === codigo`), cada uno con su total + tx count, click →
+    `openProvSidebar(proveedor)` (drill al siguiente nivel)
+  - Empty state si no hay proveedores con esa cat (caso edge: el donut
+    cuenta TODOS los movs de la categoría, mientras la lista del
+    sidebar usa "top-cat" del proveedor — divergencia posible con
+    proveedores multi-categoría; comentado en el empty state)
+  - Caso especial `codigo === '__GASTOS_DIRECCION_FUSE__'`: redirige a
+    `openProvSidebar('Gastos Dirección')` (el flujo histórico de la
+    fusión, que para admin/socio muestra todos los conceptos detallados
+    y para no-admin recibe 403 — la UI bloquea el click antes vía
+    `puede_drilldown=false` con 🔒).
+
+- **Selección acumulada (`state.prov.selected`)**: sigue funcionando
+  desde la tabla de proveedores (toggle por nombre). El highlight en
+  el donut por ahora opera por `key` (codigo de cat), pero como la
+  selección se rellena con nombres de proveedor, en la práctica el
+  donut queda "neutro" (sin highlight) hasta que en una iteración
+  futura se decida cómo matchear cross-key.
+
+### HTML — `public/bancos/index.html`
+
+- Hint del donut actualizado: ahora dice "Slices = categorías de
+  Gestionar Reglas. Click en un slice → lista de proveedores de esa
+  categoría → click en un proveedor → conceptos + reclasificación."
+  Con link directo a Gestionar Reglas para reforzar la conexión.
+
+### Lo que se mantuvo
+
+- Tabla de proveedores (debajo del donut) sigue listando los 97
+  proveedores como antes — el cambio fue sólo en el donut.
+- KPIs (Gasto total filtrado, Proveedores únicos, Top proveedor,
+  Intra-grupo excluidas) — sin cambios.
+- Sidebar de detalle de proveedor (`openProvSidebar`) con buscador,
+  reclasificación, animación fade-out — todo intacto. Es el segundo
+  nivel del drill ahora.
+- Rollup "Proveedores Menores" del backend — sigue aplicándose a los
+  proveedores (para la tabla y el state.prov.rows) pero no afecta al
+  donut nuevo.
+
+### Verificación E2E del caso TGSS → SS_LABORAL
+
+1. Reglas: TGSS → SS_LABORAL (regla ya creada).
+2. Reload tab Proveedores: el donut muestra ~32 slices, uno de ellos
+   "Seguridad Social" (nombre_display de SS_LABORAL).
+3. Click en el slice "Seguridad Social" → sidebar abre con título
+   "Seguridad Social" y lista los proveedores cuya top-cat es
+   SS_LABORAL (TGSS aparece ahí).
+4. Click en "TGSS" en la lista → sidebar de proveedor (drill nivel 2)
+   con la lista de conceptos + reclasificación + buscador.
+5. Renombrar nombre_display de SS_LABORAL → "Seguridad Social Personal"
+   en Gestionar categorías (Phase 1) → reload Proveedores → el slice
+   del donut cambia de label al instante, sin redeploy.
+

@@ -466,6 +466,12 @@ async function loadProvRanking() {
     // admin/socio y hay categorías sensibles fusionadas en un único
     // slice. Lo usamos en renderProvDonut para desactivar el click.
     fusion_direccion: j.fusion_direccion || null,
+    // 32 categorías para el donut nuevo (con nombre_display de
+    // ab_categorias y fusión Gastos Dirección como slice virtual
+    // '__GASTOS_DIRECCION_FUSE__'). El donut consume esto en lugar
+    // de state.prov.rows. La tabla de proveedores sigue usando rows.
+    por_categoria: j.por_categoria || [],
+    fusion_categoria: j.fusion_categoria || null,
   });
   // Defensa adicional: si por cualquier ruta el sort se hubiera perdido,
   // re-inicializarlo a su default.
@@ -501,60 +507,81 @@ function fmtThresholdPct(t) {
   return (t * 100).toFixed(t < 0.01 ? 1 : 0).replace('.', ',');
 }
 
-function partitionByThreshold(rows, threshold) {
-  // porcentaje viene del backend como fracción 0..1 (a.total / totalGasto).
-  const above = rows.filter((r) => (r.porcentaje || 0) > threshold);
-  const below = rows.filter((r) => (r.porcentaje || 0) <= threshold);
+function partitionByThreshold(items, threshold) {
+  // porcentaje viene del backend como fracción 0..1.
+  const above = items.filter((r) => (r.porcentaje || 0) > threshold);
+  const below = items.filter((r) => (r.porcentaje || 0) <= threshold);
   return { above, below };
 }
 
+// Donut ahora muestra las 32 CATEGORÍAS (state.prov.por_categoria) como
+// slices, en lugar de los 97 proveedores. Sincronizado con Gestionar
+// Reglas: cada slice es una categoría de ab_categorias con nombre_display
+// resuelto. La fusión "Gastos Dirección" colapsa las 4 cats sensibles
+// (GASTOS_DIRECCION, NOMINAS_DIRECCION, PRESTAMOS, FINANCIERO) en un
+// único slice virtual con codigo '__GASTOS_DIRECCION_FUSE__'.
+//
+// Click en un slice → openCategoriaSidebar(codigo) → sidebar con los
+// proveedores de esa categoría → click en un proveedor → openProvSidebar
+// (sidebar actual con conceptos + reclasificación).
 function renderProvDonut() {
   if (!chProvDonut) return;
-  const rows = state.prov.rows;
+  // Adaptamos por_categoria a una shape uniforme {label, key, value, count,
+  // porcentaje, n_proveedores, es_fusion, puede_drilldown}.
+  const cats = state.prov.por_categoria || [];
+  const items = cats.map((c) => ({
+    label: c.nombre_display,
+    key: c.codigo,
+    value: c.total,
+    count: c.n_movs,
+    porcentaje: c.porcentaje,
+    n_proveedores: c.n_proveedores,
+    es_fusion: !!c.es_fusion,
+    puede_drilldown: c.puede_drilldown !== false, // default permitido
+  }));
+
   const threshold = state.prov.donutThreshold;
   const drillOpen = !!state.prov.donutDrillOpen;
-  let labels = [], values = [], counts = [];
+  let view = [];
   let modeLbl = '';
 
   if (drillOpen && state.prov.donutDrillRows) {
-    const drill = state.prov.donutDrillRows;
-    labels = drill.map((r) => r.proveedor);
-    values = drill.map((r) => r.total_importe);
-    counts = drill.map((r) => r.num_transacciones);
-    modeLbl = `(drill: ${drill.length} proveedores agrupados como "Otros")`;
+    view = state.prov.donutDrillRows;
+    modeLbl = `(drill: ${view.length} categorías agrupadas como "Otros")`;
   } else if (threshold == null) {
-    labels = rows.map((r) => r.proveedor);
-    values = rows.map((r) => r.total_importe);
-    counts = rows.map((r) => r.num_transacciones);
-    modeLbl = `(${rows.length} proveedores, completo)`;
+    view = items;
+    modeLbl = `(${items.length} categorías, completo)`;
   } else {
-    const { above, below } = partitionByThreshold(rows, threshold);
-    const belowTotal = below.reduce((s, r) => s + r.total_importe, 0);
-    const belowCount = below.reduce((s, r) => s + r.num_transacciones, 0);
-    labels = above.map((r) => r.proveedor);
-    values = above.map((r) => r.total_importe);
-    counts = above.map((r) => r.num_transacciones);
+    const { above, below } = partitionByThreshold(items, threshold);
+    view = above.slice();
     if (below.length > 0) {
-      labels.push(`Otros (${below.length})`);
-      values.push(belowTotal);
-      counts.push(belowCount);
+      const totalBelow = below.reduce((s, c) => s + c.value, 0);
+      const countBelow = below.reduce((s, c) => s + c.count, 0);
+      view.push({
+        label: `Otros (${below.length})`, key: '__OTROS__',
+        value: totalBelow, count: countBelow,
+        isOtros: true,
+      });
     }
     modeLbl = `(> ${fmtThresholdPct(threshold)}% · ${above.length} + Otros)`;
   }
 
+  const labels = view.map((v) => v.label);
+  const values = view.map((v) => v.value);
+  const counts = view.map((v) => v.count);
+
   const colors = labels.map((_, i) => COLORS_CAT[i % COLORS_CAT.length]);
-  // Highlight: slices cuyo label coincide con un proveedor seleccionado
-  // ganan un borde violeta brillante grueso. El resto mantiene el borde
-  // default (var(--bg-primary), thin) para separar slices.
+  // Selección acumulada: ahora opera por código de categoría (la barra
+  // superior se setea cuando el usuario marca filas en la tabla de
+  // proveedores; el highlight del donut por categoría es opcional —
+  // por ahora no matcheamos cross-key, dejamos el donut "neutro").
   const sel = state.prov.selected || new Set();
   const ACCENT = '#A78BFA';
-  const borderColors = labels.map((l) => sel.has(l) ? ACCENT : 'rgba(0,0,0,0)');
-  const borderWidths = labels.map((l) => sel.has(l) ? 4 : 2);
-  // Bajamos la opacidad de los no-seleccionados para destacar los marcados.
-  // Cuando no hay selección, todos los slices se ven con color pleno.
+  const borderColors = view.map((v) => sel.has(v.key) ? ACCENT : 'rgba(0,0,0,0)');
+  const borderWidths = view.map((v) => sel.has(v.key) ? 4 : 2);
   const bg = sel.size === 0
     ? colors
-    : colors.map((c, i) => sel.has(labels[i]) ? c : _hexFade(c, 0.35));
+    : colors.map((c, i) => sel.has(view[i].key) ? c : _hexFade(c, 0.35));
   chProvDonut.data.labels = labels;
   chProvDonut.data.datasets[0].data = values;
   chProvDonut.data.datasets[0].backgroundColor = bg;
@@ -564,45 +591,34 @@ function renderProvDonut() {
   chProvDonut.update();
 
   $('prov-donut-mode').textContent = modeLbl;
-  // El <select> de umbral se mantiene en su valor actual; sólo lo
-  // sincronizamos cuando setDonutThreshold lo recibe.
   $('btn-donut-back').style.display = drillOpen ? '' : 'none';
   $('prov-donut-hint').textContent = drillOpen
-    ? `Drill-down activo: estos son los ${state.prov.donutDrillRows?.length || 0} proveedores debajo del umbral.`
+    ? `Drill-down activo: estas son las ${state.prov.donutDrillRows?.length || 0} categorías debajo del umbral.`
     : (threshold == null
-        ? 'Mostrando todos los proveedores como slices individuales.'
-        : 'Proveedores por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down.');
+        ? 'Mostrando todas las categorías como slices. Click → lista de proveedores de la categoría.'
+        : 'Categorías por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down.');
 
   const tot = state.prov.total;
-  // El slice "Gastos Dirección" se ve en TODOS los roles con el mismo
-  // importe. Sólo admin/socio puede expandirlo: el backend devuelve
-  // `fusion_direccion.puede_drilldown` indicando si está habilitado.
-  // Para el resto, click bloqueado + 🔒 en la etiqueta.
-  const fusionInfo = state.prov.fusion_direccion;
-  const fusionGrupo = fusionInfo?.proveedor || null;
-  const fusionPuedeDrill = !!fusionInfo?.puede_drilldown;
-  $('prov-legend').innerHTML = labels.map((lab, i) => {
-    const v = values[i];
-    const p = tot > 0 ? (v / tot * 100).toFixed(1) : '0';
-    const isOtros = !drillOpen && lab.startsWith('Otros (');
-    const esFusionRestringida = fusionGrupo && lab === fusionGrupo && !fusionPuedeDrill;
-    const esFusionAdmin = fusionGrupo && lab === fusionGrupo && fusionPuedeDrill;
-    const labEsc = lab.replace(/'/g, "\\'");
-    // Click en "Otros (N)" → drill local. "Gastos Dirección" para
-    // non-admin → sin click. Cualquier otro grupo (incl. GD para
-    // admin) → sidebar de detalle.
+  $('prov-legend').innerHTML = view.map((v, i) => {
+    const pctV = tot > 0 ? (v.value / tot * 100).toFixed(1) : '0';
+    const isOtros = !!v.isOtros;
+    const esFusionRestringida = v.es_fusion && !v.puede_drilldown;
+    const esFusionAdmin = v.es_fusion && v.puede_drilldown;
+    const keyEsc = (v.key || '').replace(/'/g, "\\'");
     const onClick = esFusionRestringida
       ? ''
-      : (isOtros ? `enterDonutDrill()` : `openProvSidebar('${labEsc}')`);
+      : (isOtros ? `enterDonutDrill()` : `openCategoriaSidebar('${keyEsc}')`);
     const cursor = esFusionRestringida ? 'default' : 'pointer';
     const hover = esFusionRestringida ? '' : ' onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"';
     const lockIcon = esFusionRestringida ? ' 🔒' : (esFusionAdmin ? ' 🔓' : '');
     const sufijo = isOtros ? ' →' : lockIcon;
-    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover}>
+    const tooltipExtra = isOtros ? '' :
+      ` — ${v.n_proveedores || 0} prov · ${v.count} mvs`;
+    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover} title="${v.label}${tooltipExtra}${esFusionRestringida ? ' — bucket fusionado, sin drill-down' : ''}">
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
-      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${lab}${esFusionRestringida ? ' — bucket fusionado, sin drill-down disponible' : ''}">${lab}${sufijo}</span>
-      <span style="font-size:11px;font-weight:500">${eur(v)}</span>
-      <span style="font-size:11px;color:var(--text-2);min-width:40px;text-align:right">${p}%</span>
+      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.label}${sufijo}</span>
+      <span style="font-size:11px;font-weight:500">${eur(v.value)}</span>
+      <span style="font-size:11px;color:var(--text-2);min-width:40px;text-align:right">${pctV}%</span>
     </div>`;
   }).join('');
 }
@@ -621,7 +637,17 @@ function setDonutThreshold(val) {
 function enterDonutDrill() {
   const threshold = state.prov.donutThreshold;
   if (threshold == null) return;  // en "Ver todos" no hay Otros
-  const { below } = partitionByThreshold(state.prov.rows, threshold);
+  // Filtramos categorías debajo del umbral (no proveedores).
+  const cats = state.prov.por_categoria || [];
+  const items = cats.map((c) => ({
+    label: c.nombre_display, key: c.codigo,
+    value: c.total, count: c.n_movs,
+    porcentaje: c.porcentaje,
+    n_proveedores: c.n_proveedores,
+    es_fusion: !!c.es_fusion,
+    puede_drilldown: c.puede_drilldown !== false,
+  }));
+  const { below } = partitionByThreshold(items, threshold);
   if (!below.length) return;
   state.prov.donutDrillOpen = true;
   state.prov.donutDrillRows = below;
@@ -1215,6 +1241,71 @@ function buildGrupoDetalleQuery() {
     if (hasta) params.set('periodo_hasta', hasta);
   }
   return params;
+}
+
+// Sidebar de detalle de CATEGORÍA — primer nivel del drill desde el donut
+// nuevo (32 cats). Lista los proveedores de la categoría seleccionada
+// filtrando state.prov.rows. Click en cualquier proveedor abre el sidebar
+// de detalle de proveedor (openProvSidebar) que es el flujo histórico
+// con conceptos + reclasificación.
+//
+// Caso especial: codigo === '__GASTOS_DIRECCION_FUSE__' redirige a
+// openProvSidebar('Gastos Dirección') que ya maneja la fusión (lista
+// conceptos detallados con admin/socio puede_drilldown; el resto recibe
+// 403 — no debería llegar acá porque la UI bloquea el click).
+async function openCategoriaSidebar(codigo) {
+  if (!codigo) return;
+  // Fusión: delegamos al sidebar de proveedor con el nombre virtual.
+  if (codigo === '__GASTOS_DIRECCION_FUSE__') {
+    return openProvSidebar('Gastos Dirección');
+  }
+  // Encontrar la categoría en state para el título y el meta.
+  const cat = (state.prov.por_categoria || []).find((c) => c.codigo === codigo);
+  if (!cat) return;
+  // Lista de proveedores con esa categoría (filtra state.prov.rows).
+  // Importante: cada proveedor en rows tiene .categoria que es la cat
+  // MÁS FRECUENTE de sus movs. Esto significa que un proveedor con 60%
+  // de sus movs en BEBIDAS y 40% en LIMPIEZA aparece bajo BEBIDAS acá.
+  // El donut por_categoria sí desagrega correctamente por mov (un mov
+  // de BEBIDAS de ese proveedor va al slice BEBIDAS aunque su top-cat
+  // sea LIMPIEZA) — la lista del sidebar es una aproximación.
+  const provsDeCat = (state.prov.rows || [])
+    .filter((p) => p.categoria === codigo)
+    .sort((a, b) => b.total_importe - a.total_importe);
+
+  $('prov-sb-title').textContent = cat.nombre_display;
+  const pct = state.prov.total > 0 ? (cat.total / state.prov.total * 100).toFixed(1) : '0';
+  $('prov-sb-meta').textContent = `${eur2(cat.total)} · ${cat.n_proveedores} proveedores · ${cat.n_movs} mvs · ${pct}% del gasto filtrado`;
+  $('prov-sb-body').innerHTML = '';
+  $('prov-sidebar-backdrop').style.display = '';
+  $('prov-sidebar').style.display = '';
+
+  // Body: lista clickeable de proveedores. Cada uno abre openProvSidebar
+  // (sidebar histórico) para ver conceptos y reclasificar.
+  if (!provsDeCat.length) {
+    $('prov-sb-body').innerHTML = `
+      <div style="padding:30px 12px;text-align:center;color:var(--text-2);font-size:12px">
+        <p style="font-size:24px;margin-bottom:6px">📭</p>
+        <p>Sin proveedores en "<strong>${cat.nombre_display}</strong>" en este filtro.</p>
+        <p style="font-size:10px;margin-top:6px">El donut suma todos los movs de la categoría (independientemente del proveedor); la lista del sidebar usa la categoría más frecuente de cada proveedor — la diferencia puede pasar con proveedores multi-categoría.</p>
+      </div>`;
+    return;
+  }
+  $('prov-sb-body').innerHTML = `
+    <p style="font-size:11px;color:var(--text-2);margin-bottom:10px">Click en un proveedor para ver sus conceptos y reclasificar.</p>
+    ${provsDeCat.map((p) => {
+      const provEsc = (p.proveedor || '').replace(/"/g, '&quot;');
+      const provJs = (p.proveedor || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return `<div onclick="openProvSidebar('${provJs}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;cursor:pointer;background:var(--bg-secondary)" onmouseover="this.style.borderColor='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)'">
+        <div style="flex:1;min-width:0">
+          <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${provEsc}">${p.proveedor}</p>
+          <p style="font-size:10px;color:var(--text-2);margin-top:2px">${p.num_transacciones} tx · últ. ${p.ultima_fecha || '—'}</p>
+        </div>
+        <span style="font-size:13px;font-weight:500;color:#dc2626">${eur(p.total_importe)}</span>
+        <span style="font-size:10px;color:var(--text-2);min-width:36px;text-align:right">→</span>
+      </div>`;
+    }).join('')}
+  `;
 }
 
 async function openProvSidebar(grupo) {
@@ -1968,6 +2059,9 @@ Object.assign(window, {
   // Sidebar de detalle / reclasificación
   openProvSidebar, closeProvSidebar, toggleReclasificar, confirmReclasificar, rcRefreshNombres,
   onProvFilterInput, clearProvFilter,
+  // Drill desde el donut por categoría (Phase 3): click en slice de cat
+  // → openCategoriaSidebar → lista proveedores → click en uno → openProvSidebar.
+  openCategoriaSidebar,
   // Panel de gestión Gastos Dirección (admin/socio)
   openGdManage, gdSetOverride, gdRemoveOverride, gdAddProveedor,
   // Modal alta manual de proveedor en el donut
