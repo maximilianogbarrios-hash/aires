@@ -28,6 +28,7 @@ router.post('/login', async (req, res) => {
     req.session.partial = undefined;
     // totp_enabled queda en false para que requireAuth lo fuerce a /account.
     req.session.user = { id: user.id, email: user.email, role: user.role, totp_enabled: !!user.totp_enabled };
+    await new Promise((resolve, reject) => req.session.save((err) => err ? reject(err) : resolve()));
     res.json({ ok: true, user: req.session.user, needs2faSetup: !user.totp_enabled });
   } catch (e) {
     console.error('[auth.login]', e);
@@ -57,6 +58,7 @@ router.post('/login/2fa', async (req, res) => {
     req.session.partial = undefined;
     // Pasó el TOTP → totp_enabled=true en sesión.
     req.session.user = { id: user.id, email: user.email, role: user.role, totp_enabled: true };
+    await new Promise((resolve, reject) => req.session.save((err) => err ? reject(err) : resolve()));
     res.json({ ok: true, user: req.session.user });
   } catch (e) {
     console.error('[auth.login.2fa]', e);
@@ -117,6 +119,13 @@ router.post('/2fa/confirm', requireAuth, async (req, res) => {
     await enableTotp(user.id);
     // Refrescar flag en sesión para que requireAuth no siga redirigiendo a /account.
     if (req.session?.user) req.session.user.totp_enabled = true;
+    // CRÍTICO: persistir la sesión ANTES de responder. Sin esto hay una
+    // condición de carrera con la siguiente request del browser: el front
+    // llama load()/redirect y connect-pg-simple todavía no escribió la
+    // mutación de totp_enabled en ab_session — la próxima request lee
+    // la sesión vieja (totp_enabled=false) y requireAuth la rebota a
+    // /account, dando la sensación de que el confirm "no tomó".
+    await new Promise((resolve, reject) => req.session.save((err) => err ? reject(err) : resolve()));
     res.json({ ok: true });
   } catch (e) {
     console.error('[auth.2fa.confirm]', e);

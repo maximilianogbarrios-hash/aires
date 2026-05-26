@@ -63,6 +63,13 @@ form.addEventListener('submit', async (ev) => {
       document.getElementById('code').focus();
       return;
     }
+    // Si el user todavía no activó 2FA, llevarlo directo a /account
+    // para que complete el setup en lugar de rebotar via /dashboard
+    // (que igual lo redirige a /account?msg=2fa-required).
+    if (j.needs2faSetup) {
+      location.href = '/account?msg=2fa-required';
+      return;
+    }
     location.href = '/dashboard';
   } catch (e) {
     err.textContent = 'Error de red'; btn.disabled = false; btn.textContent = 'Entrar';

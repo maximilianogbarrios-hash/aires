@@ -152,7 +152,15 @@ async function confirm2fa() {
     await api('/api/v1/auth/2fa/confirm', { method: 'POST', body: JSON.stringify({ code }) });
     document.getElementById('setup-card').style.display = 'none';
     pill('2FA activado');
-    load();
+    // Si el user vino acá por requireAuth (msg=2fa-required), después de
+    // activar 2FA tiene sentido mandarlo al dashboard en lugar de dejarlo
+    // viendo /account. Delay corto para que el "pill" sea visible.
+    const params = new URLSearchParams(location.search);
+    if (params.get('msg') === '2fa-required') {
+      setTimeout(() => { location.href = '/dashboard'; }, 900);
+    } else {
+      load();
+    }
   } catch (e) {
     msg.textContent = e.message;
     msg.style.color = '#dc2626';
