@@ -2301,3 +2301,71 @@ para el concepto del mov, va a `SIN_CLASIFICAR`.
    reload Proveedores → ARGENT 3D desaparece de SIN_CLASIFICAR y
    aparece bajo EQUIPAMIENTO en el donut. Coherencia total entre vistas.
 
+
+## Bancos — donut incluye TODAS las cats de ab_categorias (incluso vacías) (Phase 4.1)
+
+**Fecha**: 2026-05-26 (ajuste sobre Phase 4 commit `c51ec96`).
+
+**Bug reportado**: usuario ve 34 cats en Gestionar Reglas pero 30 en
+el donut. NOMINAS desapareció del donut después de Phase 4 porque su
+única regla ("Personal → NOMINAS") no matchea ningún concepto de los
+movs del período actual — la cat no tenía entries en `catAgg`.
+
+**Causa**: en Phase 4 yo construía `catEntries` desde `[...catAgg.values()]`,
+o sea SÓLO las cats que tenían al menos un mov asignado. Las cats sin
+movs (porque la regla no matchea, o porque no hay regla todavía, o
+porque el filtro de período/sociedad excluye sus movs) no aparecían
+en el donut, aunque sí existieran en `ab_categorias`.
+
+En Reglas, las drop-zones siempre están presentes (todas las cats de
+`ab_categorias` aparecen como destino de drag&drop, independientemente
+de si tienen reglas o movs en el período). El usuario esperaba la
+misma exhaustividad en el donut.
+
+**Fix**:
+
+Después de procesar todos los rows y poblar `catAgg`, hacemos un
+SELECT a `ab_categorias` (excluyendo INTRAGRUPO) y agregamos al
+`catAgg` cualquier categoría que falte, con valores en 0:
+
+```js
+const catsExisting = await many(
+  `SELECT codigo, nombre_display
+     FROM ab_categorias
+    WHERE codigo <> 'INTRAGRUPO'
+    ORDER BY orden, codigo`
+);
+for (const c of catsExisting) {
+  if (!catAgg.has(c.codigo)) {
+    catAgg.set(c.codigo, {
+      codigo: c.codigo, total: 0, n_movs: 0,
+      proveedores: new Set(), ultima_fecha: null,
+    });
+  }
+}
+```
+
+Las cats con total=0 aparecen en la leyenda con `€ 0 / 0%`. Como
+Chart.js no dibuja slices de valor 0, visualmente la torta sigue
+limpia (sólo los slices con valor real se ven), pero la leyenda
+muestra el listado completo. El sort por total desc deja las cats
+vacías al final, abajo del scroll.
+
+**Sidebar de cat vacía**: si el usuario clickea en una cat con 0
+movs en el filtro, el sidebar abre con el empty state existente
+("Sin proveedores en X en este filtro. El donut suma todos los
+movs… etc"). Funcional pero claro.
+
+**Resultado**:
+
+- Si en `ab_categorias` hay 34 cats (32 seed + INTRAGRUPO + SIN_CLASIFICAR),
+  el donut muestra 33 entradas en la leyenda (todas excepto INTRAGRUPO).
+- Para no-admin la fusión "Gastos Dirección" sigue colapsando las 4
+  sensibles, dando 33 - 4 + 1 = 30 entradas.
+- NOMINAS (y cualquier otra cat con reglas pero sin movs matcheados
+  en el período) aparece como entrada con `€ 0 / 0%`. Visible.
+
+Coherencia total con Gestionar Reglas garantizada: las cats que ves
+de drop-zone en Reglas son exactamente las que ves de slice/leyenda
+en el donut, en el mismo orden.
+

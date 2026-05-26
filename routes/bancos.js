@@ -765,17 +765,40 @@ router.get('/proveedores', async (req, res) => {
       thresholds: { min_tx: minTx, min_eur: minEur, max_grupos: maxGrupos },
     } : null;
 
-    // ─── por_categoria: alimenta el donut nuevo (32 slices = categorías) ──
-    // Aplicamos sobre catAgg la fusión "Gastos Dirección" (las 4 cats sensibles
-    // colapsan en un único slice virtual con codigo='__GASTOS_DIRECCION_FUSE__')
-    // y resolvemos nombre_display desde ab_categorias.
+    // ─── por_categoria: alimenta el donut por categoría ──
+    // Incluye TODAS las categorías de ab_categorias (excepto INTRAGRUPO),
+    // incluso las que no tienen movs en el período filtrado. Las cats sin
+    // movs salen con total=0, n_movs=0, n_proveedores=0 — aparecen en la
+    // leyenda con € 0 / 0% para que el usuario sepa que existen, sin slice
+    // visual. Esto refleja literalmente lo que ve en Gestionar Reglas
+    // (donde las drop-zones siempre están, tengan o no movs en el período).
+    //
+    // Después se aplica la fusión "Gastos Dirección" (sólo para no-admin):
+    // las 4 cats sensibles colapsan en slice virtual '__GASTOS_DIRECCION_FUSE__'.
     let catDisplay = new Map();
+    let catsExisting = [];
     try {
-      const cats = await many('SELECT codigo, nombre_display FROM ab_categorias');
-      catDisplay = new Map(cats.map((c) => [c.codigo, c.nombre_display]));
+      catsExisting = await many(
+        `SELECT codigo, nombre_display
+           FROM ab_categorias
+          WHERE codigo <> 'INTRAGRUPO'
+          ORDER BY orden, codigo`
+      );
+      catDisplay = new Map(catsExisting.map((c) => [c.codigo, c.nombre_display]));
     } catch (e) {
       // Tolerante a migration 19 no aplicada todavía.
       console.warn('[bancos.proveedores] ab_categorias no disponible:', e.message);
+    }
+
+    // Asegurar que TODAS las cats de la tabla aparezcan en catAgg,
+    // incluso si no tienen movs (con valores en 0).
+    for (const c of catsExisting) {
+      if (!catAgg.has(c.codigo)) {
+        catAgg.set(c.codigo, {
+          codigo: c.codigo, total: 0, n_movs: 0,
+          proveedores: new Set(), ultima_fecha: null,
+        });
+      }
     }
 
     // Construir entradas individuales por categoría.
