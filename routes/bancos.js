@@ -3,7 +3,7 @@
 const express = require('express');
 const multer = require('multer');
 const { requireAuth, requirePerm } = require('../lib/auth');
-const { query, one, many } = require('../lib/db');
+const { query, one, many, tx } = require('../lib/db');
 const { SOCIEDADES, DIRECCIONES, findSociedad, sociedadDeLocal } = require('../lib/bank/sociedades');
 const { parseSantanderBuffer } = require('../lib/bank/parser-santander');
 const { parseGetnetBuffer } = require('../lib/bank/parser-getnet');
@@ -1582,8 +1582,23 @@ const { CATEGORIAS_GASTO } = require('../lib/bank/categorizer');
 // distinta, no se asigna manualmente) e INGRESO_* (son ingresos).
 const CATEGORIAS_PARA_REGLAS = CATEGORIAS_GASTO.filter((c) => c !== 'INTRAGRUPO');
 
-router.get('/reglas-prov/categorias', requirePerm('bancos_reglas_admin'), (req, res) => {
-  res.json({ categorias: CATEGORIAS_PARA_REGLAS });
+// Fallback estático en caso de que la migration 19 todavía no haya corrido
+// (proteje boot del módulo Reglas en deploys frescos).
+router.get('/reglas-prov/categorias', requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const rows = await many(
+      `SELECT codigo FROM ab_categorias WHERE codigo <> 'INTRAGRUPO' ORDER BY orden, codigo`
+    );
+    if (rows.length > 0) {
+      res.json({ categorias: rows.map((r) => r.codigo) });
+    } else {
+      // Tabla vacía (migration 19 no aplicada) → fallback al set hardcodeado.
+      res.json({ categorias: CATEGORIAS_PARA_REGLAS });
+    }
+  } catch (e) {
+    console.error('[bancos.reglas-prov.categorias]', e);
+    res.json({ categorias: CATEGORIAS_PARA_REGLAS }); // tolerante ante DB caída
+  }
 });
 
 // Lista de proveedores únicos SIN regla en ab_reglas_normalizacion.
@@ -1859,6 +1874,167 @@ router.delete('/reglas-prov/:id', requirePerm('bancos_reglas_admin'), async (req
     res.json({ ok: true });
   } catch (e) {
     console.error('[bancos.reglas-prov.delete]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// ─── CATEGORÍAS — CRUD desde UI ───────────────────────────────────────
+// Reemplaza las 32 categorías hardcodeadas de lib/bank/categorizer.js
+// por una tabla editable. Las referencias en ab_reglas_normalizacion.categoria
+// y ab_movimientos.categoria siguen usando el código interno como string;
+// sólo el nombre_display cambia desde acá.
+
+const RE_CODIGO_CATEGORIA = /^[A-Z][A-Z_]*$/;
+
+// GET /categorias — lista con stats (n_reglas, n_movimientos por categoría).
+// Una sola query agrupa todo para evitar N+1.
+router.get('/categorias', requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const cats = await many(
+      `SELECT codigo, nombre_display, protegida, orden, created_at, updated_at
+         FROM ab_categorias
+        ORDER BY orden, codigo`
+    );
+    // Stats agrupados por categoria desde reglas + movs.
+    const reglasStats = await many(
+      `SELECT categoria, COUNT(*)::int AS n
+         FROM ab_reglas_normalizacion
+        WHERE activo = TRUE
+        GROUP BY categoria`
+    );
+    const movsStats = await many(
+      `SELECT categoria, COUNT(*)::int AS n
+         FROM ab_movimientos
+        WHERE categoria IS NOT NULL
+        GROUP BY categoria`
+    );
+    const reglasMap = new Map(reglasStats.map((r) => [r.categoria, r.n]));
+    const movsMap = new Map(movsStats.map((r) => [r.categoria, r.n]));
+    const enriched = cats.map((c) => ({
+      ...c,
+      n_reglas:      reglasMap.get(c.codigo) || 0,
+      n_movimientos: movsMap.get(c.codigo) || 0,
+    }));
+    res.json({ categorias: enriched });
+  } catch (e) {
+    console.error('[bancos.categorias.list]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// POST /categorias  body { codigo, nombre_display }
+router.post('/categorias', express.json(), requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const codigo = (req.body?.codigo || '').trim();
+    const nombre_display = (req.body?.nombre_display || '').trim();
+    if (!codigo || !nombre_display) {
+      return res.status(400).json({ error: 'codigo y nombre_display requeridos' });
+    }
+    if (!RE_CODIGO_CATEGORIA.test(codigo)) {
+      return res.status(400).json({ error: 'codigo inválido — sólo letras mayúsculas y guión bajo (ej. NUEVA_CAT)' });
+    }
+    if (codigo.length > 50) return res.status(400).json({ error: 'codigo máx 50 caracteres' });
+    if (nombre_display.length > 100) return res.status(400).json({ error: 'nombre_display máx 100 caracteres' });
+    // Verificar unicidad (PK hará el check pero damos mensaje claro).
+    const existing = await one('SELECT codigo FROM ab_categorias WHERE codigo = $1', [codigo]);
+    if (existing) return res.status(409).json({ error: `ya existe una categoría con código "${codigo}"` });
+    // orden = max(orden) + 10 para que aparezca al final.
+    const maxRow = await one('SELECT COALESCE(MAX(orden), 0) AS max FROM ab_categorias');
+    const orden = (maxRow?.max || 0) + 10;
+    await query(
+      `INSERT INTO ab_categorias (codigo, nombre_display, protegida, orden)
+       VALUES ($1, $2, FALSE, $3)`,
+      [codigo, nombre_display, orden]
+    );
+    res.json({ ok: true, codigo, nombre_display, orden });
+  } catch (e) {
+    console.error('[bancos.categorias.create]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// PUT /categorias/:codigo  body { nombre_display }
+// Sólo cambia el nombre display; el código nunca se edita (rompe reglas existentes).
+router.put('/categorias/:codigo', express.json(), requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const codigo = req.params.codigo;
+    const nombre_display = (req.body?.nombre_display || '').trim();
+    if (!nombre_display) return res.status(400).json({ error: 'nombre_display requerido' });
+    if (nombre_display.length > 100) return res.status(400).json({ error: 'nombre_display máx 100 caracteres' });
+    const existing = await one('SELECT codigo FROM ab_categorias WHERE codigo = $1', [codigo]);
+    if (!existing) return res.status(404).json({ error: 'categoría no existe' });
+    await query(
+      'UPDATE ab_categorias SET nombre_display = $1, updated_at = NOW() WHERE codigo = $2',
+      [nombre_display, codigo]
+    );
+    res.json({ ok: true, codigo, nombre_display });
+  } catch (e) {
+    console.error('[bancos.categorias.update]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// DELETE /categorias/:codigo?reassign_to=<otro_codigo|sin_clasificar>
+// Borra la categoría reasignando sus reglas y movimientos según el parámetro:
+//   - reassign_to omitido y sin reglas/movs → borra directo
+//   - reassign_to='sin_clasificar' → DELETE reglas + UPDATE movs SET categoria=NULL
+//   - reassign_to='<otro_codigo>' → UPDATE reglas + UPDATE movs SET categoria=<otro>
+//   - protegida=TRUE → 403, no se puede borrar
+router.delete('/categorias/:codigo', requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const codigo = req.params.codigo;
+    const reassignTo = req.query.reassign_to || null;
+    const cat = await one('SELECT codigo, protegida FROM ab_categorias WHERE codigo = $1', [codigo]);
+    if (!cat) return res.status(404).json({ error: 'categoría no existe' });
+    if (cat.protegida) return res.status(403).json({ error: 'categoría protegida del sistema, no se puede eliminar' });
+
+    const stats = await one(
+      `SELECT
+         (SELECT COUNT(*)::int FROM ab_reglas_normalizacion WHERE categoria = $1 AND activo = TRUE) AS n_reglas,
+         (SELECT COUNT(*)::int FROM ab_movimientos WHERE categoria = $1) AS n_movs`,
+      [codigo]
+    );
+    const nReglas = stats?.n_reglas || 0;
+    const nMovs = stats?.n_movs || 0;
+    const tieneReferencias = nReglas > 0 || nMovs > 0;
+
+    // Caso 1: sin referencias → borrar directo, reassign_to no aplica.
+    if (!tieneReferencias) {
+      await query('DELETE FROM ab_categorias WHERE codigo = $1', [codigo]);
+      return res.json({ ok: true, modo: 'directo', n_reglas: 0, n_movimientos: 0 });
+    }
+
+    // Caso 2 y 3 requieren reassign_to explícito.
+    if (!reassignTo) {
+      return res.status(400).json({
+        error: `categoría tiene ${nReglas} reglas y ${nMovs} movimientos — pasá reassign_to=sin_clasificar o reassign_to=<otro_codigo>`,
+        n_reglas: nReglas,
+        n_movimientos: nMovs,
+      });
+    }
+
+    if (reassignTo === 'sin_clasificar') {
+      // Caso 2: mover todo a "sin clasificar" — borrar reglas + nullear categoría en movs.
+      await tx(async (client) => {
+        await client.query('DELETE FROM ab_reglas_normalizacion WHERE categoria = $1', [codigo]);
+        await client.query('UPDATE ab_movimientos SET categoria = NULL WHERE categoria = $1', [codigo]);
+        await client.query('DELETE FROM ab_categorias WHERE codigo = $1', [codigo]);
+      });
+      return res.json({ ok: true, modo: 'sin_clasificar', n_reglas: nReglas, n_movimientos: nMovs });
+    }
+
+    // Caso 3: mover todo a otro código existente.
+    const destino = await one('SELECT codigo FROM ab_categorias WHERE codigo = $1', [reassignTo]);
+    if (!destino) return res.status(400).json({ error: `categoría destino "${reassignTo}" no existe` });
+    if (destino.codigo === codigo) return res.status(400).json({ error: 'no se puede reasignar a la misma categoría' });
+    await tx(async (client) => {
+      await client.query('UPDATE ab_reglas_normalizacion SET categoria = $1 WHERE categoria = $2', [reassignTo, codigo]);
+      await client.query('UPDATE ab_movimientos SET categoria = $1 WHERE categoria = $2', [reassignTo, codigo]);
+      await client.query('DELETE FROM ab_categorias WHERE codigo = $1', [codigo]);
+    });
+    res.json({ ok: true, modo: 'reasignado', reassign_to: reassignTo, n_reglas: nReglas, n_movimientos: nMovs });
+  } catch (e) {
+    console.error('[bancos.categorias.delete]', e);
     res.status(500).json({ error: e.message || 'internal' });
   }
 });

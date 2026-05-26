@@ -526,4 +526,270 @@
   // limpiamos el RAF aunque el dragend del item no haya disparado.
   document.addEventListener('dragend', _stopAutoScroll, true);
   document.addEventListener('drop', _stopAutoScroll, true);
+
+  // ─── Gestión de categorías (CRUD) ──────────────────────────────────
+  // Reutiliza el modal #rp-modal swappeando contenido. Estado local
+  // efímero: rp.cats (array desde GET /categorias), rp.catsCreating
+  // (form Nueva visible), rp.catsEditing (codigo que se está editando).
+  rp.cats = [];
+  rp.catsCreating = false;
+  rp.catsEditing = null;
+
+  async function rpOpenCategoriasManager() {
+    const modal = $('rp-modal');
+    const overlay = $('rp-modal-overlay');
+    modal.innerHTML = '<p style="font-size:12px;color:var(--text-2)">Cargando categorías…</p>';
+    modal.style.display = 'block';
+    overlay.style.display = 'block';
+    rp.catsCreating = false;
+    rp.catsEditing = null;
+    await _loadAndRenderCategorias();
+  }
+  window.rpOpenCategoriasManager = rpOpenCategoriasManager;
+
+  async function _loadAndRenderCategorias() {
+    try {
+      const j = await api('/api/v1/bancos/categorias');
+      rp.cats = j.categorias || [];
+      _renderCategoriasList();
+    } catch (e) {
+      const modal = $('rp-modal');
+      modal.innerHTML = `<p style="color:var(--rp-red);font-size:12px">Error: ${esc(e.message)}</p>`;
+    }
+  }
+
+  function _renderCategoriasList() {
+    const modal = $('rp-modal');
+    const cats = rp.cats || [];
+    const filaNueva = rp.catsCreating ? `
+      <tr style="background:rgba(33,230,211,.08)">
+        <td style="padding:6px"><input id="rp-cat-new-codigo" type="text" placeholder="NUEVA_CAT" maxlength="50"
+          style="width:160px;padding:5px 8px;border:.5px solid var(--border-2);border-radius:5px;background:var(--bg-secondary);color:var(--text);font-size:12px;text-transform:uppercase"
+          oninput="this.value=this.value.toUpperCase().replace(/[^A-Z_]/g,'')"></td>
+        <td style="padding:6px"><input id="rp-cat-new-nombre" type="text" placeholder="Nombre visible" maxlength="100"
+          style="width:200px;padding:5px 8px;border:.5px solid var(--border-2);border-radius:5px;background:var(--bg-secondary);color:var(--text);font-size:12px"></td>
+        <td style="padding:6px;color:var(--text-2)">—</td>
+        <td style="padding:6px;color:var(--text-2)">—</td>
+        <td style="padding:6px;white-space:nowrap">
+          <button onclick="rpCatCrearSubmit()" style="padding:4px 10px;border:none;border-radius:5px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Crear</button>
+          <button onclick="rpCatCancelarNueva()" style="padding:4px 8px;border:.5px solid var(--border-2);border-radius:5px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Cancelar</button>
+        </td>
+      </tr>` : '';
+
+    const rows = cats.map((c) => _renderCatRow(c)).join('');
+    modal.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="font-size:16px;font-weight:700">Gestionar categorías <span style="font-size:11px;color:var(--text-2);font-weight:400">(${cats.length})</span></h3>
+        <div style="display:flex;gap:6px">
+          ${rp.catsCreating ? '' : '<button onclick="rpCatNueva()" style="padding:5px 12px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:12px;font-weight:500">+ Nueva categoría</button>'}
+          <button onclick="rpCloseModal()" style="background:transparent;border:none;color:var(--text-2);cursor:pointer;font-size:20px;line-height:1">×</button>
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:10px">El código interno no se puede editar (rompería reglas y movimientos existentes). Sólo el nombre display. Categorías 🔒 son del sistema y no se pueden eliminar.</p>
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead><tr style="border-bottom:1px solid var(--border-2);color:var(--text-2);font-size:11px">
+          <th style="text-align:left;padding:6px">Código</th>
+          <th style="text-align:left;padding:6px">Nombre display</th>
+          <th style="text-align:right;padding:6px">Reglas</th>
+          <th style="text-align:right;padding:6px">Movs</th>
+          <th style="text-align:right;padding:6px">Acciones</th>
+        </tr></thead>
+        <tbody>
+          ${filaNueva}
+          ${rows}
+        </tbody>
+      </table>
+      <div id="rp-cat-feedback" style="margin-top:10px;font-size:11px"></div>
+    `;
+    if (rp.catsCreating) setTimeout(() => $('rp-cat-new-codigo')?.focus(), 50);
+  }
+
+  function _renderCatRow(c) {
+    const isEditing = rp.catsEditing === c.codigo;
+    const codigoEsc = esc(c.codigo);
+    const nombreEsc = esc(c.nombre_display);
+    const lockedActions = c.protegida
+      ? `<span title="Categoría protegida del sistema" style="color:var(--text-2);font-size:14px">🔒</span>`
+      : `<button onclick="rpCatBorrar('${c.codigo}')" title="Eliminar" style="background:transparent;border:none;color:var(--text-2);cursor:pointer;font-size:14px;padding:2px 6px">🗑️</button>`;
+    const editActions = isEditing
+      ? `<button onclick="rpCatGuardarEdit('${c.codigo}')" style="padding:3px 8px;border:none;border-radius:5px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px">Guardar</button>
+         <button onclick="rpCatCancelarEdit()" style="padding:3px 8px;border:.5px solid var(--border-2);border-radius:5px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Cancelar</button>`
+      : `<button onclick="rpCatEditar('${c.codigo}')" title="Editar nombre display" style="background:transparent;border:none;color:var(--text-2);cursor:pointer;font-size:14px;padding:2px 6px">✏️</button>
+         ${lockedActions}`;
+    const nombreCell = isEditing
+      ? `<input id="rp-cat-edit-${c.codigo}" type="text" value="${nombreEsc}" maxlength="100"
+          style="width:100%;padding:4px 8px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-secondary);color:var(--text);font-size:12px"
+          onkeydown="if(event.key==='Enter')rpCatGuardarEdit('${c.codigo}');if(event.key==='Escape')rpCatCancelarEdit()">`
+      : nombreEsc;
+    return `<tr style="border-bottom:.5px solid var(--border-3)">
+      <td style="padding:6px;font-family:monospace;font-size:11px">${codigoEsc}${c.protegida ? ' 🔒' : ''}</td>
+      <td style="padding:6px">${nombreCell}</td>
+      <td style="padding:6px;text-align:right;color:var(--text-2)">${c.n_reglas}</td>
+      <td style="padding:6px;text-align:right;color:var(--text-2)">${num0(c.n_movimientos)}</td>
+      <td style="padding:6px;text-align:right;white-space:nowrap">${editActions}</td>
+    </tr>`;
+  }
+
+  function _catFeedback(html, ok) {
+    const el = $('rp-cat-feedback');
+    if (!el) return;
+    el.innerHTML = html;
+    el.style.color = ok === false ? 'var(--rp-red)' : 'var(--rp-green)';
+  }
+
+  window.rpCatNueva = function () {
+    rp.catsCreating = true;
+    rp.catsEditing = null;
+    _renderCategoriasList();
+  };
+
+  window.rpCatCancelarNueva = function () {
+    rp.catsCreating = false;
+    _renderCategoriasList();
+  };
+
+  window.rpCatCrearSubmit = async function () {
+    const codigo = ($('rp-cat-new-codigo')?.value || '').trim();
+    const nombre_display = ($('rp-cat-new-nombre')?.value || '').trim();
+    if (!codigo || !nombre_display) {
+      _catFeedback('Código y nombre son requeridos', false);
+      return;
+    }
+    if (!/^[A-Z][A-Z_]*$/.test(codigo)) {
+      _catFeedback('Código inválido — sólo letras mayúsculas y guión bajo (ej. NUEVA_CAT)', false);
+      return;
+    }
+    try {
+      await api('/api/v1/bancos/categorias', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ codigo, nombre_display }),
+      });
+      feedback(`✓ Categoría "${codigo}" creada`);
+      rp.catsCreating = false;
+      await _loadAndRenderCategorias();
+      // Refrescar el panel de Reglas para que la nueva cat aparezca como drop-zone.
+      loadAll().catch((err) => console.warn('[cat-new] refresh panel reglas', err));
+    } catch (e) {
+      _catFeedback('✗ ' + e.message, false);
+    }
+  };
+
+  window.rpCatEditar = function (codigo) {
+    rp.catsEditing = codigo;
+    rp.catsCreating = false;
+    _renderCategoriasList();
+    setTimeout(() => {
+      const inp = $(`rp-cat-edit-${codigo}`);
+      if (inp) { inp.focus(); inp.select(); }
+    }, 50);
+  };
+
+  window.rpCatCancelarEdit = function () {
+    rp.catsEditing = null;
+    _renderCategoriasList();
+  };
+
+  window.rpCatGuardarEdit = async function (codigo) {
+    const nombre_display = ($(`rp-cat-edit-${codigo}`)?.value || '').trim();
+    if (!nombre_display) {
+      _catFeedback('Nombre no puede estar vacío', false);
+      return;
+    }
+    try {
+      await api(`/api/v1/bancos/categorias/${encodeURIComponent(codigo)}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ nombre_display }),
+      });
+      feedback(`✓ "${codigo}" renombrada → "${nombre_display}"`);
+      rp.catsEditing = null;
+      await _loadAndRenderCategorias();
+      // Refresh del panel de Reglas para que las cards muestren el nombre actualizado.
+      loadAll().catch((err) => console.warn('[cat-edit] refresh panel reglas', err));
+    } catch (e) {
+      _catFeedback('✗ ' + e.message, false);
+    }
+  };
+
+  window.rpCatBorrar = async function (codigo) {
+    const cat = (rp.cats || []).find((c) => c.codigo === codigo);
+    if (!cat) return;
+    if (cat.protegida) {
+      _catFeedback('Categoría protegida del sistema — no se puede eliminar', false);
+      return;
+    }
+    const tieneRefs = (cat.n_reglas + cat.n_movimientos) > 0;
+    if (!tieneRefs) {
+      if (!confirm(`¿Eliminar categoría "${codigo}"? No tiene reglas ni movimientos.`)) return;
+      try {
+        await api(`/api/v1/bancos/categorias/${encodeURIComponent(codigo)}`, { method: 'DELETE' });
+        feedback(`✓ "${codigo}" eliminada`);
+        await _loadAndRenderCategorias();
+        loadAll().catch(() => {});
+      } catch (e) {
+        _catFeedback('✗ ' + e.message, false);
+      }
+      return;
+    }
+    // Con referencias: mostrar confirmación con opciones de reasignación.
+    _showCatDeleteDialog(cat);
+  };
+
+  function _showCatDeleteDialog(cat) {
+    const otrasCats = (rp.cats || []).filter((c) => c.codigo !== cat.codigo);
+    const optionsHtml = otrasCats.map((c) => `<option value="${esc(c.codigo)}">${esc(c.nombre_display)} (${esc(c.codigo)})</option>`).join('');
+    const modal = $('rp-modal');
+    modal.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+        <div>
+          <h3 style="font-size:15px;font-weight:700">⚠️ Eliminar "${esc(cat.codigo)}"</h3>
+          <p style="font-size:12px;color:var(--text-2);margin-top:4px">Esta categoría tiene <strong>${cat.n_reglas} reglas</strong> y <strong>${num0(cat.n_movimientos)} movimientos</strong>. ¿Qué hacés con ellos?</p>
+        </div>
+        <button onclick="rpOpenCategoriasManager()" style="background:transparent;border:none;color:var(--text-2);cursor:pointer;font-size:18px;line-height:1">×</button>
+      </div>
+      <div style="background:var(--bg-secondary);border-radius:8px;padding:14px;margin-bottom:14px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0;font-size:13px">
+          <input type="radio" name="rp-cat-reassign" id="rp-cat-r-sin" value="sin_clasificar" checked>
+          <span>Mover todo a <strong>"Sin clasificar"</strong> (las reglas se eliminan, los movimientos quedan sin categoría hasta que se reclasifiquen)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0;font-size:13px;flex-wrap:wrap">
+          <input type="radio" name="rp-cat-reassign" id="rp-cat-r-otra" value="otra">
+          <span>Mover todo a:</span>
+          <select id="rp-cat-r-destino" onchange="document.getElementById('rp-cat-r-otra').checked=true" style="padding:4px 8px;border:.5px solid var(--border-2);border-radius:5px;background:var(--bg-primary);color:var(--text);font-size:12px">
+            <option value="">— elegir categoría —</option>
+            ${optionsHtml}
+          </select>
+        </label>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button onclick="rpOpenCategoriasManager()" style="padding:6px 14px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Cancelar</button>
+        <button onclick="rpCatConfirmarBorrar('${esc(cat.codigo)}')" style="padding:6px 14px;border:none;border-radius:6px;background:#e63946;color:#fff;cursor:pointer;font-size:12px;font-weight:500">Eliminar igual</button>
+      </div>
+      <div id="rp-cat-feedback" style="margin-top:10px;font-size:11px"></div>
+    `;
+  }
+
+  window.rpCatConfirmarBorrar = async function (codigo) {
+    const modoSelec = document.querySelector('input[name="rp-cat-reassign"]:checked')?.value || 'sin_clasificar';
+    let reassignTo = 'sin_clasificar';
+    if (modoSelec === 'otra') {
+      const destino = $('rp-cat-r-destino')?.value;
+      if (!destino) {
+        _catFeedback('Seleccioná una categoría destino', false);
+        return;
+      }
+      reassignTo = destino;
+    }
+    try {
+      const r = await api(`/api/v1/bancos/categorias/${encodeURIComponent(codigo)}?reassign_to=${encodeURIComponent(reassignTo)}`, { method: 'DELETE' });
+      feedback(`✓ "${codigo}" eliminada — ${r.n_reglas} reglas + ${r.n_movimientos} movs ${r.modo === 'sin_clasificar' ? 'sin clasificar' : 'movidos a ' + r.reassign_to}`);
+      // Volver a la lista
+      await rpOpenCategoriasManager();
+      loadAll().catch(() => {});
+    } catch (e) {
+      _catFeedback('✗ ' + e.message, false);
+    }
+  };
+
 })();

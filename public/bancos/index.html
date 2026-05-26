@@ -404,6 +404,7 @@
       <p style="font-size:11px;color:var(--text-2);margin-top:2px">Arrastrá proveedores desde la izquierda hasta una categoría para clasificarlos. La regla se aplica a TODOS los movimientos históricos y a los extractos futuros.</p>
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <button id="rp-btn-cats" onclick="rpOpenCategoriasManager()" title="Crear, editar y eliminar categorías de gasto" style="padding:5px 12px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);cursor:pointer;font-size:12px">⚙️ Gestionar categorías</button>
       <button id="rp-btn-ia" class="rp-btn-ia" style="display:none" onclick="rpClasificarConIA()" title="Pedirle a Claude que sugiera categorías para todos los proveedores sin clasificar">✨ Clasificar con IA</button>
       <button id="rp-btn-accept-all" class="rp-btn-accept-all" style="display:none" onclick="rpAceptarTodasVerdes()">✓ Aceptar todas las verdes</button>
       <button id="rp-btn-clear-sug" class="rp-btn-clear-sug" style="display:none" onclick="rpLimpiarSugerencias()">Limpiar sugerencias</button>

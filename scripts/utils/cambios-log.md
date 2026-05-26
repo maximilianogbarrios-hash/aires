@@ -1756,3 +1756,116 @@ y se aborta con feedback claro al user.
 - Output: ~2-3k tokens por batch.
 - Estimación total: ~$0.10-0.20 USD por clasificar 458 proveedores
   (Sonnet 4.6 con caching).
+
+
+## Bancos — gestión completa de categorías (crear, editar, eliminar)
+
+**Fecha**: 2026-05-26 (Phase 1 del paquete sync donut + categorías CRUD).
+
+**Contexto**: las 32 categorías de gasto vivían hardcodeadas en
+`lib/bank/categorizer.js#CATEGORIAS_GASTO`. Para crear o renombrar había
+que tocar código y desplegar. El usuario quería un panel admin que:
+(1) permita crear nuevas categorías sin tocar código, (2) editar el
+nombre que se muestra en UI sin afectar las referencias internas en DB,
+(3) eliminar categorías con reasignación segura de sus reglas y movs.
+Las categorías sensibles del sistema (GASTOS_DIRECCION, SS_LABORAL,
+NOMINAS, NOMINAS_DIRECCION, FINANCIERO, PRESTAMOS, INTRAGRUPO) no se
+pueden eliminar — están protegidas para no romper la fusión "Gastos
+Dirección" ni el flujo de exclusión INTRAGRUPO.
+
+**Diseño**:
+
+- **Código interno** (PK `ab_categorias.codigo`, ej. `SS_LABORAL`) es la
+  referencia que viven `ab_reglas_normalizacion.categoria` y
+  `ab_movimientos.categoria`. Inmutable — editarlo rompe históricos. La
+  UI sólo edita `nombre_display`.
+- **Nombre display** (ej. "Seguridad Social") es lo que ve el usuario.
+  Cambios acá impactan en todas las vistas que consuman la tabla.
+- **No FK entre `ab_movimientos.categoria` y `ab_categorias.codigo`** —
+  por compat con el sistema existente. Si se elimina una categoría y
+  los movs no se reasignan, quedan con el código huérfano (la UI los
+  trataría como "Sin clasificar"). El flujo de DELETE evita esto
+  forzando una opción explícita de reasignación cuando hay referencias.
+
+**Migration 19 (`categorias`)**:
+
+```sql
+CREATE TABLE ab_categorias (
+  codigo          VARCHAR(50)   PRIMARY KEY,
+  nombre_display  VARCHAR(100)  NOT NULL,
+  protegida       BOOLEAN       NOT NULL DEFAULT FALSE,
+  orden           INTEGER       NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+```
+
+Seed: las 33 categorías existentes (32 de `CATEGORIAS_GASTO` +
+`INTRAGRUPO` para completitud) con `nombre_display` consistente y
+`protegida=TRUE` en las 7 sensibles del sistema. Idempotente con
+`ON CONFLICT DO NOTHING`.
+
+**Endpoints (perm `bancos_reglas_admin` = admin + socio)**:
+
+| Método | Ruta | Función |
+|---|---|---|
+| GET | `/api/v1/bancos/categorias` | Lista con stats (`n_reglas`, `n_movimientos`) en una sola query (agg via 2 sub-queries a `ab_reglas_normalizacion` y `ab_movimientos`). |
+| POST | `/api/v1/bancos/categorias` | Crea nueva. Valida `codigo` con regex `^[A-Z][A-Z_]*$` (solo letras mayúsculas y guión bajo, max 50). `nombre_display` max 100. `orden = MAX(orden) + 10` para que aparezca al final. 409 si código ya existe. |
+| PUT | `/api/v1/bancos/categorias/:codigo` | Actualiza sólo `nombre_display`. Código nunca se edita. 404 si no existe. |
+| DELETE | `/api/v1/bancos/categorias/:codigo?reassign_to=...` | Tres modos según parámetro + referencias: (a) sin refs → borra directo; (b) `reassign_to=sin_clasificar` → DELETE reglas + UPDATE movs SET categoria=NULL; (c) `reassign_to=<otro_codigo>` → UPDATE reglas + UPDATE movs SET categoria=<otro>. Todo dentro de una transacción `tx()`. 403 si `protegida=TRUE`. 400 si tiene referencias y no se especifica `reassign_to`. |
+
+También actualizado **`GET /api/v1/bancos/reglas-prov/categorias`** para
+leer de `ab_categorias` (filtrando `codigo <> 'INTRAGRUPO'`, ordenado
+por `orden, codigo`) en vez del hardcodeado `CATEGORIAS_PARA_REGLAS`.
+Tolerante: si la tabla está vacía (migration 19 no aplicada todavía en
+un deploy), fallback al set hardcodeado para no romper el screen.
+
+**Frontend (`public/js/bancos-reglas.js`)**:
+
+- **Nuevo botón "⚙️ Gestionar categorías"** en el header de la pantalla
+  Reglas, al lado de "✨ Clasificar con IA". Visible siempre que el
+  rol pueda acceder a la pantalla (admin/socio).
+- **Modal reutiliza `#rp-modal`** swappeando contenido: tabla con
+  columnas (Código, Nombre display, Reglas, Movs, Acciones), filas
+  protegidas muestran 🔒 en vez de 🗑️.
+- **Crear**: fila inline al top con input código (auto-uppercase, regex
+  client-side `[^A-Z_]`) + input nombre + Crear/Cancelar. Tras crear,
+  refresca el panel de Reglas para que la nueva categoría aparezca como
+  drop-zone disponible.
+- **Editar**: inline en la fila, input para nombre con Enter para
+  guardar y Escape para cancelar. Refresca el panel de Reglas para que
+  el header de la card use el nombre nuevo.
+- **Eliminar**: dos flujos según referencias:
+  - Sin reglas ni movs → `confirm()` simple → DELETE directo.
+  - Con referencias → diálogo de reasignación dentro del mismo modal:
+    radio "Mover a Sin clasificar" (default, marca movs con
+    `categoria=NULL`) vs "Mover a [otra cat ▼]" (UPDATE en bloque).
+    Click en "Eliminar igual" confirma.
+
+**Sincronización con vistas afectadas**:
+
+- Después de cualquier CRUD, `loadAll()` re-render del panel de Reglas
+  (las drop-zones reflejan los cambios — categoría nueva aparece como
+  nuevo destino, categoría borrada deja de estar disponible).
+- El donut "Distribución de gastos por categoría" todavía usa
+  `/gastos-por-proveedor` sin pipeline — **queda Phase 2 del paquete**
+  para hacer ese refactor (que necesita esta tabla como base para
+  resolver `nombre_display`).
+
+**Permisos**: la matriz `bancos_reglas_admin` ya cubría admin + socio
+(definido el 2026-05-25 con la extensión del feature IA). Sin cambios
+adicionales — el modal hereda el mismo gate que el resto de la pantalla
+Reglas.
+
+**Verificación**:
+
+- Boot smoke: migration 19 aplica sin errores en deploys nuevos
+  (CREATE TABLE IF NOT EXISTS + INSERT ON CONFLICT DO NOTHING).
+- Sintaxis: `node --check` pasa en `routes/bancos.js`,
+  `lib/migrations.js`, `public/js/bancos-reglas.js`.
+- E2E manual: crear categoría nueva → aparece en panel Reglas como
+  drop-zone vacía; arrastrar un proveedor → entra; editar nombre
+  display → la card del panel Reglas refleja el nombre nuevo; eliminar
+  con reasignación → reglas movidas, movs movidos, donut Phase 2 todavía
+  no sincroniza (esperado hasta Phase 2).
+
