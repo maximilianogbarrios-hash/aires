@@ -382,22 +382,21 @@ router.get('/gastos-por-proveedor', async (req, res) => {
       // Excluir intra-grupo en dos pasadas (igual que /proveedores).
       if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
 
+      // Pipeline regla-first (mismo que /proveedores). Las reglas activas
+      // son la única fuente de verdad de la categoría. Movs sin regla
+      // matchee caen en 'SIN_CLASIFICAR'.
       let proveedor, categoria;
-      if (r.proveedor_normalizado) {
-        proveedor = r.proveedor_normalizado;
-        categoria = r.categoria;
+      const rule = matchRegla(r.concepto, reglasDb);
+      if (rule) {
+        proveedor = rule.proveedor_normalizado;
+        categoria = rule.categoria;
       } else {
-        const rule = matchRegla(r.concepto, reglasDb);
-        if (rule) {
-          proveedor = rule.proveedor_normalizado;
-          categoria = rule.categoria;
-        } else {
-          const n = normalizarProveedor(r.concepto, r.categoria);
-          proveedor = n.proveedor;
-          categoria = n.categoria;
-        }
-        if (categoria === 'INTRAGRUPO') continue;
+        proveedor = r.proveedor_normalizado
+          || normalizarProveedor(r.concepto, null).proveedor
+          || r.concepto;
+        categoria = 'SIN_CLASIFICAR';
       }
+      if (categoria === 'INTRAGRUPO') continue;
       if (!proveedor || !categoria) continue;
 
       // provAgg — sumamos el importe con signo (es negativo); en el frontend
@@ -569,28 +568,35 @@ router.get('/proveedores', async (req, res) => {
         nExcluido++;
         continue;
       }
+      // Pipeline regla-first (pedido del usuario 2026-05-26):
+      // las reglas activas en ab_reglas_normalizacion son la ÚNICA fuente
+      // de verdad para la categoría de un mov. Si el concepto del mov no
+      // matchea ninguna regla, va a 'SIN_CLASIFICAR' (slice especial).
+      // Antes: si ab_movimientos.proveedor_normalizado estaba seteado,
+      // se respetaba ab_movimientos.categoria histórica (que podía estar
+      // desactualizada respecto a las reglas actuales). Esto causaba
+      // que "ARGENT 3D" apareciera bajo NOMINAS aunque no tuviera regla
+      // NOMINAS — su mov histórico tenía esa cat persistida.
       let proveedor, categoria;
-      if (r.proveedor_normalizado) {
-        proveedor = r.proveedor_normalizado;
-        categoria = r.categoria;
+      const rule = matchRegla(r.concepto, reglasDb);
+      if (rule) {
+        proveedor = rule.proveedor_normalizado;
+        categoria = rule.categoria;
       } else {
-        const rule = matchRegla(r.concepto, reglasDb);
-        if (rule) {
-          proveedor = rule.proveedor_normalizado;
-          categoria = rule.categoria;
-        } else {
-          const n = normalizarProveedor(r.concepto, r.categoria);
-          proveedor = n.proveedor;
-          categoria = n.categoria;
-        }
-        // El normalizer puede haber recategorizado a INTRAGRUPO algo
-        // que el SQL dejó pasar (caso poco común pero posible si la
-        // categoría persistida estaba mal). Re-chequeo defensivo.
-        if (categoria === 'INTRAGRUPO') {
-          totalExcluido += Math.abs(+r.importe);
-          nExcluido++;
-          continue;
-        }
+        // Sin regla: nombre canónico desde campo histórico o heurística
+        // (sólo para limpiar el concepto bancario en algo legible),
+        // pero la categoría es SIEMPRE 'SIN_CLASIFICAR'.
+        proveedor = r.proveedor_normalizado
+          || normalizarProveedor(r.concepto, null).proveedor
+          || r.concepto;
+        categoria = 'SIN_CLASIFICAR';
+      }
+      // Defense in depth: si por algún motivo el matcher devolviera
+      // INTRAGRUPO (no debería con el SET de reglas actuales), excluir.
+      if (categoria === 'INTRAGRUPO') {
+        totalExcluido += Math.abs(+r.importe);
+        nExcluido++;
+        continue;
       }
       // Defense in depth: Raba Buildings es información intra-grupo
       // sensible. Si una fila quedara mal categorizada (no INTRAGRUPO)
@@ -1786,10 +1792,16 @@ const CATEGORIAS_PARA_REGLAS = CATEGORIAS_GASTO.filter((c) => c !== 'INTRAGRUPO'
 
 // Fallback estático en caso de que la migration 19 todavía no haya corrido
 // (proteje boot del módulo Reglas en deploys frescos).
+// Excluye INTRAGRUPO (categoría especial de exclusión) y SIN_CLASIFICAR
+// (slice de ausencia de regla — no es un destino válido de drag&drop;
+// arrastrar a SIN_CLASIFICAR significaría "quitarle la regla", para eso
+// está el botón × en cada regla del panel derecho).
 router.get('/reglas-prov/categorias', requirePerm('bancos_reglas_admin'), async (req, res) => {
   try {
     const rows = await many(
-      `SELECT codigo FROM ab_categorias WHERE codigo <> 'INTRAGRUPO' ORDER BY orden, codigo`
+      `SELECT codigo FROM ab_categorias
+        WHERE codigo NOT IN ('INTRAGRUPO', 'SIN_CLASIFICAR')
+        ORDER BY orden, codigo`
     );
     if (rows.length > 0) {
       res.json({ categorias: rows.map((r) => r.codigo) });

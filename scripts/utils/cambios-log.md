@@ -2183,3 +2183,121 @@ Empty state también pasa a usar `codigo`.
 - No-admin: el slice "Gastos Dirección" sigue colapsando las 4 sensibles
   y el sidebar drill-down sigue bloqueado con 🔒.
 
+
+## Bancos — pipeline regla-first: donut refleja exactamente Gestionar Reglas (Phase 4)
+
+**Fecha**: 2026-05-26 (Phase 4 del paquete, sigue Phase 3.1 `6344839`).
+
+**Bug reportado por el usuario**:
+> "en las reglas de proveedores tenés el nombre de una de las categorías
+> NOMINAS. en el gráfico de tortas cuando pones NOMINAS está apareciendo
+> nóminas personal, proveedores menores y ARGENT 3D… yo solamente tengo
+> nóminas de personal. lo que se vea en las categorías que están en
+> reglas de proveedores, con esa información que cada categoría tiene
+> adentro, es igual que se tiene que ver en el gráfico de torta."
+
+**Causa raíz**: el pipeline antes tenía 3 fuentes de verdad mezcladas:
+
+```js
+if (r.proveedor_normalizado) {
+  proveedor = r.proveedor_normalizado;
+  categoria = r.categoria;   // ← campo histórico de ab_movimientos, NO regla
+} else if (matchRegla(concepto, reglas)) {
+  ...usar regla...
+} else {
+  ...usar normalizarProveedor() heurística...
+}
+```
+
+El campo `ab_movimientos.proveedor_normalizado` y `ab_movimientos.categoria`
+son históricos: vienen del ingest original, y se mantienen aunque el
+usuario cree/cambie reglas después. "ARGENT 3D" tenía `categoria='NOMINAS'`
+persistida desde un ingest viejo. Aunque hoy NO hay regla "ARGENT 3D → NOMINAS",
+el pipeline respetaba el valor histórico y lo metía bajo NOMINAS en el donut.
+Reglas, en cambio, sólo muestra los proveedores con regla activa explícita.
+De ahí la divergencia.
+
+**Fix Phase 4 — pipeline regla-first**:
+
+```js
+// Nueva precedencia:
+const rule = matchRegla(r.concepto, reglasDb);
+if (rule) {
+  proveedor = rule.proveedor_normalizado;
+  categoria = rule.categoria;
+} else {
+  proveedor = r.proveedor_normalizado
+    || normalizarProveedor(r.concepto, null).proveedor
+    || r.concepto;
+  categoria = 'SIN_CLASIFICAR';  // ← slice nuevo
+}
+```
+
+La regla pasa a ser **la ÚNICA fuente de verdad de la categoría**. El
+campo histórico `proveedor_normalizado` se conserva sólo como nombre
+canónico fallback (para movs sin regla, así el sidebar muestra algo
+legible en lugar del concepto bancario crudo). Si no hay regla
+para el concepto del mov, va a `SIN_CLASIFICAR`.
+
+### Cambios concretos
+
+**Migration 20** (`categoria_sin_clasificar`): inserta la cat especial
+`SIN_CLASIFICAR` en `ab_categorias` (nombre_display "Sin clasificar",
+`protegida=TRUE`, `orden=998` — al final del listado). Idempotente con
+`ON CONFLICT DO NOTHING`. Si ya existe (deploys repetidos), no-op.
+
+**Backend** `routes/bancos.js`:
+- **`/proveedores`** (líneas ~557-589): pipeline reescrito. `matchRegla`
+  primero, sin precedencia al campo histórico. Movs sin regla → `SIN_CLASIFICAR`.
+- **`/gastos-por-proveedor`** (Phase 2 endpoint, lo dejó del paquete):
+  mismo cambio. Antes era idéntico al de `/proveedores`; ahora ambos
+  comparten la nueva lógica regla-first.
+- **`/reglas-prov/categorias`**: ahora excluye `SIN_CLASIFICAR` además
+  de `INTRAGRUPO` (era 1 sola exclusión, ahora son 2). `SIN_CLASIFICAR`
+  no es un destino válido de drag&drop — es ausencia de regla, no una
+  categoría a la que se "asigna". Para quitar una regla, el botón × en
+  cada regla del panel derecho.
+
+### Resultado
+
+- **Donut** admin: 32 slices (cats con regla activa + el slice nuevo
+  `SIN_CLASIFICAR`). El total del slice `NOMINAS` ahora suma SOLO los
+  movs cuya regla los manda a NOMINAS — "ARGENT 3D" desaparece del
+  slice NOMINAS y aparece en `SIN_CLASIFICAR` (hasta que el usuario le
+  cree una regla y la arrastre a la cat correcta).
+- **Sidebar de categoría**: los proveedores listados coinciden 1:1 con
+  los que aparecen bajo esa cat en la drop-zone de Gestionar Reglas.
+- **Sidebar de SIN_CLASIFICAR**: lista todos los proveedores que no
+  tienen regla activa. Equivalente al panel izquierdo "Sin clasificar"
+  de Gestionar Reglas.
+- **Tabla de proveedores** (debajo del donut): cada proveedor muestra
+  su top-cat según el nuevo pipeline. Proveedores sin regla aparecen
+  con `categoria='SIN_CLASIFICAR'`.
+- **Drop-zones de Gestionar Reglas**: las 32 cats originales (sin
+  `SIN_CLASIFICAR`, sin `INTRAGRUPO`).
+
+### Edge cases / lo que se preservó
+
+- **INTRAGRUPO**: sigue excluido (en dos pasadas: heurística por
+  concepto + `r.categoria === 'INTRAGRUPO'` persistida).
+- **Fusión "Gastos Dirección"**: sólo aplica para no-admin (Phase 3.1).
+  Las 4 cats sensibles colapsan en un slice virtual con 🔒.
+- **Rollup "Proveedores Menores"**: sigue agrupando proveedores chicos
+  en `state.prov.rows` (tabla de proveedores). El slice del donut por
+  categoría usa `catAgg` (agregación por cat de cada mov individual)
+  y no es afectado por el rollup.
+- **Reglas creadas desde reclasificación con `forzar_visible=TRUE`**:
+  siguen escapando del rollup de proveedores como antes (commit `862ae26`).
+
+### Verificación E2E
+
+1. Usuario sin regla "ARGENT 3D → ...": ARGENT 3D aparece en el slice
+   `SIN_CLASIFICAR` del donut (no en NOMINAS).
+2. Sidebar de NOMINAS: lista sólo los proveedores con regla NOMINAS
+   ("Personal" en el caso del user).
+3. Sidebar de SIN_CLASIFICAR: lista todos los proveedores sin regla
+   activa (ARGENT 3D + otros).
+4. Gestionar Reglas → drag ARGENT 3D a una cat (ej. EQUIPAMIENTO) →
+   reload Proveedores → ARGENT 3D desaparece de SIN_CLASIFICAR y
+   aparece bajo EQUIPAMIENTO en el donut. Coherencia total entre vistas.
+
