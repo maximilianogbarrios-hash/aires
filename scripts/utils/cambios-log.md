@@ -2075,3 +2075,111 @@ click → sidebar con conceptos + reclasificación. Ahora: 32 slices
    en Gestionar categorías (Phase 1) → reload Proveedores → el slice
    del donut cambia de label al instante, sin redeploy.
 
+
+## Bancos — donut Proveedores: labels = código de categoría + sin fusión para admin (Phase 3.1)
+
+**Fecha**: 2026-05-26 (ajuste sobre Phase 3 commit `b215de4`).
+
+**Feedback del usuario tras Phase 3**:
+> "veo algunos que están bien… pero hay otros que no. Ejemplos, en las
+> reglas de proveedores tenés el nombre de una de las categorías
+> NOMINAS. Y en el gráfico estás poniendo NOMINAS PERSONAL. necesito
+> que se reflejen estas mismas categorías que están en la regla de
+> proveedores en el gráfico de torta donde dice distribución de gasto
+> 28 categorías y no, no tienen que ser 28, tienen que ser 32."
+
+Dos issues identificados:
+
+1. **Inconsistencia de labels**: en Gestionar Reglas el panel de drop-zones
+   muestra los **códigos internos** (`NOMINAS`, `IMPUESTOS`, `SS_LABORAL`).
+   En el donut Phase 3 puse el `nombre_display` ("Nóminas Personal",
+   "Impuestos", "Seguridad Social"). El usuario quería que coincidieran
+   exactamente.
+
+2. **28 vs 32 slices**: el donut mostraba 28 slices porque la fusión
+   "Gastos Dirección" colapsa 4 cats sensibles (`GASTOS_DIRECCION`,
+   `NOMINAS_DIRECCION`, `PRESTAMOS`, `FINANCIERO`) en 1 slice, dando
+   29-2 = ~28 efectivos. La fusión es para no-admin (proteger info
+   sensible). Para admin (Maxi+Dani) no aporta — terminan viendo menos
+   slices que en Reglas.
+
+**Fix**:
+
+### Backend — `routes/bancos.js` `/proveedores`
+
+Condicional por rol en el bloque de fusión cat (líneas ~775-815):
+
+```js
+if (esAdminLike(req)) {
+  // Admin/socio: sin fusión — las 32 cats con movs aparecen como slices
+  porCategoria = catEntries;
+} else {
+  // No-admin: fusionar las 4 sensibles en slice virtual "Gastos Dirección"
+  porCategoria = restantesCat;
+  if (sensiblesCat.length > 0) {
+    porCategoria.push({ codigo: '__GASTOS_DIRECCION_FUSE__', ... });
+  }
+}
+```
+
+Para admin: el donut muestra `GASTOS_DIRECCION`, `NOMINAS_DIRECCION`,
+`PRESTAMOS`, `FINANCIERO` como 4 slices individuales (32 cats efectivas).
+Para no-admin: 1 slice "Gastos Dirección" agrupado (29 cats efectivas).
+
+### Frontend — `public/js/bancos.js`
+
+**`renderProvDonut`** (y `enterDonutDrill`): items normalizados ahora usan
+`codigo` como label, no `nombre_display`:
+
+```js
+const items = cats.map((c) => ({
+  label: c.es_fusion ? c.nombre_display : c.codigo,
+  label_full: c.nombre_display, // para tooltip
+  ...
+}));
+```
+
+Caso especial: la fusión (sólo en no-admin) usa `nombre_display` como
+label porque su `codigo` artificial `'__GASTOS_DIRECCION_FUSE__'` nunca
+debe verse en UI.
+
+**Tooltip de la leyenda**: muestra `nombre_display` legible cuando
+difiere del label (todos los códigos lo hacen) + stats:
+- "IMPUESTOS — Impuestos · 14 prov · 109 mvs"
+- "SS_LABORAL — Seguridad Social · 5 prov · 26 mvs"
+
+**`openCategoriaSidebar(codigo)`**: título principal del sidebar pasa a
+ser el código (`SS_LABORAL` en vez de "Seguridad Social"). El nombre
+legible (`nombre_display`) se inyecta al inicio del meta line para no
+perder esa info:
+
+```
+[SS_LABORAL]                                       ×
+Seguridad Social · 5.234,00€ · 5 proveedores · 26 mvs · 8.2% del gasto
+```
+
+Empty state también pasa a usar `codigo`.
+
+### Resultado
+
+- Donut admin: **32 slices** (descontando INTRAGRUPO + las cats sin movs
+  en el período filtrado). Labels = `IMPUESTOS`, `SS_LABORAL`, `NOMINAS`,
+  `NOMINAS_DIRECCION`, `ALQUILER`, `SUMINISTROS_ENERGIA`, `PROVEEDOR_BEBIDAS`,
+  etc. — idénticos a los drop-zones de Gestionar Reglas.
+- Donut no-admin: ~29 slices (las 4 sensibles fusionadas en "Gastos
+  Dirección"). Sin cambio funcional respecto al estado anterior, solo el
+  resto de los slices ahora muestra códigos.
+- Hover sobre cualquier slice → tooltip con el nombre legible
+  ("Seguridad Social", "Energía y Gas", etc.) si es admin/socio quiere
+  consultar.
+
+### Verificación E2E
+
+- Admin (Maxi/Dani): el donut ahora muestra las mismas 32 categorías que
+  ve en Gestionar Reglas (drop-zones a la derecha), con los mismos
+  nombres. Si renombra `nombre_display` de una cat desde el modal
+  "⚙️ Gestionar categorías", el tooltip del slice cambia pero el label
+  sigue siendo el código (porque ese no cambia — es la PK estable).
+- No-admin: el slice "Gastos Dirección" sigue colapsando las 4 sensibles
+  y el sidebar drill-down sigue bloqueado con 🔒.
+

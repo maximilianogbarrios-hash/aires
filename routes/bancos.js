@@ -786,37 +786,49 @@ router.get('/proveedores', async (req, res) => {
     }));
 
     // Fusión: las 4 cats sensibles → un slice virtual.
+    // Sólo se aplica para roles no-admin (gerentes/administrativo/pedidos),
+    // donde los importes individuales de NOMINAS_DIRECCION/GASTOS_DIRECCION/
+    // PRESTAMOS/FINANCIERO no deben ser visibles. Para admin/socio (Maxi+Dani)
+    // las 32 cats se ven individuales — el donut refleja exactamente las
+    // mismas drop-zones de Gestionar Reglas, sin agrupar.
     const sensiblesCat = catEntries.filter((c) => c._sensible);
     const restantesCat = catEntries.filter((c) => !c._sensible);
-    let porCategoria = restantesCat;
+    let porCategoria;
     let fusion_cat = null;
-    if (sensiblesCat.length > 0) {
-      const totFus = sensiblesCat.reduce((s, c) => s + c.total, 0);
-      const nMovsFus = sensiblesCat.reduce((s, c) => s + c.n_movs, 0);
-      const provsFus = new Set();
-      let ultFusFecha = null;
-      sensiblesCat.forEach((c) => {
-        const orig = catAgg.get(c.codigo);
-        if (orig) orig.proveedores.forEach((p) => provsFus.add(p));
-        if (c.ultima_fecha && (!ultFusFecha || c.ultima_fecha > ultFusFecha)) ultFusFecha = c.ultima_fecha;
-      });
-      porCategoria.push({
-        codigo: '__GASTOS_DIRECCION_FUSE__',
-        nombre_display: FUSE_PROVEEDOR,
-        total: totFus,
-        n_movs: nMovsFus,
-        n_proveedores: provsFus.size,
-        ultima_fecha: ultFusFecha,
-        porcentaje: totalGasto > 0 ? totFus / totalGasto : 0,
-        es_fusion: true,
-        miembros_codigos: sensiblesCat.map((c) => c.codigo),
-        puede_drilldown: esAdminLike(req),
-      });
-      fusion_cat = {
-        miembros: sensiblesCat.length,
-        miembros_codigos: sensiblesCat.map((c) => c.codigo),
-        puede_drilldown: esAdminLike(req),
-      };
+    if (esAdminLike(req)) {
+      // Admin/socio: sin fusión — todas las cats con movs aparecen como slices.
+      porCategoria = catEntries;
+    } else {
+      // No-admin: fusionar las 4 sensibles en slice virtual "Gastos Dirección".
+      porCategoria = restantesCat;
+      if (sensiblesCat.length > 0) {
+        const totFus = sensiblesCat.reduce((s, c) => s + c.total, 0);
+        const nMovsFus = sensiblesCat.reduce((s, c) => s + c.n_movs, 0);
+        const provsFus = new Set();
+        let ultFusFecha = null;
+        sensiblesCat.forEach((c) => {
+          const orig = catAgg.get(c.codigo);
+          if (orig) orig.proveedores.forEach((p) => provsFus.add(p));
+          if (c.ultima_fecha && (!ultFusFecha || c.ultima_fecha > ultFusFecha)) ultFusFecha = c.ultima_fecha;
+        });
+        porCategoria.push({
+          codigo: '__GASTOS_DIRECCION_FUSE__',
+          nombre_display: FUSE_PROVEEDOR,
+          total: totFus,
+          n_movs: nMovsFus,
+          n_proveedores: provsFus.size,
+          ultima_fecha: ultFusFecha,
+          porcentaje: totalGasto > 0 ? totFus / totalGasto : 0,
+          es_fusion: true,
+          miembros_codigos: sensiblesCat.map((c) => c.codigo),
+          puede_drilldown: false,
+        });
+        fusion_cat = {
+          miembros: sensiblesCat.length,
+          miembros_codigos: sensiblesCat.map((c) => c.codigo),
+          puede_drilldown: false,
+        };
+      }
     }
     // Limpiar el flag interno _sensible.
     porCategoria = porCategoria

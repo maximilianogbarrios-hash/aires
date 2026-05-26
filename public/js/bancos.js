@@ -527,10 +527,17 @@ function partitionByThreshold(items, threshold) {
 function renderProvDonut() {
   if (!chProvDonut) return;
   // Adaptamos por_categoria a una shape uniforme {label, key, value, count,
-  // porcentaje, n_proveedores, es_fusion, puede_drilldown}.
+  // porcentaje, n_proveedores, es_fusion, puede_drilldown}. label = codigo
+  // para que el donut muestre exactamente los mismos nombres que aparecen
+  // en las drop-zones de Gestionar Reglas (IMPUESTOS, SS_LABORAL, NOMINAS,
+  // etc). El nombre_display se preserva como tooltip / hover.
+  // Caso especial: la fusión "Gastos Dirección" (para no-admin) usa el
+  // nombre_display como label (porque su codigo '__GASTOS_DIRECCION_FUSE__'
+  // es artificial y no se ve nunca en Reglas).
   const cats = state.prov.por_categoria || [];
   const items = cats.map((c) => ({
-    label: c.nombre_display,
+    label: c.es_fusion ? c.nombre_display : c.codigo,
+    label_full: c.nombre_display, // tooltip extendido
     key: c.codigo,
     value: c.total,
     count: c.n_movs,
@@ -612,9 +619,14 @@ function renderProvDonut() {
     const hover = esFusionRestringida ? '' : ' onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"';
     const lockIcon = esFusionRestringida ? ' 🔒' : (esFusionAdmin ? ' 🔓' : '');
     const sufijo = isOtros ? ' →' : lockIcon;
-    const tooltipExtra = isOtros ? '' :
-      ` — ${v.n_proveedores || 0} prov · ${v.count} mvs`;
-    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover} title="${v.label}${tooltipExtra}${esFusionRestringida ? ' — bucket fusionado, sin drill-down' : ''}">
+    // Tooltip: nombre_display (legible) cuando difiere del código, + stats.
+    const displayDiff = v.label_full && v.label_full !== v.label;
+    const tooltipParts = [];
+    if (displayDiff) tooltipParts.push(v.label_full);
+    if (!isOtros) tooltipParts.push(`${v.n_proveedores || 0} prov · ${v.count} mvs`);
+    if (esFusionRestringida) tooltipParts.push('bucket fusionado, sin drill-down');
+    const tooltipText = tooltipParts.join(' · ');
+    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover} title="${v.label}${tooltipText ? ' — ' + tooltipText : ''}">
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
       <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.label}${sufijo}</span>
       <span style="font-size:11px;font-weight:500">${eur(v.value)}</span>
@@ -637,10 +649,13 @@ function setDonutThreshold(val) {
 function enterDonutDrill() {
   const threshold = state.prov.donutThreshold;
   if (threshold == null) return;  // en "Ver todos" no hay Otros
-  // Filtramos categorías debajo del umbral (no proveedores).
+  // Filtramos categorías debajo del umbral (no proveedores). Misma shape
+  // que renderProvDonut: label = codigo (consistente con Gestionar Reglas).
   const cats = state.prov.por_categoria || [];
   const items = cats.map((c) => ({
-    label: c.nombre_display, key: c.codigo,
+    label: c.es_fusion ? c.nombre_display : c.codigo,
+    label_full: c.nombre_display,
+    key: c.codigo,
     value: c.total, count: c.n_movs,
     porcentaje: c.porcentaje,
     n_proveedores: c.n_proveedores,
@@ -1273,9 +1288,13 @@ async function openCategoriaSidebar(codigo) {
     .filter((p) => p.categoria === codigo)
     .sort((a, b) => b.total_importe - a.total_importe);
 
-  $('prov-sb-title').textContent = cat.nombre_display;
+  // Título: codigo (consistente con donut + Gestionar Reglas).
+  // Si el nombre_display difiere, lo ponemos como secundario en el meta.
+  $('prov-sb-title').textContent = cat.codigo;
   const pct = state.prov.total > 0 ? (cat.total / state.prov.total * 100).toFixed(1) : '0';
-  $('prov-sb-meta').textContent = `${eur2(cat.total)} · ${cat.n_proveedores} proveedores · ${cat.n_movs} mvs · ${pct}% del gasto filtrado`;
+  const nombreLegible = cat.nombre_display && cat.nombre_display !== cat.codigo
+    ? `${cat.nombre_display} · ` : '';
+  $('prov-sb-meta').textContent = `${nombreLegible}${eur2(cat.total)} · ${cat.n_proveedores} proveedores · ${cat.n_movs} mvs · ${pct}% del gasto filtrado`;
   $('prov-sb-body').innerHTML = '';
   $('prov-sidebar-backdrop').style.display = '';
   $('prov-sidebar').style.display = '';
@@ -1286,7 +1305,7 @@ async function openCategoriaSidebar(codigo) {
     $('prov-sb-body').innerHTML = `
       <div style="padding:30px 12px;text-align:center;color:var(--text-2);font-size:12px">
         <p style="font-size:24px;margin-bottom:6px">📭</p>
-        <p>Sin proveedores en "<strong>${cat.nombre_display}</strong>" en este filtro.</p>
+        <p>Sin proveedores en "<strong>${cat.codigo}</strong>" en este filtro.</p>
         <p style="font-size:10px;margin-top:6px">El donut suma todos los movs de la categoría (independientemente del proveedor); la lista del sidebar usa la categoría más frecuente de cada proveedor — la diferencia puede pasar con proveedores multi-categoría.</p>
       </div>`;
     return;
