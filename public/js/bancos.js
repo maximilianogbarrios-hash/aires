@@ -292,32 +292,37 @@ async function loadProveedores() {
   const j = await api('/api/v1/bancos/gastos-por-proveedor?' + params.toString());
   state.proveedores = j.proveedores || [];
 
-  // Donut por categoría
-  const byCat = {};
-  state.proveedores.forEach((p) => { byCat[p.categoria] = (byCat[p.categoria] || 0) + Math.abs(+p.total); });
-  const sortedCats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
-  chGastos.data.labels = sortedCats.map((c) => c[0]);
-  chGastos.data.datasets[0].data = sortedCats.map((c) => c[1]);
-  chGastos.data.datasets[0].backgroundColor = sortedCats.map((_, i) => COLORS_CAT[i % COLORS_CAT.length]);
+  // Donut: usa j.por_categoria que ya viene del pipeline canónico del backend
+  // (loadReglas → matchRegla → normalizarProveedor) con nombre_display de
+  // ab_categorias resuelto. Categorías sin movs en el período NO aparecen
+  // (el backend sólo incluye las que tienen movimientos).
+  const porCat = j.por_categoria || [];
+  chGastos.data.labels = porCat.map((c) => c.nombre_display);
+  chGastos.data.datasets[0].data = porCat.map((c) => c.total);
+  chGastos.data.datasets[0].backgroundColor = porCat.map((_, i) => COLORS_CAT[i % COLORS_CAT.length]);
   chGastos.update();
-  const totG = sortedCats.reduce((s, c) => s + c[1], 0);
-  $('gastos-legend').innerHTML = sortedCats.map((c, i) => {
-    const pctV = totG > 0 ? (c[1] / totG * 100).toFixed(1) : '0';
-    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0">
+  const totG = porCat.reduce((s, c) => s + c.total, 0);
+  $('gastos-legend').innerHTML = porCat.map((c, i) => {
+    const pctV = totG > 0 ? (c.total / totG * 100).toFixed(1) : '0';
+    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0" title="${c.codigo} · ${c.n_movs} mvs">
       <span style="width:10px;height:10px;border-radius:2px;background:${COLORS_CAT[i % COLORS_CAT.length]};display:inline-block"></span>
-      <span style="font-size:11px;flex:1">${c[0]}</span>
-      <span style="font-size:11px;font-weight:500">${eur(c[1])}</span>
+      <span style="font-size:11px;flex:1">${c.nombre_display}</span>
+      <span style="font-size:11px;font-weight:500">${eur(c.total)}</span>
       <span style="font-size:11px;color:var(--text-2);min-width:36px;text-align:right">${pctV}%</span>
     </div>`;
   }).join('');
 
-  // Top 50 proveedores
+  // Top 50 proveedores: la columna "Categoría" muestra el nombre_display
+  // canónico (ej. "Seguridad Social") en vez del código interno (SS_LABORAL).
+  // p.proveedor también viene del pipeline → TGSS aparece como "TGSS" canónico,
+  // no como el concepto bancario crudo.
   $('tb-prov').innerHTML = state.proveedores.map((p) => {
     const total = Math.abs(+p.total);
     const promedio = total / Math.max(p.apariciones, 1);
+    const catLabel = p.categoria_display || p.categoria || '—';
     return `<tr>
       <td style="font-weight:500;font-size:12px">${p.proveedor || '—'}</td>
-      <td style="font-size:11px">${p.categoria}</td>
+      <td style="font-size:11px" title="${p.categoria || ''}">${catLabel}</td>
       <td style="text-align:right;color:#dc2626">${eur(total)}</td>
       <td style="text-align:right">${p.apariciones}</td>
       <td style="text-align:right;font-size:11px">${eur(promedio)}</td>

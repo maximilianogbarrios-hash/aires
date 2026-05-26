@@ -328,7 +328,12 @@ router.get('/resumen', async (req, res) => {
   }
 });
 
-// Análisis de gastos por categoría/subcategoría.
+// Análisis de gastos por proveedor + categoría usando el MISMO PIPELINE
+// que /proveedores y Gestionar Reglas: loadReglas → matchRegla →
+// normalizarProveedor (en ese orden), después JOIN con ab_categorias para
+// resolver nombre_display. Resultado: el donut "Distribución de gastos por
+// categoría" y la tabla Top 50 quedan sincronizados con la pantalla Reglas
+// — si TGSS está en SS_LABORAL en Reglas, acá aparece bajo "Seguridad Social".
 router.get('/gastos-por-proveedor', async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
@@ -339,19 +344,114 @@ router.get('/gastos-por-proveedor', async (req, res) => {
     const visCl = clausulaVisibilidadParaRol(req, vals.length + 1);
     if (visCl) { where.push(visCl.sql); vals.push(...visCl.vals); }
     const W = 'WHERE ' + where.join(' AND ');
+
+    // Datos crudos del período — la agregación se hace en runtime para poder
+    // aplicar el pipeline. No LIMIT acá (lo aplicamos al final sobre la tabla).
     const rows = await many(
-      `SELECT COALESCE(subcategoria, concepto) AS proveedor,
-              categoria,
-              SUM(importe)::float8 AS total,
-              COUNT(*)::int AS apariciones,
-              MIN(fecha) AS desde, MAX(fecha) AS hasta
-       FROM ab_movimientos ${W}
-       GROUP BY proveedor, categoria
-       ORDER BY total ASC
-       LIMIT 50`,
+      `SELECT concepto, categoria, importe::float8 AS importe,
+              fecha::text AS fecha, proveedor_normalizado
+         FROM ab_movimientos ${W}`,
       vals
     );
-    res.json({ proveedores: rows });
+
+    // Pipeline (idéntico a /proveedores líneas 443-488):
+    //   1) ab_movimientos.proveedor_normalizado (si está seteado)
+    //   2) matchRegla(concepto, reglasDb) — regla de ab_reglas_normalizacion
+    //   3) normalizarProveedor(concepto, categoria) — fallback heurístico
+    // Si la categoría resuelve a INTRAGRUPO se excluye (igual que /proveedores).
+    const reglasDb = await loadReglas();
+
+    // Catálogo de categorías para resolver nombre_display. Tolerante: si la
+    // tabla ab_categorias todavía no existe (deploy fresco pre-migration 19),
+    // catDisplay queda vacío y se cae al código interno como label.
+    let catDisplay = new Map();
+    try {
+      const cats = await many('SELECT codigo, nombre_display FROM ab_categorias');
+      catDisplay = new Map(cats.map((c) => [c.codigo, c.nombre_display]));
+    } catch (e) {
+      console.warn('[bancos.gastos] ab_categorias no disponible, usando códigos:', e.message);
+    }
+
+    // Agregación dual:
+    //   - provAgg: por (proveedor canónico × categoría canónica) → tabla Top 50
+    //   - catAgg:  por categoría canónica → donut
+    const provAgg = new Map(); // 'prov|cat' → { proveedor, categoria, total_signed, n, desde, hasta }
+    const catAgg = new Map();  // categoria_codigo → { codigo, total, n_movs }
+
+    for (const r of rows) {
+      // Excluir intra-grupo en dos pasadas (igual que /proveedores).
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+
+      let proveedor, categoria;
+      if (r.proveedor_normalizado) {
+        proveedor = r.proveedor_normalizado;
+        categoria = r.categoria;
+      } else {
+        const rule = matchRegla(r.concepto, reglasDb);
+        if (rule) {
+          proveedor = rule.proveedor_normalizado;
+          categoria = rule.categoria;
+        } else {
+          const n = normalizarProveedor(r.concepto, r.categoria);
+          proveedor = n.proveedor;
+          categoria = n.categoria;
+        }
+        if (categoria === 'INTRAGRUPO') continue;
+      }
+      if (!proveedor || !categoria) continue;
+
+      // provAgg — sumamos el importe con signo (es negativo); en el frontend
+      // se hace abs() para mostrarlo. Mantenemos compat con shape histórica.
+      const k = `${proveedor}|${categoria}`;
+      if (!provAgg.has(k)) {
+        provAgg.set(k, {
+          proveedor, categoria,
+          total: 0, n: 0,
+          desde: r.fecha, hasta: r.fecha,
+        });
+      }
+      const pa = provAgg.get(k);
+      pa.total += r.importe;
+      pa.n += 1;
+      if (r.fecha < pa.desde) pa.desde = r.fecha;
+      if (r.fecha > pa.hasta) pa.hasta = r.fecha;
+
+      // catAgg — totales absolutos por categoría (para el donut).
+      if (!catAgg.has(categoria)) catAgg.set(categoria, { codigo: categoria, total: 0, n_movs: 0 });
+      const ca = catAgg.get(categoria);
+      ca.total += Math.abs(r.importe);
+      ca.n_movs += 1;
+    }
+
+    // Tabla Top 50: ordenada por mayor gasto absoluto.
+    // total queda negativo (compat); el frontend ya hace Math.abs() al renderizar.
+    const proveedoresArr = [...provAgg.values()]
+      .map((a) => ({
+        proveedor: a.proveedor,
+        categoria: a.categoria,
+        categoria_display: catDisplay.get(a.categoria) || a.categoria,
+        total: a.total,
+        apariciones: a.n,
+        desde: a.desde,
+        hasta: a.hasta,
+      }))
+      .sort((a, b) => a.total - b.total) // más negativo primero = mayor absoluto
+      .slice(0, 50);
+
+    // Donut: lista completa de categorías ordenada por total desc.
+    // Sólo se incluyen categorías con movimientos en el período filtrado
+    // (las que no tienen movs no aparecen — comportamiento que el usuario
+    // pidió explícitamente).
+    const porCategoria = [...catAgg.values()]
+      .map((c) => ({
+        codigo: c.codigo,
+        nombre_display: catDisplay.get(c.codigo) || c.codigo,
+        total: c.total,
+        n_movs: c.n_movs,
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    res.json({ proveedores: proveedoresArr, por_categoria: porCategoria });
   } catch (e) {
     console.error('[bancos.gastos]', e);
     res.status(500).json({ error: 'internal' });

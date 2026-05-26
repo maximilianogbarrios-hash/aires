@@ -1869,3 +1869,88 @@ Reglas.
   con reasignación → reglas movidas, movs movidos, donut Phase 2 todavía
   no sincroniza (esperado hasta Phase 2).
 
+
+## Bancos — sincronización gráfico torta con Gestionar Reglas
+
+**Fecha**: 2026-05-26 (Phase 2 del paquete sync donut + categorías CRUD,
+sigue a Phase 1 commit `5e218a3`).
+
+**Bug**: el donut "Distribución de gastos por categoría" en la tab Gastos
+agrupaba movimientos usando `ab_movimientos.categoria` raw (la categoría
+con la que se ingestó la fila), mientras que la pantalla Gestionar Reglas
+usa el pipeline canónico `loadReglas() → matchRegla() → normalizarProveedor()`
+para derivar la categoría efectiva en runtime. Resultado: si el usuario
+creaba una regla que reasigna "TGSS" a `SS_LABORAL`, la regla se aplicaba
+correctamente en el panel Reglas y en el donut de Proveedores (que ya
+usa el pipeline), pero el donut de Gastos seguía mostrando los movs
+de TGSS bajo su categoría original (`OTROS`, típicamente). Dos vistas
+del mismo dato divergían.
+
+**Fix Phase 2** (commit a registrar abajo):
+
+### Backend — `routes/bancos.js#/gastos-por-proveedor`
+
+Refactor del endpoint para usar el mismo pipeline que `/proveedores` y los
+endpoints de Gestionar Reglas:
+
+1. **Precedencia exacta** (idéntica al endpoint `/proveedores` líneas 467-488):
+   - `ab_movimientos.proveedor_normalizado` (si está seteado)
+   - `matchRegla(concepto, reglasDb)` — regla de `ab_reglas_normalizacion`
+   - `normalizarProveedor(concepto, categoria)` — fallback heurístico
+   - Filtra INTRAGRUPO en dos pasadas (`esIntraGrupo(concepto)` por heurística
+     y `r.categoria === 'INTRAGRUPO'` por categoría persistida)
+
+2. **JOIN con `ab_categorias`** (de la Phase 1) para resolver `nombre_display`.
+   Implementado como Map en runtime (`catDisplay`) — no requirió cambios al
+   SQL principal. Tolerante a `ab_categorias` ausente (deploys fresh antes
+   de migration 19): cae al código interno como label.
+
+3. **Agregación dual en runtime** sobre los movs filtrados:
+   - `provAgg` (Map `proveedor|categoria → stats`) → para la tabla Top 50
+   - `catAgg` (Map `categoria → stats`) → para el donut
+
+4. **Shape de respuesta extendida**:
+   - `proveedores: [{ proveedor, categoria, categoria_display, total, apariciones, desde, hasta }]`
+     — top 50 ordenado por mayor gasto absoluto
+   - `por_categoria: [{ codigo, nombre_display, total, n_movs }]`
+     — lista completa de categorías con movs en el período, ordenada por
+     total desc. Categorías sin movs en el período NO aparecen.
+
+### Frontend — `public/js/bancos.js#loadProveedores()`
+
+- **Donut**: ahora consume `j.por_categoria` directamente del backend
+  (en vez de agregar client-side desde `j.proveedores`). Labels usan
+  `c.nombre_display`. Cada item de la leyenda muestra el código interno
+  como tooltip (`title="${c.codigo} · ${c.n_movs} mvs"`) para debug.
+- **Tabla Top 50**: columna "Categoría" muestra `p.categoria_display`
+  (con `p.categoria` como tooltip si querés ver el código interno).
+
+### Verificación E2E
+
+- `node --check routes/bancos.js` y `node --check public/js/bancos.js` pasan.
+- Caso TGSS → SS_LABORAL:
+  1. Sin regla: TGSS aparece bajo "Otros" en el donut (heurística default).
+  2. Crear regla en Reglas: TGSS → SS_LABORAL.
+  3. Reload Gastos: TGSS aparece bajo **"Seguridad Social"** (nombre_display
+     de SS_LABORAL desde `ab_categorias`).
+  4. Editar nombre_display de SS_LABORAL en Gestionar categorías (Phase 1)
+     a "SS" → reload: el slice del donut pasa de "Seguridad Social" a "SS"
+     en vivo, sin redeploy.
+
+### Sincronización con Phase 1
+
+Esta Phase 2 cierra el ciclo del paquete:
+
+- **Crear cat** (Phase 1) → aparece como drop-zone en Reglas y como slice
+  potencial en el donut (cuando haya movs).
+- **Editar nombre display** (Phase 1) → impacta donut + tabla Top 50 + cards
+  del panel Reglas.
+- **Eliminar cat** (Phase 1) → si se reasignó, los movs y reglas se mueven al
+  destino y el donut refleja la nueva agrupación automáticamente.
+- **Reglas** (panel Reglas drag&drop) → al asignar un proveedor a una cat,
+  la próxima recarga del donut (en cualquier vista) usa el pipeline y refleja
+  la nueva categoría — sin desfase.
+
+Las dos vistas (donut Gastos y panel Reglas) son ahora **una sola fuente
+de verdad efectiva**: la cadena pipeline + `ab_categorias.nombre_display`.
+
