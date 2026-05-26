@@ -2369,3 +2369,101 @@ Coherencia total con Gestionar Reglas garantizada: las cats que ves
 de drop-zone en Reglas son exactamente las que ves de slice/leyenda
 en el donut, en el mismo orden.
 
+
+## Bancos — pipeline híbrido: cat histórica como fallback + regla override (Phase 4.2)
+
+**Fecha**: 2026-05-26 (revisión sobre Phase 4 `c51ec96` + 4.1 `91cb400`).
+
+**Bug reportado por el usuario**:
+> "En el donut, las categorías NOMINAS, NOMINAS_DIRECCION, FINANCIERO,
+> PRESTAMOS están mostrando 0€ para admin, cuando en realidad tienen
+> movimientos y montos reales."
+
+**Causa raíz**: Phase 4 cambió el pipeline a "regla-first" exclusivo:
+si un mov no tenía regla activa que matchee su concepto, iba a
+`SIN_CLASIFICAR` independientemente del valor de `ab_movimientos.categoria`
+histórica. NOMINAS_DIRECCION/FINANCIERO/PRESTAMOS no tienen reglas
+explícitas (sus movs vienen categorizados desde el ingest sin necesidad
+de regla por cada uno) → todos terminaban en SIN_CLASIFICAR. El usuario
+perdía la visualización de sus importes reales en esas cats.
+
+**Diagnóstico verificado** (lógico, sin Postgres local pero la cadena
+es clara): `SELECT SUM(ABS(importe)) FROM ab_movimientos WHERE categoria='NOMINAS_DIRECCION' AND importe<0`
+devuelve > 0 (los movs existen). Pero el backend después de Phase 4
+los reasignaba a SIN_CLASIFICAR. El bug estaba en el backend, no en el
+frontend.
+
+**Fix — pipeline híbrido**:
+
+```js
+const rule = matchRegla(r.concepto, reglasDb);
+if (rule) {
+  // 1. Regla activa: gana sobre cualquier valor histórico
+  proveedor = rule.proveedor_normalizado;
+  categoria = rule.categoria;
+} else if (r.proveedor_normalizado) {
+  // 2. Sin regla: respetar campos persistidos del ingest histórico
+  proveedor = r.proveedor_normalizado;
+  categoria = r.categoria || 'SIN_CLASIFICAR';
+} else {
+  // 3. Sin proveedor canónico ni regla: heurística (limpia el concepto)
+  const n = normalizarProveedor(r.concepto, r.categoria);
+  proveedor = n.proveedor || r.concepto;
+  categoria = n.categoria || 'SIN_CLASIFICAR';
+}
+```
+
+Diferencia clave con Phase 4 puro: el paso 2 ahora **respeta el campo
+histórico** `ab_movimientos.categoria` cuando no hay regla. Las reglas
+siguen siendo el override de máxima prioridad — si vos creás
+"ARGENT 3D → EQUIPAMIENTO", esa regla sobreescribe el histórico.
+
+`SIN_CLASIFICAR` queda como verdadero último recurso: solo si no hay
+regla NI campo histórico válido NI heurística que devuelva algo.
+
+### Aplicado en
+
+- **`/proveedores`** (donut Bancos → Proveedores, sect-proveedores).
+  Mantiene la condicional por rol de Phase 3.1: admin/socio sin fusión,
+  no-admin con fusión "Gastos Dirección".
+- **`/gastos-por-proveedor`** (donut Bancos → Gastos, sect-gastos).
+  No tiene fusión en ningún caso.
+
+### Resultado para admin/socio
+
+- NOMINAS muestra los movs con regla NOMINAS + los movs con
+  `ab_movimientos.categoria='NOMINAS'` histórica (si los hay).
+- NOMINAS_DIRECCION/FINANCIERO/PRESTAMOS/GASTOS_DIRECCION muestran
+  sus importes históricos reales (eran 0€ post-Phase 4, ahora vuelven
+  a sus valores).
+- ARGENT 3D vuelve a aparecer en NOMINAS si su `ab_movimientos.categoria`
+  histórica es NOMINAS — para sacarlo, crear regla "ARGENT 3D → otra cat"
+  desde Gestionar Reglas (la regla sobreescribe el histórico).
+- SIN_CLASIFICAR solo absorbe movs verdaderamente huérfanos (sin regla,
+  sin proveedor_normalizado, sin categoria persistida).
+
+### Resultado para no-admin
+
+Sin cambios respecto a Phase 4.1: las 4 cats sensibles
+(NOMINAS_DIRECCION/GASTOS_DIRECCION/PRESTAMOS/FINANCIERO) siguen
+fusionadas en "Gastos Dirección" 🔒 con drill-down bloqueado.
+
+### Trade-off explícito
+
+Lo que el usuario pidió antes ("ARGENT 3D NO debería aparecer en NOMINAS")
+ahora vuelve a ocurrir si ese mov tiene `ab_movimientos.categoria='NOMINAS'`
+histórica. La única forma de quitarlo es crear regla explícita
+"ARGENT 3D → otra cat". Las dos cosas (importes reales + filtrado
+estricto sin regla) son contradictorias sin reclasificar manualmente
+los movs históricos.
+
+Phase 1 + Phase 2 + Phase 3.1 + Phase 4.1 + Phase 4.2 cierran el
+paquete:
+- `5e218a3` Phase 1: Categorías CRUD
+- `387758c` Phase 2: donut Gastos sync con pipeline
+- `b215de4` Phase 3: donut Proveedores reemplazado por categorías
+- `6344839` Phase 3.1: labels = código + sin fusión para admin
+- `c51ec96` Phase 4: pipeline regla-first + SIN_CLASIFICAR
+- `91cb400` Phase 4.1: todas las cats de ab_categorias visibles
+- `_____` Phase 4.2: pipeline híbrido (esta entrada)
+

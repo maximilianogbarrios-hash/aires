@@ -382,19 +382,22 @@ router.get('/gastos-por-proveedor', async (req, res) => {
       // Excluir intra-grupo en dos pasadas (igual que /proveedores).
       if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
 
-      // Pipeline regla-first (mismo que /proveedores). Las reglas activas
-      // son la única fuente de verdad de la categoría. Movs sin regla
-      // matchee caen en 'SIN_CLASIFICAR'.
+      // Pipeline híbrido (mismo que /proveedores): regla > histórico > heurística.
+      // Movs ya categorizados (NOMINAS_DIRECCION/FINANCIERO/PRESTAMOS desde
+      // ingest histórico) conservan su cat sin requerir regla explícita.
+      // Las reglas overridean. Last resort: SIN_CLASIFICAR.
       let proveedor, categoria;
       const rule = matchRegla(r.concepto, reglasDb);
       if (rule) {
         proveedor = rule.proveedor_normalizado;
         categoria = rule.categoria;
+      } else if (r.proveedor_normalizado) {
+        proveedor = r.proveedor_normalizado;
+        categoria = r.categoria || 'SIN_CLASIFICAR';
       } else {
-        proveedor = r.proveedor_normalizado
-          || normalizarProveedor(r.concepto, null).proveedor
-          || r.concepto;
-        categoria = 'SIN_CLASIFICAR';
+        const n = normalizarProveedor(r.concepto, r.categoria);
+        proveedor = n.proveedor || r.concepto;
+        categoria = n.categoria || 'SIN_CLASIFICAR';
       }
       if (categoria === 'INTRAGRUPO') continue;
       if (!proveedor || !categoria) continue;
@@ -568,31 +571,36 @@ router.get('/proveedores', async (req, res) => {
         nExcluido++;
         continue;
       }
-      // Pipeline regla-first (pedido del usuario 2026-05-26):
-      // las reglas activas en ab_reglas_normalizacion son la ÚNICA fuente
-      // de verdad para la categoría de un mov. Si el concepto del mov no
-      // matchea ninguna regla, va a 'SIN_CLASIFICAR' (slice especial).
-      // Antes: si ab_movimientos.proveedor_normalizado estaba seteado,
-      // se respetaba ab_movimientos.categoria histórica (que podía estar
-      // desactualizada respecto a las reglas actuales). Esto causaba
-      // que "ARGENT 3D" apareciera bajo NOMINAS aunque no tuviera regla
-      // NOMINAS — su mov histórico tenía esa cat persistida.
+      // Pipeline híbrido (revisión post-Phase 4):
+      //   1. matchRegla(concepto) — si hay regla activa, gana (puede
+      //      sobrescribir el histórico). Ej: "TGSS → SS_LABORAL".
+      //   2. ab_movimientos.proveedor_normalizado + categoria — campos
+      //      históricos del ingest. Movs sin regla pero ya categorizados
+      //      conservan su cat (ej. NOMINAS_DIRECCION/FINANCIERO/PRESTAMOS
+      //      con sus importes reales, sin necesidad de crear regla por cada
+      //      mov). Si la cat persistida es null, usar SIN_CLASIFICAR.
+      //   3. normalizarProveedor(concepto, categoria) — heurística para
+      //      movs sin proveedor_normalizado y sin regla.
+      //   4. SIN_CLASIFICAR como último recurso.
+      // Para reclasificar un mov mal categorizado, crear una regla
+      // (sobrescribe el histórico). Esto resuelve el balance entre
+      // "respetar lo que ya está bien categorizado" vs "permitir
+      // overrides explícitos vía reglas".
       let proveedor, categoria;
       const rule = matchRegla(r.concepto, reglasDb);
       if (rule) {
         proveedor = rule.proveedor_normalizado;
         categoria = rule.categoria;
+      } else if (r.proveedor_normalizado) {
+        proveedor = r.proveedor_normalizado;
+        categoria = r.categoria || 'SIN_CLASIFICAR';
       } else {
-        // Sin regla: nombre canónico desde campo histórico o heurística
-        // (sólo para limpiar el concepto bancario en algo legible),
-        // pero la categoría es SIEMPRE 'SIN_CLASIFICAR'.
-        proveedor = r.proveedor_normalizado
-          || normalizarProveedor(r.concepto, null).proveedor
-          || r.concepto;
-        categoria = 'SIN_CLASIFICAR';
+        const n = normalizarProveedor(r.concepto, r.categoria);
+        proveedor = n.proveedor || r.concepto;
+        categoria = n.categoria || 'SIN_CLASIFICAR';
       }
-      // Defense in depth: si por algún motivo el matcher devolviera
-      // INTRAGRUPO (no debería con el SET de reglas actuales), excluir.
+      // Defense in depth: si el matcher o el normalizer devolvieran
+      // INTRAGRUPO (caso raro), excluir.
       if (categoria === 'INTRAGRUPO') {
         totalExcluido += Math.abs(+r.importe);
         nExcluido++;
