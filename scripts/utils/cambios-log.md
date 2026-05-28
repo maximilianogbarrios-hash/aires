@@ -2554,3 +2554,41 @@ hardcodeado → rechazadas.
 - `CATEGORIAS_PARA_REGLAS` sigue exportado/definido como fallback
   (no se borra, sirve de last-resort).
 
+
+## Bancos — selección múltiple y clasificación masiva en Gestionar Reglas (Phase 6)
+
+**Fecha**: 2026-05-28.
+
+**Backend** `routes/bancos.js` — nuevo `POST /reglas-prov/asignar-batch`
+(perm `bancos_reglas_admin`). Body: `{ proveedores: [...], categoria }`.
+Procesa todo en una sola `tx()` — upsert reglas + UPDATE histórico
+masivo. Si algo falla a mitad, rollback total. Recálculo resumen/cruces
+fuera de tx (idempotente). Devuelve `{ n_proveedores, n_reglas_creadas,
+n_reglas_actualizadas, n_movs_afectados, n_combos }`.
+
+**Frontend HTML** `public/bancos/index.html`:
+- Quick-select arriba del search: `[Todos] [Ninguno]` (Todos respeta filtro).
+- Selbar inferior sticky (oculta por default): cuando hay 1+ seleccionados
+  muestra count + `[Arrastrar todos]` (informativo) + `[× Limpiar]`.
+
+**Frontend CSS**: checkbox invisible default, visible al hover, siempre
+visible al seleccionar. Row seleccionada con background violeta.
+
+**Frontend JS** `public/js/bancos-reglas.js`:
+- State: `rp.selected` (Set), `rp.draggingBatch` (array|null).
+- `renderSinClasificar` inyecta checkbox + dispara `_renderSelBar`.
+- Drag handler con detección batch: si la row está en selected y hay >1,
+  drag batch (marca todas las seleccionadas como dragging). Sino single.
+- Drop handler: si draggingBatch, llama `asignarBatch`; sino single.
+- `asignarBatch`: captura scrollTop, POST al endpoint, feedback con
+  contadores, fade-out simultáneo de las rows (300ms), clear selected,
+  reload, restaurar scrollTop.
+- `_animateProvFadeOut`: identifica `.rp-item` por dataset.prov, sube al
+  wrapper padre (incluye sugBlock IA), transición simultánea opacity +
+  height + margin + padding, remove tras 320ms.
+- Handlers expuestos a window: rpToggleProvSel, rpSelAll, rpSelNone,
+  rpClearSelected.
+
+**Preservado**: single drag&drop intacto, auto-scroll durante drag, click
+→ modal de detalle, sugerencias IA con accept/reject.
+

@@ -35,7 +35,9 @@
     sinClasificar: [],
     clasificadosByCat: {},
     searchQ: '',
-    dragging: null,           // proveedor name being dragged
+    dragging: null,           // proveedor name being dragged (single)
+    draggingBatch: null,      // array de proveedores cuando arrastra batch (sino null)
+    selected: new Set(),      // nombres de proveedor seleccionados (checkbox)
     prevSection: null,        // id de la sección activa antes de abrir reglas (para volver)
     autoScrollRaf: null,      // requestAnimationFrame id para el auto-scroll del drag
     autoScrollDelta: 0,       // px por frame (signo: + abajo / − arriba)
@@ -197,8 +199,11 @@
           </div>
         </div>
         ${sug.motivo ? `<div class="rp-sug-motivo">💡 ${esc(sug.motivo)}</div>` : ''}` : '';
+      const checked = rp.selected.has(p.proveedor) ? 'checked' : '';
+      const selClass = rp.selected.has(p.proveedor) ? ' rp-item-selected' : '';
       return `<div style="display:flex;flex-direction:column;gap:0">
-        <div class="rp-item${sugClass}" draggable="true" data-prov="${provAttr}" title="Click para ver detalle · Arrastrar a una categoría">
+        <div class="rp-item${sugClass}${selClass}" draggable="true" data-prov="${provAttr}" title="Click para ver detalle · Arrastrar a una categoría">
+          <input type="checkbox" class="rp-chk" ${checked} onclick="event.stopPropagation()" onchange="rpToggleProvSel('${provAttr}', this.checked)" title="Seleccionar para clasificar en lote">
           ${icon}
           <span class="rp-name">${provEsc}</span>
           <span class="rp-badge">${p.n_movimientos}mv · ${eur0(p.total_importe)}</span>
@@ -210,14 +215,34 @@
     $('rp-sc-list').querySelectorAll('.rp-item').forEach((el) => {
       const prov = el.dataset.prov;
       el.addEventListener('dragstart', (ev) => {
-        rp.dragging = prov;
-        el.classList.add('dragging');
-        ev.dataTransfer.effectAllowed = 'move';
-        ev.dataTransfer.setData('text/plain', prov);
+        // Si la fila arrastrada está en el set de seleccionados Y hay más de
+        // uno seleccionado, drag BATCH (todos los seleccionados van juntos).
+        // Si la fila NO está seleccionada (o sola), drag single como antes —
+        // la selección queda intacta.
+        if (rp.selected.has(prov) && rp.selected.size > 1) {
+          rp.draggingBatch = [...rp.selected];
+          rp.dragging = prov; // compat con dragover/drop
+          el.classList.add('dragging');
+          // Marcar visualmente todos los seleccionados como dragging
+          $('rp-sc-list').querySelectorAll('.rp-item').forEach((it) => {
+            if (rp.selected.has(it.dataset.prov)) it.classList.add('dragging');
+          });
+          ev.dataTransfer.effectAllowed = 'move';
+          ev.dataTransfer.setData('text/plain', `__BATCH__:${rp.draggingBatch.length}`);
+        } else {
+          rp.draggingBatch = null;
+          rp.dragging = prov;
+          el.classList.add('dragging');
+          ev.dataTransfer.effectAllowed = 'move';
+          ev.dataTransfer.setData('text/plain', prov);
+        }
       });
       el.addEventListener('dragend', () => {
         el.classList.remove('dragging');
+        // Limpiar visual de batch en TODAS las rows.
+        $('rp-sc-list').querySelectorAll('.rp-item').forEach((it) => it.classList.remove('dragging'));
         rp.dragging = null;
+        rp.draggingBatch = null;
         _stopAutoScroll();
       });
       // Click sin arrastre → modal de detalle. Usamos timeout para no
@@ -228,9 +253,12 @@
       });
       el.addEventListener('click', (ev) => {
         if (rp.dragging) return; // ignore if dragstart was triggered
+        // Click en checkbox NO abre detalle (event.stopPropagation en el chk).
+        if (ev.target && ev.target.classList?.contains('rp-chk')) return;
         if (clickTimer && Date.now() - clickTimer < 200) verDetalle(prov);
       });
     });
+    _renderSelBar();
   }
 
   function renderCategorias() {
@@ -271,6 +299,13 @@
       cat.addEventListener('drop', async (ev) => {
         ev.preventDefault();
         cat.classList.remove('drop-over');
+        // Detección batch: si rp.draggingBatch tiene contenido, asignar todos
+        // en un solo request. Sino, single como antes.
+        if (rp.draggingBatch && rp.draggingBatch.length > 0) {
+          const batch = [...rp.draggingBatch];
+          await asignarBatch(batch, c);
+          return;
+        }
         const prov = ev.dataTransfer.getData('text/plain') || rp.dragging;
         if (!prov) return;
         await asignar(prov, c);
@@ -292,6 +327,125 @@
       feedback('✗ ' + e.message, false);
     }
   }
+
+  // Asignación batch: N proveedores → 1 categoría en un solo request.
+  // El backend procesa todo en una transacción (upserts de reglas + UPDATE
+  // histórico). Tras el éxito: fade-out simultáneo de las rows + reload.
+  async function asignarBatch(proveedores, categoria) {
+    if (!proveedores || proveedores.length === 0) return;
+    // Capturar scroll antes de la animación + reload, para restaurar después.
+    const list = $('rp-sc-list');
+    const scrollTop = list ? list.scrollTop : 0;
+    try {
+      const r = await api('/api/v1/bancos/reglas-prov/asignar-batch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ proveedores, categoria }),
+      });
+      feedback(`✓ ${r.n_proveedores} proveedores clasificados en ${categoria} — ${r.n_movs_afectados} movimientos reclasificados`);
+      // Fade-out simultáneo de las rows clasificadas (300ms).
+      await _animateProvFadeOut(proveedores);
+      // Limpiar selección — los proveedores ya no están en sin clasificar.
+      rp.selected.clear();
+      // Recargar data (los reclasificados ya no aparecen en sin-clasificar).
+      // loadAll() repinta y _renderSelBar() oculta la barra.
+      await loadAll();
+      // Restaurar scroll para que el usuario no pierda el punto donde estaba.
+      const listNew = $('rp-sc-list');
+      if (listNew) listNew.scrollTop = scrollTop;
+    } catch (e) {
+      feedback('✗ ' + e.message, false);
+    }
+  }
+
+  // Fade-out + collapse simultáneo de N rows. Misma técnica que
+  // _animateRowOut() del sidebar de detalle del grupo (commit 214b3e1).
+  // Devuelve Promise que resuelve cuando termina la animación (~320ms).
+  function _animateProvFadeOut(provs) {
+    if (!provs || provs.length === 0) return Promise.resolve();
+    const set = new Set(provs);
+    const targets = [...$('rp-sc-list').querySelectorAll('.rp-item')]
+      .filter((el) => set.has(el.dataset.prov))
+      // Subimos al contenedor padre (rp-item está dentro de un div wrapper
+      // junto con el sugBlock) para animar la fila ENTERA, incluida sugerencia.
+      .map((el) => el.parentElement || el);
+    if (targets.length === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      targets.forEach((el) => {
+        const h = el.offsetHeight;
+        el.style.overflow = 'hidden';
+        el.style.height = h + 'px';
+        // eslint-disable-next-line no-unused-expressions
+        el.offsetHeight; // force reflow
+        el.style.transition = 'opacity 300ms ease, height 300ms ease, margin 300ms ease, padding 300ms ease, border-width 300ms ease';
+        el.style.opacity = '0';
+        el.style.height = '0';
+        el.style.marginTop = '0';
+        el.style.marginBottom = '0';
+        el.style.paddingTop = '0';
+        el.style.paddingBottom = '0';
+      });
+      setTimeout(() => {
+        targets.forEach((el) => el.remove());
+        resolve();
+      }, 320);
+    });
+  }
+
+  // Render de la barra inferior de selección. Visible sólo cuando hay 1+
+  // proveedores tildados. Se actualiza tras cada toggle/clear/render.
+  function _renderSelBar() {
+    const bar = $('rp-sc-selbar');
+    if (!bar) return;
+    const n = rp.selected.size;
+    if (n === 0) {
+      bar.style.display = 'none';
+      return;
+    }
+    bar.style.display = 'flex';
+    const cnt = $('rp-sc-sel-count');
+    if (cnt) cnt.textContent = String(n);
+    const plural = $('rp-sc-sel-plural');
+    if (plural) plural.textContent = n === 1 ? '' : 's';
+  }
+
+  window.rpToggleProvSel = function (provAttr, checked) {
+    // provAttr viene escapado con &quot; — para el Set usamos el nombre
+    // original. Lo recuperamos del dataset de la row más cercana.
+    // En la práctica el browser desescapa &quot; → ", pero protegemos.
+    const prov = provAttr.replace(/&quot;/g, '"');
+    if (checked) rp.selected.add(prov);
+    else rp.selected.delete(prov);
+    // Toggle visual de la row (sin re-render completo, mantiene scroll).
+    const el = document.querySelector(`#rp-sc-list .rp-item[data-prov="${provAttr}"]`);
+    if (el) el.classList.toggle('rp-item-selected', checked);
+    _renderSelBar();
+  };
+
+  window.rpSelAll = function () {
+    // Selecciona todos los visibles (respeta el filtro de búsqueda).
+    const visibles = [...$('rp-sc-list').querySelectorAll('.rp-item')];
+    visibles.forEach((el) => {
+      const prov = el.dataset.prov.replace(/&quot;/g, '"');
+      rp.selected.add(prov);
+      el.classList.add('rp-item-selected');
+      const chk = el.querySelector('.rp-chk');
+      if (chk) chk.checked = true;
+    });
+    _renderSelBar();
+  };
+
+  window.rpSelNone = function () {
+    rp.selected.clear();
+    $('rp-sc-list').querySelectorAll('.rp-item').forEach((el) => {
+      el.classList.remove('rp-item-selected');
+      const chk = el.querySelector('.rp-chk');
+      if (chk) chk.checked = false;
+    });
+    _renderSelBar();
+  };
+
+  window.rpClearSelected = window.rpSelNone; // alias semántico
 
   window.rpDeleteRule = async function (id, ev) {
     if (ev) ev.stopPropagation();

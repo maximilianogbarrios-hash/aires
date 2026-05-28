@@ -2114,6 +2114,106 @@ router.post('/reglas-prov/asignar', express.json(), requirePerm('bancos_reglas_a
   }
 });
 
+// Batch asignar: igual que /asignar pero para N proveedores → 1 categoría
+// en una sola transacción. Devuelve el desglose para feedback en UI:
+//   { ok, n_proveedores, n_reglas_creadas, n_reglas_actualizadas,
+//     n_movs_afectados, n_combos }
+router.post('/reglas-prov/asignar-batch', express.json(), requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const provsRaw = Array.isArray(req.body?.proveedores) ? req.body.proveedores : null;
+    const categoria = (req.body?.categoria || '').trim();
+    if (!provsRaw || provsRaw.length === 0) {
+      return res.status(400).json({ error: 'proveedores[] requerido' });
+    }
+    if (!categoria) return res.status(400).json({ error: 'categoria requerida' });
+
+    // Validación dinámica contra ab_categorias.
+    const validas = await loadCategoriasValidas();
+    if (!validas.has(categoria)) {
+      return res.status(400).json({
+        error: `categoría inválida: "${categoria}" no existe en ab_categorias`,
+      });
+    }
+
+    // Dedupe + sanitize.
+    const proveedores = [...new Set(
+      provsRaw.map((p) => (p || '').toString().trim()).filter(Boolean)
+    )];
+    if (proveedores.length === 0) {
+      return res.status(400).json({ error: 'proveedores[] vacío tras sanitize' });
+    }
+
+    let nReglasCreadas = 0;
+    let nReglasActualizadas = 0;
+    let nMovsAfectados = 0;
+    const combos = new Set();
+
+    // Una sola transacción para los N upserts de reglas + N updates de movs.
+    // Si alguno falla, rollback total → no quedamos en estado intermedio.
+    await tx(async (client) => {
+      for (const proveedor of proveedores) {
+        // Upsert regla.
+        const reglaExist = await client.query(
+          `SELECT id FROM ab_reglas_normalizacion
+            WHERE proveedor_normalizado = $1 AND patron = $1 AND activo = TRUE
+            LIMIT 1`,
+          [proveedor]
+        );
+        if (reglaExist.rowCount > 0) {
+          await client.query(
+            `UPDATE ab_reglas_normalizacion
+                SET categoria = $1, prioridad = 120, forzar_visible = TRUE
+              WHERE id = $2`,
+            [categoria, reglaExist.rows[0].id]
+          );
+          nReglasActualizadas++;
+        } else {
+          await client.query(
+            `INSERT INTO ab_reglas_normalizacion
+               (patron, tipo_match, categoria, proveedor_normalizado, prioridad, forzar_visible)
+             VALUES ($1, 'ilike', $2, $1, 120, TRUE)`,
+            [proveedor, categoria]
+          );
+          nReglasCreadas++;
+        }
+
+        // Reclasificar histórico: mismo patrón que el /asignar single.
+        const upd = await client.query(
+          `UPDATE ab_movimientos
+              SET categoria = $1, proveedor_normalizado = $2
+            WHERE (proveedor_normalizado = $2 OR position(LOWER($2) IN LOWER(concepto)) > 0)
+              AND importe < 0
+            RETURNING sociedad_id, periodo`,
+          [categoria, proveedor]
+        );
+        nMovsAfectados += upd.rowCount || 0;
+        (upd.rows || []).forEach((r) => combos.add(`${r.sociedad_id}|${r.periodo}`));
+      }
+    });
+
+    // Recalcular resumen + cruces para los combos tocados (fuera de la tx —
+    // estos recálculos son idempotentes y tolerantes a fallos individuales).
+    for (const c of combos) {
+      const [soc, per] = c.split('|');
+      try { await bankDb.recalcResumenMensual(soc, per); } catch (e) { /* tolerante */ }
+      try { await bankDb.recalcCrucesParaSociedadPeriodo(soc, per); } catch (e) { /* tolerante */ }
+    }
+
+    res.json({
+      ok: true,
+      n_proveedores: proveedores.length,
+      n_reglas_creadas: nReglasCreadas,
+      n_reglas_actualizadas: nReglasActualizadas,
+      n_movs_afectados: nMovsAfectados,
+      n_combos: combos.size,
+      categoria,
+    });
+  } catch (e) {
+    console.error('[bancos.reglas-prov.asignar-batch]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
 // IA: clasifica un batch de proveedores. Frontend chunkea y llama N
 // veces para mostrar barra de progreso. Sólo admin (perm
 // bancos_reglas_ia). Requiere OPENROUTER_API_KEY en el entorno.

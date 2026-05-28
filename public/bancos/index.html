@@ -346,6 +346,12 @@
 #sect-reglas-prov .rp-item{display:flex;align-items:center;gap:8px;padding:7px 9px;background:var(--bg-secondary);border:.5px solid var(--border-2);border-left:3px solid var(--rp-red);border-radius:6px;cursor:grab;font-size:12px;user-select:none}
 #sect-reglas-prov .rp-item:active{cursor:grabbing}
 #sect-reglas-prov .rp-item.dragging{opacity:.4}
+/* Checkbox de selección múltiple: invisible por defecto (margen reservado),
+   se muestra al hover de la row o cuando está seleccionado (visible siempre). */
+#sect-reglas-prov .rp-item .rp-chk{margin:0;width:14px;height:14px;cursor:pointer;flex-shrink:0;opacity:0;transition:opacity .15s}
+#sect-reglas-prov .rp-item:hover .rp-chk{opacity:.85}
+#sect-reglas-prov .rp-item.rp-item-selected .rp-chk{opacity:1}
+#sect-reglas-prov .rp-item.rp-item-selected{background:rgba(124,58,237,.10);border-color:#7C3AED}
 #sect-reglas-prov .rp-item .rp-name{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #sect-reglas-prov .rp-item .rp-badge{font-size:10px;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap}
 #sect-reglas-prov .rp-cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
@@ -416,10 +422,19 @@
     <div class="rp-progress-bar"><i id="rp-progress-fill" style="width:0%"></i></div>
   </div>
   <div class="rp-cols">
-    <div class="rp-panel" id="rp-pane-sc">
+    <div class="rp-panel" id="rp-pane-sc" style="position:relative;padding-bottom:0">
       <h3>Sin clasificar (<span id="rp-sc-n">—</span>)</h3>
+      <div id="rp-sc-quickselect" style="display:flex;gap:6px;margin-bottom:6px;font-size:11px">
+        <button onclick="rpSelAll()" title="Seleccionar todos los visibles (respeta filtro de búsqueda)" style="padding:3px 8px;border:.5px solid var(--border-2);border-radius:5px;background:var(--bg-secondary);color:var(--text);cursor:pointer;font-size:11px">☑ Todos</button>
+        <button onclick="rpSelNone()" title="Deseleccionar todos" style="padding:3px 8px;border:.5px solid var(--border-2);border-radius:5px;background:var(--bg-secondary);color:var(--text);cursor:pointer;font-size:11px">☐ Ninguno</button>
+      </div>
       <input type="text" id="rp-sc-q" class="rp-search" placeholder="🔍 buscar proveedor…">
-      <div class="rp-list" id="rp-sc-list">cargando…</div>
+      <div class="rp-list" id="rp-sc-list" style="padding-bottom:8px">cargando…</div>
+      <div id="rp-sc-selbar" style="display:none;position:sticky;bottom:0;left:0;right:0;background:#2D1B5E;border-top:1px solid #7C3AED;margin:0 -12px -10px -12px;padding:8px 12px;font-size:12px;color:#E9D5FF;align-items:center;gap:10px;flex-wrap:wrap" role="status" aria-live="polite">
+        <span style="font-weight:500">☑ <span id="rp-sc-sel-count">0</span> seleccionado<span id="rp-sc-sel-plural">s</span></span>
+        <button id="rp-sc-sel-drag-hint" title="Hacé drag desde cualquier proveedor tildado para arrastrar el grupo entero a una categoría del panel derecho" style="padding:3px 10px;border:.5px solid #7C3AED;border-radius:5px;background:transparent;color:#DDD6FE;cursor:help;font-size:11px">↥ Arrastrar todos</button>
+        <button onclick="rpClearSelected()" style="margin-left:auto;padding:3px 10px;border:.5px solid #7C3AED;border-radius:5px;background:transparent;color:#E9D5FF;cursor:pointer;font-size:11px">× Limpiar</button>
+      </div>
     </div>
     <div class="rp-panel" id="rp-pane-cat">
       <h3>Categorías (<span id="rp-cat-n">—</span>) — soltar acá</h3>
