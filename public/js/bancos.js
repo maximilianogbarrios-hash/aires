@@ -1234,7 +1234,13 @@ async function logout() {
 }
 
 // ─── Sidebar de detalle de grupo + reclasificación (Mejora A) ────────
-const CATEGORIAS_TODAS = [
+// Lista de categorías para el dropdown de reclasificación de movs.
+// Se carga dinámicamente desde /api/v1/bancos/categorias-codigos al abrir
+// el sidebar — así las cats nuevas creadas desde "⚙️ Gestionar categorías"
+// aparecen automáticamente sin tocar código. El array de abajo es el
+// fallback inicial (si el endpoint todavía no respondió, ej. al primer
+// click). _refreshCategoriasTodas() repuebla cuando llega la respuesta.
+let CATEGORIAS_TODAS = [
   'IMPUESTOS','SS_LABORAL','NOMINAS','ALQUILER',
   'SUMINISTROS_LUZ','SUMINISTROS_GAS','SUMINISTROS_AGUA','TELECOMUNICACIONES',
   'PROVEEDOR_CARNES','PROVEEDOR_PANADERIA','PROVEEDOR_FRITAS','PROVEEDOR_LACTEOS',
@@ -1243,6 +1249,23 @@ const CATEGORIAS_TODAS = [
   'MANTENIMIENTO','SEGUROS','FINANCIERO','INTRAGRUPO','OTROS',
   'PUBLICIDAD','SERVICIOS_PROF','DELIVERY',
 ];
+
+// Refresca el array CATEGORIAS_TODAS desde ab_categorias. Fire-and-forget
+// (no bloquea el render del sidebar). Se llama cada vez que se abre el
+// sidebar de detalle del grupo para garantizar dropdown actualizado tras
+// crear/editar cats en "⚙️ Gestionar categorías".
+async function _refreshCategoriasTodas() {
+  try {
+    const j = await api('/api/v1/bancos/categorias-codigos');
+    const cats = (j.categorias || [])
+      .map((c) => (typeof c === 'string' ? c : c.codigo))
+      .filter(Boolean);
+    if (cats.length > 0) CATEGORIAS_TODAS = cats;
+  } catch (e) {
+    console.warn('[bancos] no se pudo refrescar CATEGORIAS_TODAS:', e.message);
+    // mantiene el array previo (último válido o el fallback inicial)
+  }
+}
 
 function buildGrupoDetalleQuery() {
   const params = new URLSearchParams();
@@ -1335,6 +1358,10 @@ async function openProvSidebar(grupo) {
   $('prov-sidebar-backdrop').style.display = '';
   $('prov-sidebar').style.display = '';
   state._sbFilterQ = '';
+  // Refrescar cats del dropdown de reclasif en background (fire-and-forget).
+  // Garantiza que cats creadas/renombradas desde "⚙️ Gestionar categorías"
+  // aparezcan en el <select> antes de que el usuario lo abra.
+  _refreshCategoriasTodas();
   try {
     const params = buildGrupoDetalleQuery();
     params.set('grupo', grupo);

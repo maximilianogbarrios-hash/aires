@@ -2467,3 +2467,90 @@ paquete:
 - `91cb400` Phase 4.1: todas las cats de ab_categorias visibles
 - `_____` Phase 4.2: pipeline híbrido (esta entrada)
 
+
+## Bancos — validación de categoría dinámica vs hardcodeada (Phase 5)
+
+**Fecha**: 2026-05-28.
+
+**Bug reportado**: usuario crea categoría nueva desde "⚙️ Gestionar
+categorías" (Phase 1 commit `5e218a3`); aparece en la tabla
+`ab_categorias` y en las drop-zones de Gestionar Reglas (que ya leían
+de la tabla). Pero al arrastrar un proveedor a esa cat nueva, el backend
+devuelve `{"error":"categoria inválida"}`. La cat se creó pero no se
+puede usar.
+
+**Causa**: tres puntos del código validaban contra la lista hardcodeada
+`CATEGORIAS_PARA_REGLAS` (derivada de `CATEGORIAS_GASTO` en
+`lib/bank/categorizer.js`) en lugar de consultar la tabla
+`ab_categorias`. Las cats creadas en runtime no estaban en el array
+hardcodeado → rechazadas.
+
+### Cambios
+
+**`routes/bancos.js`**:
+
+1. **Nuevo helper `loadCategoriasValidas()`**: query dinámica a
+   `ab_categorias` (excluye INTRAGRUPO y SIN_CLASIFICAR), devuelve
+   `Set<codigo>`. Fallback al set hardcodeado si la tabla está vacía
+   (deploys pre-migration 19) o el query falla.
+
+2. **`POST /reglas-prov/asignar`** (línea ~2026): reemplaza la
+   validación `if (!CATEGORIAS_PARA_REGLAS.includes(categoria))` por
+   `if (!validas.has(categoria))` usando `loadCategoriasValidas()`.
+   Mensaje de error más explícito: `'categoría inválida: "X" no
+   existe en ab_categorias'`. **Este es el fix directo del bug reportado.**
+
+3. **`GET /reglas-prov/clasificados`** (línea ~1971): la inicialización
+   `for (const c of CATEGORIAS_PARA_REGLAS) porCategoria[c] = []`
+   ahora itera sobre `loadCategoriasValidas()`. Garantiza que cats
+   nuevas sin reglas aparezcan como drop-zones vacías en el panel
+   derecho de Gestionar Reglas.
+
+4. **Nuevo `GET /categorias-codigos`** (público, solo `requireAuth` sin
+   `bancos_reglas_admin`): devuelve `[{ codigo, nombre_display }, …]` de
+   todas las cats de `ab_categorias` ordenadas por `orden, codigo`.
+   Pensado para que el dropdown del sidebar de reclasificación de movs
+   (`/reclasificar`) — que pueden usar roles inferiores a admin/socio
+   — pueda cargar la lista actualizada sin depender del endpoint
+   `/reglas-prov/categorias` (que sí requiere admin).
+
+**`public/js/bancos.js`**:
+
+5. **`CATEGORIAS_TODAS` ahora es `let`** (antes `const`) — array
+   inicial sirve como fallback al primer render del sidebar antes de
+   que llegue la respuesta del fetch.
+
+6. **Nuevo helper `_refreshCategoriasTodas()`**: fire-and-forget al
+   endpoint `/categorias-codigos`, repuebla `CATEGORIAS_TODAS` cuando
+   responde. Tolerante: si falla, mantiene el array previo.
+
+7. **`openProvSidebar(grupo)` ahora dispara `_refreshCategoriasTodas()`
+   al abrir el sidebar**. Garantiza dropdown actualizado antes de que
+   el usuario abra el `<select>` de reclasificación.
+
+### Verificación E2E
+
+1. Usuario crea cat nueva desde "⚙️ Gestionar categorías" (ej.
+   `CONSULTORIA_MARKETING` con nombre display "Consultoría Marketing").
+2. Va a Gestionar Reglas → la cat aparece como drop-zone vacía
+   (`/reglas-prov/clasificados` ahora la pre-puebla).
+3. Arrastra un proveedor a `CONSULTORIA_MARKETING` → `POST /reglas-prov/asignar`
+   pasa la validación dinámica → 200 OK con `affected` y `regla_id`.
+4. Va al sidebar de detalle de un grupo, abre el dropdown de
+   reclasificación → `CONSULTORIA_MARKETING` aparece como opción
+   (`_refreshCategoriasTodas()` la cargó al abrir el sidebar).
+5. Reclasifica un mov a `CONSULTORIA_MARKETING` → `POST /reclasificar`
+   funciona (ese endpoint nunca validó contra lista hardcodeada — solo
+   se valida en `/reglas-prov/asignar`).
+
+### Preservado
+
+- Fallback al set hardcodeado en todos los puntos donde se usa
+  `loadCategoriasValidas()` o el endpoint `/categorias-codigos` —
+  protege boot del módulo Bancos en deploys frescos.
+- Endpoints existentes (`/reglas-prov/categorias` con perm
+  `bancos_reglas_admin`) sin cambios funcionales — solo se sumó
+  `/categorias-codigos` como variante pública.
+- `CATEGORIAS_PARA_REGLAS` sigue exportado/definido como fallback
+  (no se borra, sirve de last-resort).
+

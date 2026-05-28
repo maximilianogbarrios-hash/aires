@@ -1819,7 +1819,36 @@ const { CATEGORIAS_GASTO } = require('../lib/bank/categorizer');
 
 // Categorías ofrecidas como drop-zones. Excluye INTRAGRUPO (regla
 // distinta, no se asigna manualmente) e INGRESO_* (son ingresos).
+// Fallback estático SOLO para cuando ab_categorias no responde (deploys
+// pre-migration 19 o DB caída). En operación normal toda validación se
+// hace contra ab_categorias vía loadCategoriasValidas() — es la única
+// forma de aceptar categorías nuevas creadas desde "⚙️ Gestionar categorías".
 const CATEGORIAS_PARA_REGLAS = CATEGORIAS_GASTO.filter((c) => c !== 'INTRAGRUPO');
+
+// Devuelve el Set de códigos de categoría válidos para usar como destino
+// de reglas y reclasificación. Lee dinámicamente de ab_categorias para
+// que las cats creadas desde el modal "⚙️ Gestionar categorías" sean
+// aceptadas automáticamente sin tocar código ni redeploy. Excluye
+// INTRAGRUPO (cat de exclusión) y SIN_CLASIFICAR (slice virtual de
+// ausencia de regla, no destino).
+//
+// Fallback al set hardcodeado si la tabla está vacía o el query falla
+// (defensa contra deploys frescos o DB caída).
+async function loadCategoriasValidas() {
+  try {
+    const rows = await many(
+      `SELECT codigo FROM ab_categorias
+        WHERE codigo NOT IN ('INTRAGRUPO', 'SIN_CLASIFICAR')
+        ORDER BY orden, codigo`
+    );
+    if (rows.length > 0) {
+      return new Set(rows.map((r) => r.codigo));
+    }
+  } catch (e) {
+    console.warn('[bancos.loadCategoriasValidas] DB falla, usando fallback:', e.message);
+  }
+  return new Set(CATEGORIAS_PARA_REGLAS);
+}
 
 // Fallback estático en caso de que la migration 19 todavía no haya corrido
 // (proteje boot del módulo Reglas en deploys frescos).
@@ -1843,6 +1872,30 @@ router.get('/reglas-prov/categorias', requirePerm('bancos_reglas_admin'), async 
   } catch (e) {
     console.error('[bancos.reglas-prov.categorias]', e);
     res.json({ categorias: CATEGORIAS_PARA_REGLAS }); // tolerante ante DB caída
+  }
+});
+
+// Lista de códigos de categoría accesible a cualquier rol con auth.
+// Mismo data que /reglas-prov/categorias pero sin gate admin/socio —
+// lo necesita el dropdown del sidebar de reclasificación de movimientos
+// (que pueden usar roles inferiores). Devuelve TODAS las cats (incluye
+// INTRAGRUPO y SIN_CLASIFICAR — el frontend filtra si quiere) ordenadas
+// por nombre_display, junto con el display name para etiquetas legibles.
+router.get('/categorias-codigos', async (req, res) => {
+  try {
+    const rows = await many(
+      `SELECT codigo, nombre_display
+         FROM ab_categorias
+        ORDER BY orden, codigo`
+    );
+    if (rows.length > 0) {
+      res.json({ categorias: rows });
+    } else {
+      res.json({ categorias: CATEGORIAS_PARA_REGLAS.map((c) => ({ codigo: c, nombre_display: c })) });
+    }
+  } catch (e) {
+    console.error('[bancos.categorias-codigos]', e);
+    res.json({ categorias: CATEGORIAS_PARA_REGLAS.map((c) => ({ codigo: c, nombre_display: c })) });
   }
 });
 
@@ -1938,9 +1991,13 @@ router.get('/reglas-prov/clasificados', requirePerm('bancos_reglas_admin'), asyn
       n_movimientos: statMap.get(r.proveedor_normalizado)?.n_movimientos || 0,
       total_importe: statMap.get(r.proveedor_normalizado)?.total_importe || 0,
     }));
-    // Agrupar por categoría
+    // Agrupar por categoría. Pre-poblamos con las cats reales de
+    // ab_categorias (no hardcodeado) para que las cats nuevas creadas
+    // desde "⚙️ Gestionar categorías" aparezcan como drop-zones vacías
+    // aunque todavía no tengan reglas asignadas.
     const porCategoria = {};
-    for (const c of CATEGORIAS_PARA_REGLAS) porCategoria[c] = [];
+    const catsValidas = await loadCategoriasValidas();
+    for (const c of catsValidas) porCategoria[c] = [];
     for (const r of enriched) {
       if (!porCategoria[r.categoria]) porCategoria[r.categoria] = [];
       porCategoria[r.categoria].push(r);
@@ -1994,7 +2051,15 @@ router.post('/reglas-prov/asignar', express.json(), requirePerm('bancos_reglas_a
     const proveedor = (req.body?.proveedor || '').trim();
     const categoria = (req.body?.categoria || '').trim();
     if (!proveedor || !categoria) return res.status(400).json({ error: 'proveedor y categoria requeridos' });
-    if (!CATEGORIAS_PARA_REGLAS.includes(categoria)) return res.status(400).json({ error: 'categoria inválida' });
+    // Validación dinámica contra ab_categorias (fallback al set hardcodeado
+    // si la tabla no responde). Acepta cualquier cat creada desde
+    // "⚙️ Gestionar categorías" sin tocar código.
+    const validas = await loadCategoriasValidas();
+    if (!validas.has(categoria)) {
+      return res.status(400).json({
+        error: `categoría inválida: "${categoria}" no existe en ab_categorias`,
+      });
+    }
 
     // 1) Upsert regla. Si ya hay una con mismo proveedor_normalizado +
     // patron == proveedor, la actualizamos para no acumular duplicadas.
