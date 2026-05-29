@@ -2023,7 +2023,8 @@ router.get('/reglas-prov/detalle/:proveedor', requirePerm('bancos_reglas_admin')
       `SELECT id, fecha::text AS fecha, concepto, categoria,
               importe::float8 AS importe, sociedad_id, proveedor_normalizado
          FROM ab_movimientos
-        WHERE (proveedor_normalizado = $1 OR position(LOWER($1) IN LOWER(concepto)) > 0)
+        WHERE (proveedor_normalizado = $1
+               OR (LENGTH($1) >= 3 AND position(LOWER($1) IN LOWER(concepto)) > 0))
           AND importe < 0
         ORDER BY ABS(importe) DESC
         LIMIT 50`,
@@ -2032,7 +2033,8 @@ router.get('/reglas-prov/detalle/:proveedor', requirePerm('bancos_reglas_admin')
     const total = await one(
       `SELECT COUNT(*)::int AS n, SUM(ABS(importe))::float8 AS total
          FROM ab_movimientos
-        WHERE (proveedor_normalizado = $1 OR position(LOWER($1) IN LOWER(concepto)) > 0)
+        WHERE (proveedor_normalizado = $1
+               OR (LENGTH($1) >= 3 AND position(LOWER($1) IN LOWER(concepto)) > 0))
           AND importe < 0`,
       [prov]
     );
