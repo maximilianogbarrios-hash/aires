@@ -606,17 +606,16 @@ function renderProvDonut() {
         : 'Categorías por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down.');
 
   const tot = state.prov.total;
-  // Categorías sensibles que llevan candado en la leyenda. Admin/socio las ve
-  // individuales → 🔓 (acceso). Los demás roles las ven fusionadas en un slice
-  // virtual con codigo '__GASTOS_DIRECCION_FUSE__' → 🔒 (sin drill-down). El
-  // backend ya excluye totalmente movs sensibles para no-admin (post-pipeline
-  // filter), así que estas cats no aparecen individuales para no-admin nunca.
+  // Categorías sensibles (intra-grupo / dirección). Sólo admin/socio pueden
+  // ver los proveedores detrás del slice. Los demás roles ven el slice con
+  // su monto correcto pero el click está bloqueado y aparece 🔒.
+  // El flag autoritativo es `v.puede_drilldown` (lo decide el backend según
+  // rol). CATS_SENSIBLES_DONUT acá sólo sirve para decidir cuándo dibujar 🔓
+  // (admin viendo una cat sensible — confirma acceso pleno).
   const CATS_SENSIBLES_DONUT = new Set(['GASTOS_DIRECCION', 'NOMINAS_DIRECCION', 'FINANCIERO', 'PRESTAMOS']);
 
   // Labels del donut en MAYÚSCULAS para consistencia visual independientemente
-  // de cómo se haya guardado el nombre_display en ab_categorias (ej. el slice
-  // fusionado se llama "Gastos Dirección" con capitalización mixta — acá lo
-  // forzamos a "GASTOS DIRECCIÓN").
+  // de cómo se haya guardado el nombre_display en ab_categorias.
   const labelUpper = (s) => (s || '').toUpperCase();
 
   // Actualizar también las labels del dataset de Chart.js para que el tooltip
@@ -627,19 +626,19 @@ function renderProvDonut() {
   $('prov-legend').innerHTML = view.map((v, i) => {
     const pctV = tot > 0 ? (v.value / tot * 100).toFixed(1) : '0';
     const isOtros = !!v.isOtros;
-    const esFusionRestringida = v.es_fusion && !v.puede_drilldown;
-    const esSensibleAdmin = !v.es_fusion && CATS_SENSIBLES_DONUT.has(v.key); // admin viendo cat sensible individual
+    const esSensible = CATS_SENSIBLES_DONUT.has(v.key);
+    const drillBloqueado = esSensible && v.puede_drilldown === false;
     const keyEsc = (v.key || '').replace(/'/g, "\\'");
-    const onClick = esFusionRestringida
+    const onClick = drillBloqueado
       ? ''
       : (isOtros ? `enterDonutDrill()` : `openCategoriaSidebar('${keyEsc}')`);
-    const cursor = esFusionRestringida ? 'default' : 'pointer';
-    const hover = esFusionRestringida ? '' : ' onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"';
-    // Candado: 🔒 para no-admin (fusión bloqueada), 🔓 para admin/socio (acceso
-    // pleno a cats sensibles individuales o al slice de fusión admin).
+    const cursor = drillBloqueado ? 'not-allowed' : 'pointer';
+    const hover = drillBloqueado ? '' : ' onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"';
+    // Candado: 🔒 cuando el rol no puede drillear una cat sensible (Luciano
+    // viendo GASTOS_DIRECCION), 🔓 cuando sí puede (admin/socio).
     let lockIcon = '';
-    if (esFusionRestringida) lockIcon = ' 🔒';
-    else if (v.es_fusion || esSensibleAdmin) lockIcon = ' 🔓';
+    if (drillBloqueado) lockIcon = ' 🔒';
+    else if (esSensible) lockIcon = ' 🔓';
     const sufijo = isOtros ? ' →' : lockIcon;
     // Tooltip: nombre_display (legible) cuando difiere del código, + stats.
     const labelDisplay = labelUpper(v.label);
@@ -647,7 +646,7 @@ function renderProvDonut() {
     const tooltipParts = [];
     if (displayDiff) tooltipParts.push(v.label_full);
     if (!isOtros) tooltipParts.push(`${v.n_proveedores || 0} prov · ${v.count} mvs`);
-    if (esFusionRestringida) tooltipParts.push('bucket fusionado, sin drill-down');
+    if (drillBloqueado) tooltipParts.push('sin acceso al detalle por proveedor');
     const tooltipText = tooltipParts.join(' · ');
     return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover} title="${labelDisplay}${tooltipText ? ' — ' + tooltipText : ''}">
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>

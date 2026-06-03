@@ -341,8 +341,9 @@ router.get('/gastos-por-proveedor', async (req, res) => {
     const where = ['importe < 0']; const vals = [];
     if (sociedad_id) { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
     if (periodo)     { where.push(`periodo=$${vals.length+1}`);     vals.push(periodo); }
-    const visCl = clausulaVisibilidadParaRol(req, vals.length + 1);
-    if (visCl) { where.push(visCl.sql); vals.push(...visCl.vals); }
+    // SIN cláusula de visibilidad SQL: el donut por categoría muestra los
+    // totales reales (incluyendo cats sensibles) para todos los roles. El
+    // filtrado por rol se aplica abajo a nivel proveedor (tabla Top 50).
     const W = 'WHERE ' + where.join(' AND ');
 
     // Datos crudos del período — la agregación se hace en runtime para poder
@@ -401,15 +402,23 @@ router.get('/gastos-por-proveedor', async (req, res) => {
       }
       if (categoria === 'INTRAGRUPO') continue;
       if (!proveedor || !categoria) continue;
-      // LEAK FIX: post-pipeline filter para no-admin. El SQL excluye movs con
-      // categoria sensible PERSISTIDA, pero matchRegla puede reasignar a una
-      // sensible a un mov que pasó el filtro. Sin esto, gerente veía importes
-      // en NOMINAS_DIRECCION / GASTOS_DIRECCION / PRESTAMOS / FINANCIERO.
-      if (!esAdminLike(req) && CATEGORIAS_DIRECCION_FUSE.has(categoria)) continue;
-      if (!esAdminLike(req) && RABA_NOMBRES.has(proveedor)) continue;
 
-      // provAgg — sumamos el importe con signo (es negativo); en el frontend
-      // se hace abs() para mostrarlo. Mantenemos compat con shape histórica.
+      // catAgg — totales absolutos por categoría (donut). SIEMPRE suma
+      // independientemente del rol, así Luciano ve los totales de cats
+      // sensibles igual que admin. El drill-down sí depende del rol
+      // (se devuelve por_categoria[*].puede_drilldown abajo).
+      if (!catAgg.has(categoria)) catAgg.set(categoria, { codigo: categoria, total: 0, n_movs: 0 });
+      const ca = catAgg.get(categoria);
+      ca.total += Math.abs(r.importe);
+      ca.n_movs += 1;
+
+      // provAgg (tabla Top 50): para no-admin omitimos proveedores
+      // sensibles (Raba) y proveedores en cats sensibles → no aparecen
+      // como filas en la tabla. Ya sumaron al catAgg arriba.
+      const esCatSensible = CATEGORIAS_DIRECCION_FUSE.has(categoria);
+      const esProveedorSensible = RABA_NOMBRES.has(proveedor);
+      if (!esAdminLike(req) && (esCatSensible || esProveedorSensible)) continue;
+
       const k = `${proveedor}|${categoria}`;
       if (!provAgg.has(k)) {
         provAgg.set(k, {
@@ -423,12 +432,6 @@ router.get('/gastos-por-proveedor', async (req, res) => {
       pa.n += 1;
       if (r.fecha < pa.desde) pa.desde = r.fecha;
       if (r.fecha > pa.hasta) pa.hasta = r.fecha;
-
-      // catAgg — totales absolutos por categoría (para el donut).
-      if (!catAgg.has(categoria)) catAgg.set(categoria, { codigo: categoria, total: 0, n_movs: 0 });
-      const ca = catAgg.get(categoria);
-      ca.total += Math.abs(r.importe);
-      ca.n_movs += 1;
     }
 
     // Tabla Top 50: ordenada por mayor gasto absoluto.
@@ -450,13 +453,21 @@ router.get('/gastos-por-proveedor', async (req, res) => {
     // Sólo se incluyen categorías con movimientos en el período filtrado
     // (las que no tienen movs no aparecen — comportamiento que el usuario
     // pidió explícitamente).
+    // `puede_drilldown` indica si este rol puede pedir el detalle de la cat
+    // (admin/socio siempre; el resto sólo en cats no sensibles).
+    const adminLikeGPP = esAdminLike(req);
     const porCategoria = [...catAgg.values()]
-      .map((c) => ({
-        codigo: c.codigo,
-        nombre_display: catDisplay.get(c.codigo) || c.codigo,
-        total: c.total,
-        n_movs: c.n_movs,
-      }))
+      .map((c) => {
+        const sensible = CATEGORIAS_DIRECCION_FUSE.has(c.codigo);
+        return {
+          codigo: c.codigo,
+          nombre_display: catDisplay.get(c.codigo) || c.codigo,
+          total: c.total,
+          n_movs: c.n_movs,
+          es_sensible: sensible,
+          puede_drilldown: adminLikeGPP || !sensible,
+        };
+      })
       .sort((a, b) => b.total - a.total);
 
     res.json({ proveedores: proveedoresArr, por_categoria: porCategoria });
@@ -612,33 +623,36 @@ router.get('/proveedores', async (req, res) => {
         nExcluido++;
         continue;
       }
-      // Defense in depth: Raba Buildings es información intra-grupo
-      // sensible. Si una fila quedara mal categorizada (no INTRAGRUPO)
-      // pero el proveedor canónico es Raba, no debe aparecer en el
-      // donut para roles no-admin.
-      if (!esAdminLike(req) && RABA_NOMBRES.has(proveedor)) {
-        totalExcluido += Math.abs(+r.importe);
-        nExcluido++;
-        continue;
-      }
-      // LEAK FIX: filtro de visibilidad POST-pipeline (defense in depth).
-      // El SQL WHERE excluye movs con ab_movimientos.categoria sensible
-      // PERSISTIDA, pero el pipeline runtime (matchRegla) puede REASIGNAR
-      // un mov a categoría sensible aunque su cat persistida fuera neutra.
-      // Ej: mov con categoria='NOMINAS' (no sensible) y proveedor matcheado
-      // por regla a NOMINAS_DIRECCION → pasaba el filtro SQL pero terminaba
-      // sumando a NOMINAS_DIRECCION en catAgg para gerente. Acá lo cortamos.
-      if (!esAdminLike(req) && CATEGORIAS_DIRECCION_FUSE.has(categoria)) {
-        totalExcluido += Math.abs(+r.importe);
-        nExcluido++;
-        continue;
-      }
-      // Sin filtro por categoría: el donut muestra TODOS los gastos
-      // (impuestos, nóminas, alquileres, suministros, etc.) salvo
-      // INTRAGRUPO. Los sensibles (NOMINAS_DIRECCION, GASTOS_DIRECCION,
-      // PRESTAMOS, FINANCIERO) y los con override 'include' se fusionan
-      // más abajo en el slice "Gastos Dirección" (admin/socio pueden
-      // expandirlo; el resto ve 🔒).
+      // Política de visibilidad por rol (revisión 2026-05-28):
+      //   - Todos los roles ven los TOTALES por categoría (catAgg suma todo).
+      //   - Para no-admin, los PROVEEDORES individuales en cats sensibles
+      //     (GD/NDIR/FIN/PRE) o con nombre Raba quedan OCULTOS de la tabla
+      //     (agg no los suma) → la tabla y la lista de proveedores en el
+      //     sidebar de cat no los muestra. El donut sí muestra el slice
+      //     con el monto, pero con 🔒 y sin drill-down a la lista.
+      //   - Admin/socio: ven todo (proveedor + categoría + drill-down 🔓).
+      const esCatSensible = CATEGORIAS_DIRECCION_FUSE.has(categoria);
+      const esProveedorSensible = RABA_NOMBRES.has(proveedor);
+      const ocultarProveedor = !esAdminLike(req) && (esCatSensible || esProveedorSensible);
+
+      // catAgg — agrupado por categoría canónica del movimiento. SIEMPRE
+      // suma, independientemente del rol. Esto garantiza que el donut por
+      // categoría muestre los totales reales (incluyendo cats sensibles)
+      // para todos los roles. El drill-down está controlado aparte
+      // (por_categoria.puede_drilldown).
+      if (!catAgg.has(categoria)) catAgg.set(categoria, { codigo: categoria, total: 0, n_movs: 0, proveedores: new Set(), ultima_fecha: null });
+      const c = catAgg.get(categoria);
+      c.total += Math.abs(+r.importe);
+      c.n_movs += 1;
+      c.proveedores.add(proveedor);
+      if (!c.ultima_fecha || r.fecha > c.ultima_fecha) c.ultima_fecha = r.fecha;
+
+      // agg — tabla de proveedores. Para no-admin omitimos proveedores
+      // sensibles (Raba) o de cats sensibles → no aparecen en la tabla
+      // ni en el sidebar de cat. Los movs ya sumaron al catAgg arriba,
+      // así el donut sigue mostrando los totales correctos.
+      if (ocultarProveedor) continue;
+
       const k = proveedor;
       if (!agg.has(k)) agg.set(k, { total: 0, n: 0, cats: new Map(), ultima_fecha: null });
       const a = agg.get(k);
@@ -646,17 +660,6 @@ router.get('/proveedores', async (req, res) => {
       a.n += 1;
       a.cats.set(categoria, (a.cats.get(categoria) || 0) + 1);
       if (!a.ultima_fecha || r.fecha > a.ultima_fecha) a.ultima_fecha = r.fecha;
-
-      // Agg por categoría canónica del movimiento (no top-cat del proveedor).
-      // Esto asegura que un mov de "Mercadona" categorizado como BEBIDAS
-      // aparezca bajo BEBIDAS en el donut por categoría, aunque Mercadona
-      // tenga la mayoría de sus movs en LIMPIEZA.
-      if (!catAgg.has(categoria)) catAgg.set(categoria, { codigo: categoria, total: 0, n_movs: 0, proveedores: new Set(), ultima_fecha: null });
-      const c = catAgg.get(categoria);
-      c.total += Math.abs(+r.importe);
-      c.n_movs += 1;
-      c.proveedores.add(proveedor);
-      if (!c.ultima_fecha || r.fecha > c.ultima_fecha) c.ultima_fecha = r.fecha;
     }
 
     // Anexamos métricas de pedidos cargados por el usuario
@@ -670,7 +673,11 @@ router.get('/proveedores', async (req, res) => {
     const pedidosInfo = new Map(pedRows.map((r) => [r.proveedor, r]));
 
     // Categoría más frecuente por proveedor.
-    const totalGasto = [...agg.values()].reduce((s, v) => s + v.total, 0);
+    // totalGasto se calcula desde catAgg (que SIEMPRE incluye sensibles)
+    // y no desde agg (que para no-admin omite proveedores sensibles).
+    // Así Luciano ve el total real incluyendo GD/NDIR/PRE/FIN aunque la
+    // tabla no liste los proveedores sensibles a nivel fila.
+    const totalGasto = [...catAgg.values()].reduce((s, v) => s + v.total, 0);
     let proveedores = [...agg.entries()].map(([proveedor, a]) => {
       let topCat = null, topCnt = 0;
       for (const [c, n] of a.cats.entries()) if (n > topCnt) { topCnt = n; topCat = c; }
@@ -828,67 +835,39 @@ router.get('/proveedores', async (req, res) => {
     }
 
     // Construir entradas individuales por categoría.
-    const catEntries = [...catAgg.values()].map((c) => ({
-      codigo: c.codigo,
-      nombre_display: catDisplay.get(c.codigo) || c.codigo,
-      total: c.total,
-      n_movs: c.n_movs,
-      n_proveedores: c.proveedores.size,
-      ultima_fecha: c.ultima_fecha,
-      porcentaje: totalGasto > 0 ? c.total / totalGasto : 0,
-      es_fusion: false,
-      _sensible: CATEGORIAS_DIRECCION_FUSE.has(c.codigo),
-    }));
+    // Política de visibilidad (rev. 2026-05-28): todas las cats aparecen
+    // como slices individuales para TODOS los roles. La diferencia es
+    // `puede_drilldown`: para no-admin las 4 cats sensibles llegan con
+    // false → la UI las muestra con 🔒 y bloquea el click; el resto y los
+    // admins tienen true → click abre el sidebar con proveedores. Ya no
+    // existe el slice virtual __GASTOS_DIRECCION_FUSE__ (cada cat sensible
+    // se muestra con su nombre y monto reales).
+    const adminLike = esAdminLike(req);
+    let porCategoria = [...catAgg.values()].map((c) => {
+      const sensible = CATEGORIAS_DIRECCION_FUSE.has(c.codigo);
+      return {
+        codigo: c.codigo,
+        nombre_display: catDisplay.get(c.codigo) || c.codigo,
+        total: c.total,
+        n_movs: c.n_movs,
+        n_proveedores: c.proveedores.size,
+        ultima_fecha: c.ultima_fecha,
+        porcentaje: totalGasto > 0 ? c.total / totalGasto : 0,
+        es_fusion: false,
+        es_sensible: sensible,
+        puede_drilldown: adminLike || !sensible,
+      };
+    }).sort((a, b) => b.total - a.total);
 
-    // Fusión: las 4 cats sensibles → un slice virtual.
-    // Sólo se aplica para roles no-admin (gerentes/administrativo/pedidos),
-    // donde los importes individuales de NOMINAS_DIRECCION/GASTOS_DIRECCION/
-    // PRESTAMOS/FINANCIERO no deben ser visibles. Para admin/socio (Maxi+Dani)
-    // las 32 cats se ven individuales — el donut refleja exactamente las
-    // mismas drop-zones de Gestionar Reglas, sin agrupar.
-    const sensiblesCat = catEntries.filter((c) => c._sensible);
-    const restantesCat = catEntries.filter((c) => !c._sensible);
-    let porCategoria;
-    let fusion_cat = null;
-    if (esAdminLike(req)) {
-      // Admin/socio: sin fusión — todas las cats con movs aparecen como slices.
-      porCategoria = catEntries;
-    } else {
-      // No-admin: fusionar las 4 sensibles en slice virtual "Gastos Dirección".
-      porCategoria = restantesCat;
-      if (sensiblesCat.length > 0) {
-        const totFus = sensiblesCat.reduce((s, c) => s + c.total, 0);
-        const nMovsFus = sensiblesCat.reduce((s, c) => s + c.n_movs, 0);
-        const provsFus = new Set();
-        let ultFusFecha = null;
-        sensiblesCat.forEach((c) => {
-          const orig = catAgg.get(c.codigo);
-          if (orig) orig.proveedores.forEach((p) => provsFus.add(p));
-          if (c.ultima_fecha && (!ultFusFecha || c.ultima_fecha > ultFusFecha)) ultFusFecha = c.ultima_fecha;
-        });
-        porCategoria.push({
-          codigo: '__GASTOS_DIRECCION_FUSE__',
-          nombre_display: FUSE_PROVEEDOR,
-          total: totFus,
-          n_movs: nMovsFus,
-          n_proveedores: provsFus.size,
-          ultima_fecha: ultFusFecha,
-          porcentaje: totalGasto > 0 ? totFus / totalGasto : 0,
-          es_fusion: true,
-          miembros_codigos: sensiblesCat.map((c) => c.codigo),
-          puede_drilldown: false,
-        });
-        fusion_cat = {
-          miembros: sensiblesCat.length,
-          miembros_codigos: sensiblesCat.map((c) => c.codigo),
-          puede_drilldown: false,
-        };
-      }
-    }
-    // Limpiar el flag interno _sensible.
-    porCategoria = porCategoria
-      .map(({ _sensible, ...rest }) => rest)
-      .sort((a, b) => b.total - a.total);
+    // fusion_cat se mantiene en el payload por compatibilidad con clientes
+    // que lo usaban. Ya no hay slice virtual; el flag solo informa que las
+    // cats sensibles están presentes con restricción de drill-down.
+    const sensiblesPresentes = porCategoria.filter((c) => c.es_sensible && c.total > 0);
+    const fusion_cat = (!adminLike && sensiblesPresentes.length > 0) ? {
+      miembros: sensiblesPresentes.length,
+      miembros_codigos: sensiblesPresentes.map((c) => c.codigo),
+      puede_drilldown: false,
+    } : null;
 
     res.json({
       filtros: { sociedad_id, periodo, periodo_desde, periodo_hasta, vista },
