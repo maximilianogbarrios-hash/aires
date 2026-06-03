@@ -401,6 +401,12 @@ router.get('/gastos-por-proveedor', async (req, res) => {
       }
       if (categoria === 'INTRAGRUPO') continue;
       if (!proveedor || !categoria) continue;
+      // LEAK FIX: post-pipeline filter para no-admin. El SQL excluye movs con
+      // categoria sensible PERSISTIDA, pero matchRegla puede reasignar a una
+      // sensible a un mov que pasó el filtro. Sin esto, gerente veía importes
+      // en NOMINAS_DIRECCION / GASTOS_DIRECCION / PRESTAMOS / FINANCIERO.
+      if (!esAdminLike(req) && CATEGORIAS_DIRECCION_FUSE.has(categoria)) continue;
+      if (!esAdminLike(req) && RABA_NOMBRES.has(proveedor)) continue;
 
       // provAgg — sumamos el importe con signo (es negativo); en el frontend
       // se hace abs() para mostrarlo. Mantenemos compat con shape histórica.
@@ -611,6 +617,18 @@ router.get('/proveedores', async (req, res) => {
       // pero el proveedor canónico es Raba, no debe aparecer en el
       // donut para roles no-admin.
       if (!esAdminLike(req) && RABA_NOMBRES.has(proveedor)) {
+        totalExcluido += Math.abs(+r.importe);
+        nExcluido++;
+        continue;
+      }
+      // LEAK FIX: filtro de visibilidad POST-pipeline (defense in depth).
+      // El SQL WHERE excluye movs con ab_movimientos.categoria sensible
+      // PERSISTIDA, pero el pipeline runtime (matchRegla) puede REASIGNAR
+      // un mov a categoría sensible aunque su cat persistida fuera neutra.
+      // Ej: mov con categoria='NOMINAS' (no sensible) y proveedor matcheado
+      // por regla a NOMINAS_DIRECCION → pasaba el filtro SQL pero terminaba
+      // sumando a NOMINAS_DIRECCION en catAgg para gerente. Acá lo cortamos.
+      if (!esAdminLike(req) && CATEGORIAS_DIRECCION_FUSE.has(categoria)) {
         totalExcluido += Math.abs(+r.importe);
         nExcluido++;
         continue;

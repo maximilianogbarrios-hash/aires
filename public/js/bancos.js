@@ -606,29 +606,52 @@ function renderProvDonut() {
         : 'Categorías por debajo del umbral se agrupan en "Otros (N)". Click ahí para drill-down.');
 
   const tot = state.prov.total;
+  // Categorías sensibles que llevan candado en la leyenda. Admin/socio las ve
+  // individuales → 🔓 (acceso). Los demás roles las ven fusionadas en un slice
+  // virtual con codigo '__GASTOS_DIRECCION_FUSE__' → 🔒 (sin drill-down). El
+  // backend ya excluye totalmente movs sensibles para no-admin (post-pipeline
+  // filter), así que estas cats no aparecen individuales para no-admin nunca.
+  const CATS_SENSIBLES_DONUT = new Set(['GASTOS_DIRECCION', 'NOMINAS_DIRECCION', 'FINANCIERO', 'PRESTAMOS']);
+
+  // Labels del donut en MAYÚSCULAS para consistencia visual independientemente
+  // de cómo se haya guardado el nombre_display en ab_categorias (ej. el slice
+  // fusionado se llama "Gastos Dirección" con capitalización mixta — acá lo
+  // forzamos a "GASTOS DIRECCIÓN").
+  const labelUpper = (s) => (s || '').toUpperCase();
+
+  // Actualizar también las labels del dataset de Chart.js para que el tooltip
+  // del slice (hover) muestre el nombre en mayúsculas, consistente con la leyenda.
+  chProvDonut.data.labels = labels.map(labelUpper);
+  chProvDonut.update('none');
+
   $('prov-legend').innerHTML = view.map((v, i) => {
     const pctV = tot > 0 ? (v.value / tot * 100).toFixed(1) : '0';
     const isOtros = !!v.isOtros;
     const esFusionRestringida = v.es_fusion && !v.puede_drilldown;
-    const esFusionAdmin = v.es_fusion && v.puede_drilldown;
+    const esSensibleAdmin = !v.es_fusion && CATS_SENSIBLES_DONUT.has(v.key); // admin viendo cat sensible individual
     const keyEsc = (v.key || '').replace(/'/g, "\\'");
     const onClick = esFusionRestringida
       ? ''
       : (isOtros ? `enterDonutDrill()` : `openCategoriaSidebar('${keyEsc}')`);
     const cursor = esFusionRestringida ? 'default' : 'pointer';
     const hover = esFusionRestringida ? '' : ' onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"';
-    const lockIcon = esFusionRestringida ? ' 🔒' : (esFusionAdmin ? ' 🔓' : '');
+    // Candado: 🔒 para no-admin (fusión bloqueada), 🔓 para admin/socio (acceso
+    // pleno a cats sensibles individuales o al slice de fusión admin).
+    let lockIcon = '';
+    if (esFusionRestringida) lockIcon = ' 🔒';
+    else if (v.es_fusion || esSensibleAdmin) lockIcon = ' 🔓';
     const sufijo = isOtros ? ' →' : lockIcon;
     // Tooltip: nombre_display (legible) cuando difiere del código, + stats.
-    const displayDiff = v.label_full && v.label_full !== v.label;
+    const labelDisplay = labelUpper(v.label);
+    const displayDiff = v.label_full && v.label_full.toUpperCase() !== labelDisplay;
     const tooltipParts = [];
     if (displayDiff) tooltipParts.push(v.label_full);
     if (!isOtros) tooltipParts.push(`${v.n_proveedores || 0} prov · ${v.count} mvs`);
     if (esFusionRestringida) tooltipParts.push('bucket fusionado, sin drill-down');
     const tooltipText = tooltipParts.join(' · ');
-    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover} title="${v.label}${tooltipText ? ' — ' + tooltipText : ''}">
+    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover} title="${labelDisplay}${tooltipText ? ' — ' + tooltipText : ''}">
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
-      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.label}${sufijo}</span>
+      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${labelDisplay}${sufijo}</span>
       <span style="font-size:11px;font-weight:500">${eur(v.value)}</span>
       <span style="font-size:11px;color:var(--text-2);min-width:40px;text-align:right">${pctV}%</span>
     </div>`;
@@ -1311,12 +1334,12 @@ async function openCategoriaSidebar(codigo) {
     .filter((p) => p.categoria === codigo)
     .sort((a, b) => b.total_importe - a.total_importe);
 
-  // Título: codigo (consistente con donut + Gestionar Reglas).
-  // Si el nombre_display difiere, lo ponemos como secundario en el meta.
-  $('prov-sb-title').textContent = cat.codigo;
+  // Título: codigo (consistente con donut + Gestionar Reglas), todo MAYÚSCULAS.
+  $('prov-sb-title').textContent = (cat.codigo || '').toUpperCase();
   const pct = state.prov.total > 0 ? (cat.total / state.prov.total * 100).toFixed(1) : '0';
-  const nombreLegible = cat.nombre_display && cat.nombre_display !== cat.codigo
-    ? `${cat.nombre_display} · ` : '';
+  // Nombre legible del meta también en MAYÚSCULAS para coherencia visual.
+  const nombreLegible = cat.nombre_display && cat.nombre_display.toUpperCase() !== (cat.codigo || '').toUpperCase()
+    ? `${cat.nombre_display.toUpperCase()} · ` : '';
   $('prov-sb-meta').textContent = `${nombreLegible}${eur2(cat.total)} · ${cat.n_proveedores} proveedores · ${cat.n_movs} mvs · ${pct}% del gasto filtrado`;
   $('prov-sb-body').innerHTML = '';
   $('prov-sidebar-backdrop').style.display = '';
