@@ -1346,13 +1346,46 @@ async function openCategoriaSidebar(codigo) {
 
   // Body: lista clickeable de proveedores. Cada uno abre openProvSidebar
   // (sidebar histórico) para ver conceptos y reclasificar.
+  // FALLBACK: si la cat no tiene proveedores en state.prov.rows (típico
+  // para cats sensibles cuyos movs se reasignan a proveedores absorbidos
+  // por el bucket "Gastos Dirección" — NOMINAS_DIRECCION, PRESTAMOS,
+  // FINANCIERO), pedimos los movs crudos al backend y los listamos
+  // directamente, sin pasar por la agregación por proveedor.
   if (!provsDeCat.length) {
-    $('prov-sb-body').innerHTML = `
-      <div style="padding:30px 12px;text-align:center;color:var(--text-2);font-size:12px">
-        <p style="font-size:24px;margin-bottom:6px">📭</p>
-        <p>Sin proveedores en "<strong>${cat.codigo}</strong>" en este filtro.</p>
-        <p style="font-size:10px;margin-top:6px">El donut suma todos los movs de la categoría (independientemente del proveedor); la lista del sidebar usa la categoría más frecuente de cada proveedor — la diferencia puede pasar con proveedores multi-categoría.</p>
-      </div>`;
+    $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:var(--text-2);padding:8px">Cargando movimientos…</p>`;
+    try {
+      const params = buildGrupoDetalleQuery();
+      params.set('codigo', codigo);
+      const j = await api('/api/v1/bancos/categoria-movimientos?' + params.toString());
+      const movs = j.movimientos || [];
+      if (!movs.length) {
+        $('prov-sb-body').innerHTML = `
+          <div style="padding:30px 12px;text-align:center;color:var(--text-2);font-size:12px">
+            <p style="font-size:24px;margin-bottom:6px">📭</p>
+            <p>Sin movimientos en "<strong>${cat.codigo}</strong>" en este filtro.</p>
+          </div>`;
+        return;
+      }
+      $('prov-sb-body').innerHTML = `
+        <p style="font-size:11px;color:var(--text-2);margin-bottom:10px">${movs.length} movimientos en esta categoría (${eur2(j.total)}). Cada movimiento se resolvió a esta categoría por su categoría persistida o por una regla de Gestionar Reglas.</p>
+        ${movs.map((m) => {
+          const conceptoEsc = (m.concepto || '').replace(/"/g, '&quot;');
+          const provEsc = (m.proveedor_resuelto || '').replace(/"/g, '&quot;');
+          const provJs = (m.proveedor_resuelto || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+          const sociedadLabel = m.sociedad_id || '';
+          const viaReglaBadge = m.via_regla ? `<span style="font-size:9px;color:var(--text-2);background:var(--bg-tertiary,#1a1a1a);padding:1px 5px;border-radius:8px" title="Asignado por regla #${m.regla_id}">regla</span>` : '';
+          return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;background:var(--bg-secondary)">
+            <div style="flex:1;min-width:0">
+              <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${conceptoEsc}">${m.concepto}</p>
+              <p style="font-size:10px;color:var(--text-2);margin-top:2px">${m.fecha} · <span onclick="openProvSidebar('${provJs}')" style="cursor:pointer;text-decoration:underline" title="${provEsc}">${m.proveedor_resuelto}</span> · ${sociedadLabel} ${viaReglaBadge}</p>
+            </div>
+            <span style="font-size:13px;font-weight:500;color:#dc2626">${eur(Math.abs(m.importe))}</span>
+          </div>`;
+        }).join('')}
+      `;
+    } catch (e) {
+      $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:#dc2626;padding:8px">Error cargando movimientos: ${e.message}</p>`;
+    }
     return;
   }
   $('prov-sb-body').innerHTML = `

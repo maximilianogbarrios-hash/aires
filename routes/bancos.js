@@ -477,6 +477,93 @@ router.get('/gastos-por-proveedor', async (req, res) => {
   }
 });
 
+// Movimientos crudos de una categoría tras aplicar el mismo pipeline que
+// /proveedores (matchRegla > histórico > heurística). Existe para que el
+// sidebar de categoría haga fallback cuando state.prov.rows no devuelve
+// proveedores (típicamente porque el slice de la cat se compone de movs
+// REASIGNADOS por regla a proveedores que el bloque de fusión "Gastos
+// Dirección" absorbe — ej. NOMINAS_DIRECCION y PRESTAMOS, cuyos
+// proveedores resueltos ("Sueldos Dirección", "Préstamos Bancarios")
+// caen dentro del bucket fusionado).
+router.get('/categoria-movimientos', async (req, res) => {
+  try {
+    const codigo = String(req.query.codigo || '').trim();
+    if (!codigo) return res.status(400).json({ error: 'codigo requerido' });
+    // Bloqueo: cats sensibles → solo admin/socio.
+    if (!esAdminLike(req) && CATEGORIAS_DIRECCION_FUSE.has(codigo)) {
+      return res.status(403).json({ error: 'Forbidden: categoría restringida por rol' });
+    }
+    const sociedad_id = req.query.sociedad_id || null;
+    const clamped = clampPeriodoParaNoAdmin(req, {
+      periodo: req.query.periodo || null,
+      periodo_desde: req.query.periodo_desde || null,
+      periodo_hasta: req.query.periodo_hasta || null,
+    });
+    if (clamped.fueraDeRango) {
+      return res.json({ codigo, total: 0, n: 0, movimientos: [], periodo_floor_aplicado: PERIODO_FLOOR_NO_ADMIN });
+    }
+
+    const where = ['importe < 0'];
+    const vals = [];
+    const socCl = buildSociedadClause(sociedad_id, vals.length + 1);
+    if (socCl)                 { where.push(socCl.sql);                       vals.push(...socCl.vals); }
+    if (clamped.periodo)       { where.push(`periodo=$${vals.length+1}`);     vals.push(clamped.periodo); }
+    if (clamped.periodo_desde) { where.push(`periodo>=$${vals.length+1}`);    vals.push(clamped.periodo_desde); }
+    if (clamped.periodo_hasta) { where.push(`periodo<=$${vals.length+1}`);    vals.push(clamped.periodo_hasta); }
+
+    const rows = await many(
+      `SELECT id, fecha::text AS fecha, concepto, categoria,
+              proveedor_normalizado, importe::float8 AS importe,
+              periodo, sociedad_id
+         FROM ab_movimientos
+        WHERE ${where.join(' AND ')}
+        ORDER BY fecha DESC, id DESC`,
+      vals
+    );
+    const reglasDb = await loadReglas();
+
+    const movimientos = [];
+    for (const r of rows) {
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+      let proveedor, categoria;
+      const rule = matchRegla(r.concepto, reglasDb);
+      if (rule) {
+        proveedor = rule.proveedor_normalizado;
+        categoria = rule.categoria;
+      } else if (r.proveedor_normalizado) {
+        proveedor = r.proveedor_normalizado;
+        categoria = r.categoria || 'SIN_CLASIFICAR';
+      } else {
+        const n = normalizarProveedor(r.concepto, r.categoria);
+        proveedor = n.proveedor || r.concepto;
+        categoria = n.categoria || 'SIN_CLASIFICAR';
+      }
+      if (categoria !== codigo) continue;
+      // Defense in depth: si el rol no-admin pidiera una cat no sensible
+      // pero el pipeline resolviera Raba para un mov, lo ocultamos.
+      if (!esAdminLike(req) && RABA_NOMBRES.has(proveedor)) continue;
+      movimientos.push({
+        id: r.id,
+        fecha: r.fecha,
+        concepto: r.concepto,
+        importe: r.importe,
+        sociedad_id: r.sociedad_id,
+        periodo: r.periodo,
+        proveedor_resuelto: proveedor,
+        categoria_original: r.categoria,
+        via_regla: !!rule,
+        regla_id: rule?.id || null,
+      });
+    }
+
+    const total = movimientos.reduce((s, m) => s + Math.abs(m.importe), 0);
+    res.json({ codigo, total, n: movimientos.length, movimientos });
+  } catch (e) {
+    console.error('[bancos.categoria-movimientos]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // Cruces TPV vs banco.
 router.get('/cruces', async (req, res) => {
   try {
