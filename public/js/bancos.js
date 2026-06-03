@@ -1207,27 +1207,187 @@ function toggleUpload() {
   p.style.display = p.style.display === 'none' ? '' : 'none';
 }
 
-async function uploadExtracto() {
-  const f = $('up-ext-file').files[0];
-  const soc = $('up-ext-soc').value;
-  const msg = $('up-ext-msg');
-  msg.textContent = '';
-  if (!f) { msg.textContent = 'Elegí un archivo'; msg.style.color = '#dc2626'; return; }
-  if (!soc) { msg.textContent = 'Elegí la sociedad'; msg.style.color = '#dc2626'; return; }
-  msg.textContent = 'Subiendo y procesando…'; msg.style.color = 'var(--text-2)';
+// ─── Carga múltiple de extractos (Santander/Sabadell, XLS/PDF) ─────────
+// El usuario arrastra o selecciona N archivos. Cada archivo se procesa
+// secuencialmente contra /upload-extracto-auto que autodetecta banco y
+// sociedad. Si la sociedad no se detecta, se pide en línea para ese
+// archivo (select inline + reintento). Al terminar todos se muestra un
+// resumen consolidado.
+
+const UP_EXT_MAX = 10;
+let upExtRunning = false;
+
+function upExtDragOver(e) {
+  e.preventDefault();
+  $('up-ext-dropzone').style.background = 'rgba(24,95,165,.10)';
+  $('up-ext-dropzone').style.borderColor = '#185FA5';
+  return false;
+}
+function upExtDragLeave(e) {
+  $('up-ext-dropzone').style.background = 'var(--bg-secondary)';
+  $('up-ext-dropzone').style.borderColor = 'var(--border-2)';
+}
+function upExtDrop(e) {
+  e.preventDefault();
+  upExtDragLeave();
+  const files = (e.dataTransfer && e.dataTransfer.files) ? e.dataTransfer.files : [];
+  upExtFilesChosen(files);
+  return false;
+}
+
+function upExtFilesChosen(fileList) {
+  if (upExtRunning) {
+    alert('Ya hay una tanda procesándose. Esperá a que termine.');
+    return;
+  }
+  const files = Array.from(fileList || []).slice(0, UP_EXT_MAX);
+  if (!files.length) return;
+  // Estado por archivo: pending | running | ok | error | need-sociedad
+  const items = files.map((f) => ({
+    file: f,
+    name: f.name,
+    sizeKb: Math.round(f.size / 1024),
+    estado: 'pending',
+    sociedad_id: null,
+    resultado: null,
+    error: null,
+  }));
+  state._upExt = { items, startedAt: Date.now() };
+  $('up-ext-summary').style.display = 'none';
+  $('up-ext-summary').innerHTML = '';
+  _upExtRenderList();
+  $('up-ext-list').style.display = '';
+  _upExtRunQueue();
+}
+
+function _upExtRenderList() {
+  const items = state._upExt?.items || [];
+  $('up-ext-list').innerHTML = items.map((it, i) => {
+    const icono = ({
+      pending: '⏳', running: '⚙️', ok: '✅', error: '❌', 'need-sociedad': '⚠️',
+    })[it.estado] || '·';
+    let derecha = '';
+    if (it.estado === 'pending') derecha = `<span style="font-size:10px;color:var(--text-2)">en cola</span>`;
+    else if (it.estado === 'running') derecha = `<span style="font-size:10px;color:#185FA5">procesando…</span>`;
+    else if (it.estado === 'ok') {
+      const r = it.resultado;
+      derecha = `<span style="font-size:10px;color:#16a34a">${r.insertadas} insertadas · ${r.duplicadas} dup · ${r.reglas_db_aplicadas} reglas · ${r.banco_detectado}/${r.sociedad_id}</span>`;
+    } else if (it.estado === 'error') {
+      derecha = `<span style="font-size:10px;color:#dc2626">${it.error || 'error'}</span>`;
+    } else if (it.estado === 'need-sociedad') {
+      const cands = it.candidatos || [];
+      const hint = it.sociedadHint ? ` (hint: ${it.sociedadHint})` : '';
+      derecha = `<select id="up-ext-soc-${i}" style="padding:3px 5px;font-size:10px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-secondary);color:var(--text)">
+          <option value="">— elegir sociedad${hint} —</option>
+          ${cands.map((s) => `<option value="${s.id}" ${s.id===it.sociedadHint?'selected':''}>${s.nombre}</option>`).join('')}
+        </select>
+        <button onclick="upExtRetry(${i})" style="margin-left:6px;padding:3px 8px;font-size:10px;border:none;border-radius:4px;background:#185FA5;color:#fff;cursor:pointer">Reintentar</button>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:4px;border:.5px solid var(--border-3);border-radius:6px;background:var(--bg-secondary)">
+      <span style="font-size:13px;width:18px;text-align:center">${icono}</span>
+      <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${it.name}">${it.name} <span style="color:var(--text-2)">· ${it.sizeKb} KB</span></span>
+      ${derecha}
+    </div>`;
+  }).join('');
+}
+
+async function _upExtRunQueue() {
+  upExtRunning = true;
+  const items = state._upExt.items;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.estado !== 'pending') continue;
+    await _upExtProcessOne(i);
+  }
+  upExtRunning = false;
+  _upExtShowSummary();
+  // Refrescar selectores / data si hubo al menos un OK
+  if (items.some((it) => it.estado === 'ok')) {
+    try {
+      const per = await api('/api/v1/bancos/periodos');
+      state.periodos = per.periodos || [];
+      buildPeriodSelector();
+      await reload();
+    } catch (e) { console.warn('[up-ext] refresh failed:', e); }
+  }
+}
+
+async function _upExtProcessOne(idx) {
+  const it = state._upExt.items[idx];
+  it.estado = 'running';
+  _upExtRenderList();
   try {
     const fd = new FormData();
-    fd.append('file', f); fd.append('sociedad_id', soc); fd.append('banco', 'santander');
-    const r = await fetch('/api/v1/bancos/upload-extracto', { method: 'POST', credentials: 'same-origin', body: fd });
+    fd.append('file', it.file);
+    if (it.sociedad_id) fd.append('sociedad_id', it.sociedad_id);
+    const r = await fetch('/api/v1/bancos/upload-extracto-auto', { method: 'POST', credentials: 'same-origin', body: fd });
     const j = await r.json();
-    if (!r.ok) { msg.textContent = j.error || 'Error'; msg.style.color = '#dc2626'; return; }
-    msg.innerHTML = `<span style="color:#16a34a">✓ ${j.insertadas} insertadas, ${j.duplicadas} duplicadas, ${j.skipped} omitidas.</span> Períodos: ${j.periodos.join(', ')}`;
-    // Refresh
-    const per = await api('/api/v1/bancos/periodos'); state.periodos = per.periodos || []; buildPeriodSelector();
-    await reload();
+    if (!r.ok) {
+      if (j.need_sociedad) {
+        it.estado = 'need-sociedad';
+        it.candidatos = j.candidates || [];
+        it.sociedadHint = j.sociedad_detectada_por_filename || null;
+        it.error = j.error || 'falta sociedad';
+      } else {
+        it.estado = 'error';
+        it.error = j.error || 'error';
+      }
+    } else {
+      it.estado = 'ok';
+      it.resultado = j;
+    }
   } catch (e) {
-    msg.textContent = e.message; msg.style.color = '#dc2626';
+    it.estado = 'error';
+    it.error = e.message || 'red caída';
   }
+  _upExtRenderList();
+}
+
+async function upExtRetry(idx) {
+  const it = state._upExt.items[idx];
+  if (!it || it.estado !== 'need-sociedad') return;
+  const sel = $(`up-ext-soc-${idx}`);
+  const soc = sel?.value;
+  if (!soc) { alert('Elegí una sociedad'); return; }
+  it.sociedad_id = soc;
+  it.estado = 'pending';
+  it.candidatos = null;
+  await _upExtProcessOne(idx);
+  // Si quedan más pending después de éste, _upExtRunQueue ya terminó —
+  // levanto un mini-runner solo para este si hace falta. En la práctica
+  // como cada Retry se gatilla con click, no hay otros pending.
+}
+
+function _upExtShowSummary() {
+  const items = state._upExt?.items || [];
+  const ok = items.filter((i) => i.estado === 'ok');
+  const error = items.filter((i) => i.estado === 'error');
+  const need = items.filter((i) => i.estado === 'need-sociedad');
+  if (!items.length) return;
+  let totalMovs = 0, totalInsertadas = 0, totalDup = 0, totalReglas = 0, totalSkipped = 0;
+  for (const i of ok) {
+    const r = i.resultado;
+    totalMovs += r.total_filas || 0;
+    totalInsertadas += r.insertadas || 0;
+    totalDup += r.duplicadas || 0;
+    totalReglas += r.reglas_db_aplicadas || 0;
+    totalSkipped += r.skipped || 0;
+  }
+  const auto = totalMovs > 0 ? Math.round(100 * totalReglas / totalMovs) : 0;
+  const pendientes = Math.max(0, totalMovs - totalReglas);
+  const periodos = [...new Set(ok.flatMap((i) => i.resultado.periodos || []))].sort();
+  const lines = [];
+  lines.push(`<p style="font-size:12px;font-weight:500;margin-bottom:6px">✅ ${ok.length} ${ok.length===1?'archivo procesado':'archivos procesados'}${error.length||need.length?` · ${error.length} con error · ${need.length} pendientes de sociedad`:''}</p>`);
+  if (ok.length) {
+    lines.push(`<p style="font-size:11px;color:var(--text-2);margin-bottom:4px">${totalMovs.toLocaleString('es-ES')} movimientos parseados · ${totalInsertadas.toLocaleString('es-ES')} insertadas · ${totalDup.toLocaleString('es-ES')} duplicadas · ${totalSkipped} omitidas</p>`);
+    lines.push(`<p style="font-size:11px;color:var(--text-2);margin-bottom:4px">${totalReglas.toLocaleString('es-ES')} clasificadas por reglas (${auto}%) · ${pendientes.toLocaleString('es-ES')} pendientes de clasificación manual</p>`);
+    if (periodos.length) lines.push(`<p style="font-size:11px;color:var(--text-2);margin-bottom:8px">Períodos: ${periodos.join(', ')}</p>`);
+    if (pendientes > 0) {
+      lines.push(`<button onclick="window.location.href='/bancos-reglas'" style="padding:6px 12px;font-size:11px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500">→ Ir a Gestionar Reglas</button>`);
+    }
+  }
+  $('up-ext-summary').innerHTML = lines.join('');
+  $('up-ext-summary').style.display = '';
 }
 
 async function uploadCierres() {
@@ -2133,7 +2293,9 @@ async function submitAddProv() {
 }
 
 Object.assign(window, {
-  reload, showTab, toggleUpload, uploadExtracto, uploadCierres, loadMovs, changePage, exportCsv, logout,
+  reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
+  // Carga múltiple de extractos (Santander/Sabadell, XLS/PDF)
+  upExtDragOver, upExtDragLeave, upExtDrop, upExtFilesChosen, upExtRetry,
   loadProvRanking, exportProveedoresCsv,
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,

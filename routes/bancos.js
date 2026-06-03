@@ -7,6 +7,14 @@ const { query, one, many, tx } = require('../lib/db');
 const { SOCIEDADES, DIRECCIONES, findSociedad, sociedadDeLocal } = require('../lib/bank/sociedades');
 const { parseSantanderBuffer } = require('../lib/bank/parser-santander');
 const { parseGetnetBuffer } = require('../lib/bank/parser-getnet');
+const { parseSantanderPdfBuffer } = require('../lib/bank/parser-santander-pdf');
+const { parseSabadellBuffer } = require('../lib/bank/parser-sabadell');
+const {
+  detectarTipoArchivo,
+  detectarBancoPorFilename,
+  detectarSociedadPorFilename,
+  detectarBancoDesdeContenido,
+} = require('../lib/bank/detect-extracto');
 const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
 const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
 const bankDb = require('../lib/bank/db');
@@ -194,6 +202,138 @@ router.post('/upload-extracto', requirePerm('bancos_upload_admin'), upload.singl
   } catch (e) {
     console.error('[bancos.upload-extracto]', e);
     res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
+// ─── UPLOAD EXTRACTO AUTO (Santander/Sabadell, XLS/PDF) ────────────────
+// Endpoint nuevo (2026-06-03) que soporta:
+//   - PDF Santander (lib/bank/parser-santander-pdf.js)
+//   - XLS Sabadell  (lib/bank/parser-sabadell.js)
+//   - XLS Santander (legacy parser-santander.js, mismo que /upload-extracto)
+// El frontend itera N archivos secuencialmente contra este endpoint y
+// muestra progreso por archivo (carga múltiple). Cada archivo es una
+// request independiente — un fallo no rompe los siguientes.
+//
+// Auto-detección: filename + magic bytes para el formato, filename +
+// texto del header para la sociedad. Si la detección de sociedad falla,
+// devolvemos 400 con `need_sociedad=true` y el frontend pide al usuario
+// que elija manualmente.
+router.post('/upload-extracto-auto', requirePerm('bancos_upload_admin'), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'archivo requerido (campo "file")' });
+    const filename = req.file.originalname || '';
+    const buf = req.file.buffer;
+
+    // 1) Detectar tipo (pdf/xls/xlsx) por magic bytes y banco por filename.
+    const tipo = detectarTipoArchivo(buf);
+    if (!tipo) return res.status(400).json({ error: 'formato no reconocido (no es PDF ni XLS/XLSX)', filename });
+    let banco = detectarBancoPorFilename(filename);
+    if (!banco && tipo === 'pdf') banco = detectarBancoDesdeContenido(buf, tipo);
+
+    // 2) Sociedad: prioridad → body explícito → filename → detección del parser.
+    const sociedadFromFilename = detectarSociedadPorFilename(filename);
+    const sociedad_id = req.body.sociedad_id || sociedadFromFilename || null;
+    if (sociedad_id && !findSociedad(sociedad_id)) {
+      return res.status(400).json({ error: `sociedad_id inválido: ${sociedad_id}`, filename });
+    }
+
+    // 3) Despacho al parser.
+    let parsed;
+    let parserUsado;
+    if (tipo === 'pdf') {
+      // Para PDF el único parser que tenemos hoy es Santander. Si el filename
+      // o el contenido dicen sabadell, devolvemos un error explícito hasta
+      // tener el parser PDF Sabadell.
+      if (banco === 'sabadell') {
+        return res.status(501).json({ error: 'parser PDF Sabadell no implementado todavía — subí el XLS de Sabadell o pasá un PDF Santander', filename });
+      }
+      parserUsado = 'santander-pdf';
+      parsed = await parseSantanderPdfBuffer(buf, { sociedad_id });
+    } else {
+      // XLS/XLSX: si el filename indica sabadell, parser sabadell; si no,
+      // intentamos sabadell primero (su header dice "Consulta de movimientos")
+      // y caemos a santander si falla la detección.
+      if (banco === 'sabadell') {
+        parserUsado = 'sabadell-xls';
+        parsed = parseSabadellBuffer(buf, { sociedad_id });
+      } else if (banco === 'santander') {
+        parserUsado = 'santander-xls';
+        parsed = parseSantanderBuffer(buf, { sociedad_id, banco: 'santander' });
+        // El parser santander XLS no detecta sociedad: si no la teníamos,
+        // ya falló arriba con el require de sociedad_id.
+        parsed.sociedad_detectada = parsed.sociedad_detectada || null;
+        parsed.sociedad_final = sociedad_id;
+      } else {
+        // Sin pistas — probamos sabadell primero; si su header_found=false
+        // probablemente es santander.
+        parserUsado = 'sabadell-xls';
+        parsed = parseSabadellBuffer(buf, { sociedad_id });
+        if (!parsed.header_found && sociedad_id) {
+          parserUsado = 'santander-xls';
+          parsed = parseSantanderBuffer(buf, { sociedad_id, banco: 'santander' });
+          parsed.sociedad_final = sociedad_id;
+        }
+      }
+    }
+
+    if (!parsed.header_found) {
+      // Caso típico: el parser no pudo detectar la sociedad y body tampoco
+      // la trajo. Devolvemos 400 con `need_sociedad` para que el frontend
+      // pida al usuario que elija.
+      if (parsed.error && /sociedad/i.test(parsed.error)) {
+        return res.status(400).json({
+          error: parsed.error,
+          need_sociedad: true,
+          sociedad_detectada_por_filename: sociedadFromFilename,
+          filename, parser: parserUsado,
+          candidates: SOCIEDADES.map((s) => ({ id: s.id, nombre: s.nombre })),
+        });
+      }
+      return res.status(400).json({
+        error: parsed.error || 'no se encontró la cabecera de la tabla de movimientos',
+        filename, parser: parserUsado,
+      });
+    }
+
+    // 4) Aplicar reglas + insertar + recalcs (idéntico a /upload-extracto).
+    const sociedadFinal = parsed.sociedad_final || sociedad_id;
+    const reglasDb = await loadReglas();
+    let reglasAplicadas = 0;
+    for (const m of parsed.movimientos) {
+      const r = matchRegla(m.concepto, reglasDb);
+      if (!r) continue;
+      if (m.categoria === 'INTRAGRUPO' && r.categoria !== 'INTRAGRUPO' && !r.protegida) continue;
+      m.categoria = r.categoria;
+      m.proveedor_normalizado = r.proveedor_normalizado;
+      reglasAplicadas++;
+    }
+
+    const { inserted, duplicated } = await bankDb.insertMovimientos(parsed.movimientos);
+    const periodos = Array.from(new Set(parsed.movimientos.map((m) => m.periodo)));
+    for (const p of periodos) {
+      await bankDb.recalcResumenMensual(sociedadFinal, p);
+      await bankDb.recalcCrucesParaSociedadPeriodo(sociedadFinal, p);
+    }
+
+    res.json({
+      ok: true,
+      filename,
+      parser: parserUsado,
+      banco_detectado: parserUsado.startsWith('sabadell') ? 'sabadell' : 'santander',
+      sociedad_detectada: parsed.sociedad_detectada || null,
+      sociedad_id_origen: req.body.sociedad_id ? 'manual'
+        : (parsed.sociedad_detectada ? 'header' : (sociedadFromFilename ? 'filename' : 'manual')),
+      sociedad_id: sociedadFinal,
+      total_filas: parsed.movimientos.length,
+      insertadas: inserted,
+      duplicadas: duplicated,
+      skipped: parsed.skipped,
+      reglas_db_aplicadas: reglasAplicadas,
+      periodos,
+    });
+  } catch (e) {
+    console.error('[bancos.upload-extracto-auto]', e);
+    res.status(500).json({ error: e.message || 'internal', filename: req.file?.originalname });
   }
 });
 

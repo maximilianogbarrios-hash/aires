@@ -56,14 +56,17 @@
   <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Subir archivo</p>
   <p style="font-size:11px;color:var(--text-2);margin-bottom:.85rem">Aceptamos XLS/XLSX. La importación es idempotente (los mismos movimientos no se duplican gracias a un hash).</p>
   <div class="upload-card" style="margin-bottom:.75rem">
-    <p style="font-size:12px;font-weight:500;margin-bottom:.5rem">Extracto Santander</p>
-    <div class="upload-row">
-      <input type="file" id="up-ext-file" accept=".xls,.xlsx">
-      <select id="up-ext-soc" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);font-size:13px"></select>
-      <span style="font-size:11px;color:var(--text-2)">Banco: Santander</span>
-      <button onclick="uploadExtracto()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Subir</button>
+    <p style="font-size:12px;font-weight:500;margin-bottom:.25rem">Extractos bancarios — Santander / Sabadell · XLS o PDF</p>
+    <p style="font-size:10px;color:var(--text-2);margin-bottom:.5rem">Hasta 10 archivos a la vez. Banco y sociedad se autodetectan del archivo (filename "Santander_Murcia_*.pdf" o del titular del extracto). Si no se puede, te pregunto.</p>
+    <div id="up-ext-dropzone" ondragover="return upExtDragOver(event)" ondragleave="return upExtDragLeave(event)" ondrop="return upExtDrop(event)"
+         onclick="document.getElementById('up-ext-file').click()"
+         style="border:1.5px dashed var(--border-2);border-radius:8px;padding:18px;text-align:center;cursor:pointer;background:var(--bg-secondary);transition:background .15s,border-color .15s">
+      <p style="font-size:13px;font-weight:500;margin-bottom:4px">↥ Arrastrá los archivos o hacé click</p>
+      <p style="font-size:10px;color:var(--text-2)">Acepto .xls, .xlsx, .pdf — máx 10 archivos por tanda</p>
     </div>
-    <p id="up-ext-msg" style="margin-top:.5rem;font-size:11px;min-height:1em"></p>
+    <input type="file" id="up-ext-file" accept=".xls,.xlsx,.pdf" multiple style="display:none" onchange="upExtFilesChosen(this.files)">
+    <div id="up-ext-list" style="margin-top:10px;display:none"></div>
+    <div id="up-ext-summary" style="margin-top:10px;display:none"></div>
   </div>
   <div class="upload-card">
     <p style="font-size:12px;font-weight:500;margin-bottom:.5rem">Cierres TPV (Getnet)</p>

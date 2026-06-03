@@ -2592,3 +2592,87 @@ visible al seleccionar. Row seleccionada con background violeta.
 **Preservado**: single drag&drop intacto, auto-scroll durante drag, click
 → modal de detalle, sugerencias IA con accept/reject.
 
+
+
+---
+
+## Bancos — Carga múltiple de extractos + parser PDF Santander + parser XLS Sabadell (Phase 12)
+
+**Fecha**: 2026-06-03
+
+### Cambios
+
+**Backend**
+
+- `lib/bank/parser-santander-pdf.js` (nuevo): extrae movs de PDFs Santander
+  con `pdf-parse`. Divide el texto por delimitador `F. Valor` y extrae
+  importe + saldo + dos fechas con regex. Auto-detecta sociedad del
+  bloque de titular (`AIRES ALICANTE SL.` → `alicante`, etc. — 5 patrones
+  que cubren las 5 sociedades de SOCIEDADES). Devuelve el mismo shape
+  de mov que el parser XLS Santander → reutiliza `bankDb.insertMovimientos`
+  sin cambios. Verificado: 207/207 movs del PDF de prueba (1 skipped).
+
+- `lib/bank/parser-sabadell.js` (nuevo): extrae movs del Excel Sabadell.
+  Layout estándar (Cuenta / Titular / Selección / headers en fila 9).
+  `toNumber` con detección automática del separador decimal (Sabadell
+  exporta "3,415.41" con punto decimal; Santander XLS lo hace al revés).
+  Mismo auto-detect de sociedad por celda `Titular:`. Verificado: 131/131
+  movs del XLS de prueba (0 skipped).
+
+- `lib/bank/detect-extracto.js` (nuevo): autodetecta tipo (PDF/XLS/XLSX)
+  por magic bytes, banco por filename (`santander`, `sabadell`, `0049`,
+  `0081`) y sociedad por filename (`murcia`, `benidorm`, `smart`,
+  `alicante`/`crevillente`/`arenales`, `hostelero`/`elche`). Para PDF
+  fallback adicional: buscar `Sabadell|Santander` como substring crudo en
+  los primeros 8KB del buffer.
+
+- `POST /api/v1/bancos/upload-extracto-auto` (endpoint nuevo en
+  `routes/bancos.js`): recibe 1 archivo, autodetecta formato/banco/
+  sociedad, despacha al parser correcto, aplica `matchRegla`,
+  inserta, recalcula resumen + cruces. Si la sociedad no se puede
+  detectar (y no vino en body), devuelve `400 + need_sociedad=true +
+  candidates: SOCIEDADES` para que el frontend pida elegir. Si llega
+  un PDF Sabadell devuelve `501` con mensaje claro (parser aún no
+  implementado). Endpoint legacy `/upload-extracto` queda intacto para
+  compat.
+
+- `package.json`: agregada dep `pdf-parse` (la versión actual exporta
+  `PDFParse` como clase con método async `getText()` — la API moderna
+  difiere del v1 con `pdf(buf)` directo).
+
+**Frontend**
+
+- `public/bancos/index.html`: input file simple reemplazado por
+  dropzone con drag&drop, `multiple` attr, accept `.xls,.xlsx,.pdf`.
+  Cap visual de 10 archivos por tanda. Texto explicativo de auto-
+  detección. Contenedor `up-ext-list` para progreso por archivo +
+  `up-ext-summary` para resumen final.
+
+- `public/js/bancos.js`:
+  - Eliminada `uploadExtracto()` (sólo soportaba 1 archivo + sociedad
+    explícita).
+  - `upExtFilesChosen(files)`: toma hasta 10 archivos y arma queue con
+    `state._upExt.items[]` con estado `pending|running|ok|error|need-
+    sociedad`.
+  - `_upExtRunQueue`: procesa la queue secuencialmente (un archivo
+    fallido no rompe los siguientes — `try/catch` por archivo).
+  - `_upExtProcessOne`: POST a `/upload-extracto-auto`. Si el
+    response trae `need_sociedad`, marca el item con estado
+    `need-sociedad` y ofrece un `<select>` inline con todas las
+    sociedades (highlighted con la detectada por filename como hint).
+  - `upExtRetry(idx)`: re-envía el archivo con el `sociedad_id` que
+    el usuario eligió.
+  - `_upExtShowSummary`: al terminar todos, agrega resumen consolidado
+    (totales movs / insertadas / duplicadas / clasificadas por reglas /
+    pendientes manual) + botón "→ Ir a Gestionar Reglas" si quedaron
+    pendientes.
+  - Después de la tanda, refresca selectores de período y reload del
+    panel principal si hubo al menos un upload OK.
+
+### Limitaciones conocidas
+
+- PDF Sabadell: parser no implementado (sin muestra). El endpoint
+  devuelve 501 con mensaje claro. Workaround: usar el XLS de Sabadell.
+- El parser PDF Santander usa el texto que extrae `pdf-parse` — si
+  Santander cambia el layout (nuevos PDFs con tablas vectorizadas en vez
+  de texto plano) el parser puede fallar y habrá que ajustar regex.
