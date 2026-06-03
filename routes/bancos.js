@@ -44,8 +44,12 @@ function vistaEfectivaParaRol(/* rol, vistaQuery */) {
 // diferencia es quién puede hacer drill-down (admin/socio sí, el resto
 // recibe 403 con 🔒 en la UI).
 const ROLES_ADMIN = new Set(['admin', 'socio']);
+// Cats que llevan candado en el donut y bloqueo de drill-down para
+// roles no-admin. FINANCIERO se sacó del set (rev. 2026-06-03 bis):
+// son comisiones bancarias operativas, no info sensible de dirección.
+// Cualquier rol con acceso a Bancos puede ver y drillear FINANCIERO.
 const CATEGORIAS_DIRECCION_FUSE = new Set([
-  'NOMINAS_DIRECCION', 'GASTOS_DIRECCION', 'PRESTAMOS', 'FINANCIERO',
+  'NOMINAS_DIRECCION', 'GASTOS_DIRECCION', 'PRESTAMOS',
 ]);
 const FUSE_PROVEEDOR = 'Gastos Dirección';
 
@@ -66,7 +70,9 @@ function esAdminLike(req) {
 // el rol no requiere filtro.
 function clausulaVisibilidadParaRol(req, paramIndex) {
   if (esAdminLike(req)) return null;
-  const sql = `categoria NOT IN ('INTRAGRUPO', 'NOMINAS_DIRECCION', 'GASTOS_DIRECCION', 'PRESTAMOS', 'FINANCIERO')
+  // FINANCIERO ya no se filtra (rev. 2026-06-03 bis) — son comisiones
+  // operativas visibles para todos los roles con acceso a Bancos.
+  const sql = `categoria NOT IN ('INTRAGRUPO', 'NOMINAS_DIRECCION', 'GASTOS_DIRECCION', 'PRESTAMOS')
                AND (proveedor_normalizado IS NULL
                     OR proveedor_normalizado NOT IN ('Raba Buildings', 'Raba'))`;
   return { sql, vals: [] };
@@ -629,12 +635,10 @@ router.get('/proveedores', async (req, res) => {
     if (periodo_desde)    { where.push(`periodo>=$${vals.length+1}`); vals.push(periodo_desde); }
     if (periodo_hasta)    { where.push(`periodo<=$${vals.length+1}`); vals.push(periodo_hasta); }
     // Vista unificada para TODOS los roles: traemos operativas + sensibles
-    // (CATEGORIAS_DIRECCION_FUSE) y filtramos el resto en JS, después de
-    // derivar el proveedor canónico (necesario porque los overrides
-    // 'include' pueden traer proveedores de categorías arbitrarias).
-    // Antes el filtro SQL aplicaba sólo para admin con vista=operativo —
-    // ya no, porque la vista admin desglosada se eliminó.
-    const gdOverridesPre = await loadGdOverrides();
+    // y filtramos en el bucle. La fusión "Gastos Dirección" se eliminó
+    // (rev. 2026-06-03 bis) — los proveedores sensibles aparecen
+    // individuales para admin/socio, y el bucle del agg los filtra para
+    // no-admin (ver "Política de visibilidad por rol" abajo).
 
     const rows = await many(
       `SELECT concepto, categoria, importe::float8 AS importe, fecha::text AS fecha, proveedor_normalizado
@@ -781,36 +785,15 @@ router.get('/proveedores', async (req, res) => {
       };
     }).sort((a, b) => b.total_importe - a.total_importe);
 
-    // Fusión "Gastos Dirección" — aplicada a TODOS los roles. Los
-    // proveedores cuya categoría pertenece a CATEGORIAS_DIRECCION_FUSE
-    // (o tienen override 'include') se colapsan en un único slice.
-    // El total global y los % por slice son idénticos para todos los
-    // roles. La única diferencia es el drill-down: admin/socio pueden
-    // expandirlo en /grupo-detalle, el resto recibe 403 + 🔒 en UI.
-    let fusionados = 0;
-    {
-      const overrides = gdOverridesPre || new Map();
-      const sensibles = proveedores.filter((p) => perteneceAGastosDireccion(p.proveedor, p.categoria, overrides));
-      const restantes = proveedores.filter((p) => !perteneceAGastosDireccion(p.proveedor, p.categoria, overrides));
-      if (sensibles.length) {
-        const tot = sensibles.reduce((s, p) => s + p.total_importe, 0);
-        const tx = sensibles.reduce((s, p) => s + p.num_transacciones, 0);
-        const ultimaFecha = sensibles.reduce((d, p) => (p.ultima_fecha > (d || '')) ? p.ultima_fecha : d, null);
-        restantes.push({
-          proveedor: FUSE_PROVEEDOR,
-          total_importe: tot,
-          porcentaje: totalGasto > 0 ? tot / totalGasto : 0,
-          num_transacciones: tx,
-          categoria: 'GASTOS_DIRECCION',
-          ultima_fecha: ultimaFecha,
-          num_pedidos: 0, ultimo_pedido: null,
-          _es_fusion_direccion: true,
-          _miembros: sensibles.length,
-        });
-        fusionados = sensibles.length;
-      }
-      proveedores = restantes.sort((a, b) => b.total_importe - a.total_importe);
-    }
+    // Fusión "Gastos Dirección" eliminada (rev. 2026-06-03 bis).
+    // El slice virtual antes mezclaba todos los proveedores de cats
+    // sensibles en un único item con categoria='GASTOS_DIRECCION',
+    // lo que hacía que el sidebar de GD mostrara el total agregado
+    // de NDIR+GD+PRE en vez del total real de GD. Ahora cada proveedor
+    // sensible aparece individual (para admin/socio); para no-admin
+    // los proveedores sensibles ya se filtran en el bucle del agg
+    // (ver "Política de visibilidad por rol" arriba).
+    const fusionados = 0;
 
     // Ronda 4: rollup de proveedores menores en "Proveedores Menores".
     // Dos pasadas:

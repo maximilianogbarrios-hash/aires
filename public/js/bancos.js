@@ -612,7 +612,9 @@ function renderProvDonut() {
   // El flag autoritativo es `v.puede_drilldown` (lo decide el backend según
   // rol). CATS_SENSIBLES_DONUT acá sólo sirve para decidir cuándo dibujar 🔓
   // (admin viendo una cat sensible — confirma acceso pleno).
-  const CATS_SENSIBLES_DONUT = new Set(['GASTOS_DIRECCION', 'NOMINAS_DIRECCION', 'FINANCIERO', 'PRESTAMOS']);
+  // FINANCIERO se sacó del set (rev. 2026-06-03 bis) — son comisiones
+  // operativas, no info sensible.
+  const CATS_SENSIBLES_DONUT = new Set(['GASTOS_DIRECCION', 'NOMINAS_DIRECCION', 'PRESTAMOS']);
 
   // Labels del donut en MAYÚSCULAS para consistencia visual independientemente
   // de cómo se haya guardado el nombre_display en ab_categorias.
@@ -1315,10 +1317,6 @@ function buildGrupoDetalleQuery() {
 // 403 — no debería llegar acá porque la UI bloquea el click).
 async function openCategoriaSidebar(codigo) {
   if (!codigo) return;
-  // Fusión: delegamos al sidebar de proveedor con el nombre virtual.
-  if (codigo === '__GASTOS_DIRECCION_FUSE__') {
-    return openProvSidebar('Gastos Dirección');
-  }
   // Encontrar la categoría en state para el título y el meta.
   const cat = (state.prov.por_categoria || []).find((c) => c.codigo === codigo);
   if (!cat) return;
