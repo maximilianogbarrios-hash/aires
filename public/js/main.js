@@ -474,7 +474,16 @@ function initCharts() {
       y: { grid: { color: gc }, ticks: { color: tc, font: { size: 11 } } },
     },
   };
-  chRes = new Chart($('ch-res'), {
+  // Helper: instancia un Chart sólo si el canvas existe en el HTML.
+  // Algunos canvas (ch-ev-tot, ch-ev-loc, ch-incid) se removieron del
+  // dashboard pero el JS sigue acá por compat. Sin este guard, el primer
+  // canvas inexistente crashea initCharts y rompe TODO el dashboard.
+  const mkChart = (id, cfg) => {
+    const el = $(id);
+    return el ? new Chart(el, cfg) : null;
+  };
+
+  chRes = mkChart('ch-res', {
     type: 'bar',
     data: { labels: [], datasets: [
       { label: 'Facturación', data: [], backgroundColor: [] },
@@ -482,7 +491,7 @@ function initCharts() {
     ] },
     options: { ...base, scales: { x: base.scales.x, y: { ...base.scales.y, ticks: { ...base.scales.y.ticks, callback: (v) => `${Math.round(v/1000)}K€` } } } },
   });
-  chRank = new Chart($('ch-rank'), {
+  chRank = mkChart('ch-rank', {
     type: 'bar',
     data: { labels: [], datasets: UI.COST_CLRS.map((bg, i) => ({ label: UI.COST_LBLS[i], data: [], backgroundColor: bg })) },
     options: { ...base, indexAxis: 'y',
@@ -491,7 +500,7 @@ function initCharts() {
         y: { ...base.scales.y, stacked: true },
       } },
   });
-  chEvTot = new Chart($('ch-ev-tot'), {
+  chEvTot = mkChart('ch-ev-tot', {
     type: 'line',
     data: {
       labels: UI.HTOT_MENSUAL.map((h) => h.m),
@@ -511,7 +520,7 @@ function initCharts() {
       y: { ...base.scales.y, ticks: { ...base.scales.y.ticks, callback: (v) => `${Math.round(v/1000)}K` } },
     } },
   });
-  chEvLoc = new Chart($('ch-ev-loc'), {
+  chEvLoc = mkChart('ch-ev-loc', {
     type: 'line',
     data: { labels: UI.MESES, datasets: [] },
     options: { ...base, scales: {
@@ -519,7 +528,7 @@ function initCharts() {
       y: { ...base.scales.y, ticks: { ...base.scales.y.ticks, callback: (v) => `${Math.round(v/1000)}K` } },
     } },
   });
-  chDonut = new Chart($('ch-donut'), {
+  chDonut = mkChart('ch-donut', {
     type: 'doughnut',
     data: { labels: UI.COST_LBLS, datasets: [{ data: new Array(9).fill(0), backgroundColor: UI.COST_CLRS, borderWidth: 2, borderColor: 'var(--bg-primary)' }] },
     options: { responsive: true, maintainAspectRatio: false,
@@ -528,7 +537,7 @@ function initCharts() {
         return ` ${UI.COST_LBLS[c.dataIndex]}: ${eur(c.raw)} (${tot > 0 ? ((c.raw/tot)*100).toFixed(1) : '0'}%)`;
       } } } } },
   });
-  chIncid = new Chart($('ch-incid'), {
+  chIncid = mkChart('ch-incid', {
     type: 'doughnut',
     data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderWidth: 2, borderColor: 'var(--bg-primary)' }] },
     options: { responsive: true, maintainAspectRatio: false, cutout: '60%',
