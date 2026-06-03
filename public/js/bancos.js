@@ -128,11 +128,15 @@ async function boot() {
 }
 
 function buildSelectors() {
-  // Filtro principal sociedad
-  const sels = [$('f-sociedad'), $('up-ext-soc')];
+  // Filtro principal sociedad. `up-ext-soc` se eliminó en Phase 12
+  // (el upload pasó a auto-detección + multi-file dropzone) — el
+  // .filter(Boolean) cubre eso y cualquier otro select opcional
+  // que dejemos de renderizar a futuro sin tener que tocar este lugar.
+  const fSoc = $('f-sociedad');
+  const sels = [fSoc, $('up-ext-soc')].filter(Boolean);
   sels.forEach((sel) => {
     sel.innerHTML = '';
-    if (sel === $('f-sociedad')) {
+    if (sel === fSoc) {
       const all = document.createElement('option');
       all.value = ''; all.textContent = '(todas las sociedades)';
       sel.appendChild(all);
@@ -146,7 +150,7 @@ function buildSelectors() {
 
   // Filtro local
   const allLocs = state.sociedades.flatMap((s) => s.locales);
-  [$('m-local'), $('up-tpv-local')].forEach((sel) => {
+  [$('m-local'), $('up-tpv-local')].filter(Boolean).forEach((sel) => {
     [...sel.querySelectorAll('option:not([value=""])')].forEach((o) => o.remove());
     for (const l of allLocs) {
       const opt = document.createElement('option');
