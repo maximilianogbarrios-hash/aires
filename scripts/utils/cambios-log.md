@@ -2772,3 +2772,72 @@ el período anterior junto al monto y porcentaje de cada categoría:
     ALQUILER          38.798  ↓- 6.562
     SS_LABORAL        37.783  ↑+ 6.347
     NOMINAS           30.838  ↑+ 1.399
+
+
+---
+
+## Bancos — Cards Total Ingresos + Resultado neto en pestaña Proveedores
+
+**Fecha**: 2026-06-04
+
+### Pedido
+
+Agregar dos cards a la pestaña Bancos → Proveedores, visibles sólo para
+admin/socio:
+- **Total ingresos** (verde): suma de movs con importe>0 del mismo filtro,
+  excluyendo INTRAGRUPO.
+- **Resultado neto** (= ingresos − gastos): verde si positivo, rojo si
+  negativo.
+
+Junto con la card "Gasto total filtrado" existente y otras (proveedores
+únicos, intra-grupo), admin/socio ve 5 cards; el resto sigue viendo las
+3 cards no-sensibles (gasto + proveedores + intra-grupo).
+
+### Cambios
+
+**Backend** (`routes/bancos.js`)
+
+- Endpoint `/proveedores`:
+  - Después de calcular `totalGasto`, query SQL agregado adicional para
+    sumar `importe>0` con los mismos filtros (sociedad + período) +
+    `categoria<>'INTRAGRUPO'`. Reuso del array `where` reemplazando
+    `'importe < 0'` por `'importe > 0'`.
+  - Resultado expuesto en el response como `total_ingresos`.
+  - Sólo se calcula y devuelve para admin/socio (`esAdminLike(req)`).
+    Para roles no-admin el campo es `null` — el frontend lo usa como
+    señal para esconder las cards.
+
+**Frontend** (`public/bancos/index.html`)
+
+- Grid de KPIs cambia de `g4` a `g5` (CSS ya soporta ambos: 5 columnas
+  desktop, 3 en tablet, 2 en mobile).
+- Card "Top proveedor" eliminada (redundante con la tabla de ranking que
+  ya muestra el #1).
+- Dos cards nuevas con `display:none` por default:
+  - `prov-kpi-ingresos-card` — verde `#16a34a`.
+  - `prov-kpi-neto-card` — color asignado dinámico (verde si neto≥0,
+    rojo si <0).
+
+**Frontend JS** (`public/js/bancos.js`)
+
+- `loadProvRanking`: nueva clave `total_ingresos` en `state.prov`
+  (null cuando el backend lo omite por rol).
+- `renderProvKpis`:
+  - Eliminada la línea que poblaba `prov-kpi-top`.
+  - Si `state.prov.total_ingresos == null` → ambas cards en `display:none`.
+  - Si tiene valor → muestra ingresos en `eur2(...)`, calcula neto
+    `ingresos − gasto`, prefija con `+` si ≥ 0, asigna color inline
+    (#16a34a verde / #dc2626 rojo).
+
+### Verificado
+
+  Mayo 2026 (todas las sociedades):
+    Gasto total:    €292.430,79
+    Total ingresos: €423.175,20
+    Resultado neto: +€130.744,41
+    Intra-grupo:    €122.101,41
+
+  Mayo 2026 — alicante:
+    Gasto:    €54.386,55
+    Ingresos: €123.031,81
+    Neto:     +€68.645,26

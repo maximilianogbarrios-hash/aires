@@ -1132,6 +1132,24 @@ router.get('/proveedores', async (req, res) => {
     // existe el slice virtual __GASTOS_DIRECCION_FUSE__ (cada cat sensible
     // se muestra con su nombre y monto reales).
     const adminLike = esAdminLike(req);
+
+    // Total ingresos del MISMO filtro (sociedad + período), excluyendo
+    // INTRAGRUPO. Sólo se devuelve para admin/socio — el resto de roles
+    // ven null. El frontend renderiza la card "Total ingresos" y
+    // "Resultado neto" condicionalmente. Query separada (SQL agregado
+    // directo, sin pipeline) — es 1 round-trip extra de ~5ms.
+    let totalIngresos = null;
+    if (adminLike) {
+      const whereIng = where.map((c) => c === 'importe < 0' ? 'importe > 0' : c);
+      whereIng.push(`categoria <> 'INTRAGRUPO'`);
+      const ingRow = await one(
+        `SELECT COALESCE(SUM(importe), 0)::float8 AS total
+           FROM ab_movimientos
+          WHERE ${whereIng.join(' AND ')}`,
+        vals
+      );
+      totalIngresos = +ingRow.total || 0;
+    }
     let porCategoria = [...catAgg.values()].map((c) => {
       const sensible = CATEGORIAS_DIRECCION_FUSE.has(c.codigo);
       const importeAnt = catAggPrev.get(c.codigo) || 0;
@@ -1176,6 +1194,11 @@ router.get('/proveedores', async (req, res) => {
       filtros: { sociedad_id, periodo, periodo_desde, periodo_hasta, vista },
       vista_efectiva: vista,
       total_gasto: totalGasto,
+      // Total ingresos del mismo filtro (importe>0 excluyendo INTRAGRUPO).
+      // null para no-admin — el frontend usa null para esconder la card
+      // "Total ingresos" + "Resultado neto" (UX consistente con el resto
+      // de la política de visibilidad por rol).
+      total_ingresos: totalIngresos,
       total_excluido_intra_grupo: totalExcluido,
       n_excluido_intra_grupo: nExcluido,
       n_grupos_finales: proveedoresFinal.length,

@@ -201,10 +201,12 @@
     <p id="prov-period-floor-note" style="display:none;font-size:10px;color:#7E22CE;margin-top:.25rem">Solo se pueden ver datos desde enero 2026.</p>
   </div>
 
-  <div class="g4" style="margin-bottom:1rem">
+  <div id="prov-kpis-grid" class="g5" style="margin-bottom:1rem">
     <div class="surf"><p style="font-size:11px;color:var(--text-2)">Gasto total filtrado</p><p style="font-size:19px;font-weight:500;color:#dc2626" id="prov-kpi-total">—</p></div>
+    <!-- Cards admin/socio: ingresos + resultado neto. Se ocultan via JS para roles sin permiso. -->
+    <div class="surf" id="prov-kpi-ingresos-card" style="display:none"><p style="font-size:11px;color:var(--text-2)">Total ingresos</p><p style="font-size:19px;font-weight:500;color:#16a34a" id="prov-kpi-ingresos">—</p></div>
+    <div class="surf" id="prov-kpi-neto-card" style="display:none"><p style="font-size:11px;color:var(--text-2)">Resultado neto</p><p style="font-size:19px;font-weight:500" id="prov-kpi-neto">—</p></div>
     <div class="surf"><p style="font-size:11px;color:var(--text-2)">Proveedores únicos</p><p style="font-size:19px;font-weight:500" id="prov-kpi-n">—</p></div>
-    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Top proveedor</p><p style="font-size:14px;font-weight:500" id="prov-kpi-top">—</p></div>
     <div class="surf"><p style="font-size:11px;color:var(--text-2)">Transferencias intra-grupo (excluidas)</p><p style="font-size:14px;font-weight:500;color:var(--text-2)" id="prov-kpi-intra">—</p></div>
   </div>
 

@@ -462,6 +462,11 @@ async function loadProvRanking() {
   Object.assign(state.prov, {
     rows: j.proveedores || [],
     total: j.total_gasto || 0,
+    // total_ingresos puede ser null cuando el rol no tiene permiso para
+    // verlo (backend devuelve null para no-admin). renderProvKpis usa el
+    // null como señal para ocultar las cards "Total ingresos" y "Resultado
+    // neto".
+    total_ingresos: (j.total_ingresos == null) ? null : (+j.total_ingresos || 0),
     intra: j.total_excluido_intra_grupo || 0,
     n_intra: j.n_excluido_intra_grupo || 0,
     loaded: true,
@@ -503,11 +508,28 @@ function loadProveedoresTab() { return loadProvRanking(); }
 function renderProvKpis() {
   $('prov-kpi-total').textContent = eur2(state.prov.total);
   $('prov-kpi-n').textContent = state.prov.rows.length;
-  const top = state.prov.rows[0];
-  $('prov-kpi-top').textContent = top ? `${top.proveedor} · ${eur2(top.total_importe)}` : '—';
   $('prov-kpi-intra').textContent = state.prov.n_intra > 0
     ? `${eur2(state.prov.intra)} en ${state.prov.n_intra} tx`
     : 'ninguna en este filtro';
+
+  // Cards admin/socio: Total ingresos + Resultado neto. Visibilidad
+  // condicionada por `state.prov.total_ingresos != null` (el backend
+  // devuelve null para roles sin permiso → cards ocultas). El neto
+  // toma color verde si positivo, rojo si negativo.
+  const cardIng = $('prov-kpi-ingresos-card');
+  const cardNeto = $('prov-kpi-neto-card');
+  if (state.prov.total_ingresos == null) {
+    cardIng.style.display = 'none';
+    cardNeto.style.display = 'none';
+  } else {
+    cardIng.style.display = '';
+    cardNeto.style.display = '';
+    $('prov-kpi-ingresos').textContent = eur2(state.prov.total_ingresos);
+    const neto = state.prov.total_ingresos - state.prov.total;
+    const elNeto = $('prov-kpi-neto');
+    elNeto.textContent = (neto >= 0 ? '+' : '') + eur2(neto);
+    elNeto.style.color = neto >= 0 ? '#16a34a' : '#dc2626';
+  }
 }
 
 function fmtThresholdPct(t) {
