@@ -1193,6 +1193,191 @@ function showTab(name, btn) {
     initFlujoFiltros();
     if (!state.flujo?.loaded) loadFlujoAnual();
   }
+  if (name === 'efectivo') {
+    initCajaFiltros();
+    if (!state.caja?.loaded) loadCaja();
+  }
+}
+
+// ─── Caja / Efectivo ──────────────────────────────────────────────────
+function initCajaFiltros() {
+  if (state.caja?._init) return;
+  state.caja = state.caja || {};
+  state.caja._init = true;
+  state.caja.vista = 'local';
+  // Sociedad: reusar las opciones globales (clonadas).
+  const sSoc = $('caja-sociedad');
+  if (sSoc && sSoc.options.length === 0) {
+    if (typeof _cloneSociedadOptions === 'function') {
+      _cloneSociedadOptions(sSoc);
+    } else {
+      // Fallback: armar manualmente desde state.sociedades.
+      sSoc.innerHTML = '<option value="">Todas las sociedades</option>';
+      for (const s of state.sociedades || []) {
+        const o = document.createElement('option');
+        o.value = s.id; o.textContent = s.nombre;
+        sSoc.appendChild(o);
+      }
+    }
+  }
+  // Sucursal: lista de keys del mapeo (operativas) + opción especial.
+  const sSuc = $('caja-sucursal');
+  if (sSuc && sSuc.options.length <= 1) {
+    const sucursales = [
+      'ALICANTE','ARENALES','BENIDORM','CHICKEN ELCHE','CHICKEN THADER',
+      'CHICKEN UNCLES','CREVILLENTE','ELCHE','MURCIA MERCED','ORIHUELA',
+      'SAN VICENTE','SANTA POLA','SANTO DOMINGO','THADER','TORREVIEJA',
+    ];
+    for (const s of sucursales) {
+      const o = document.createElement('option');
+      o.value = s; o.textContent = s;
+      sSuc.appendChild(o);
+    }
+  }
+}
+
+function setCajaVista(v) {
+  state.caja = state.caja || {};
+  state.caja.vista = v;
+  $('caja-vista-local').style.background    = v === 'local'    ? '#185FA5' : 'transparent';
+  $('caja-vista-local').style.color         = v === 'local'    ? '#fff' : 'var(--text)';
+  $('caja-vista-local').style.fontWeight    = v === 'local'    ? '500' : 'normal';
+  $('caja-vista-sociedad').style.background = v === 'sociedad' ? '#185FA5' : 'transparent';
+  $('caja-vista-sociedad').style.color      = v === 'sociedad' ? '#fff' : 'var(--text)';
+  $('caja-vista-sociedad').style.fontWeight = v === 'sociedad' ? '500' : 'normal';
+  $('caja-tabla-titulo').textContent = v === 'local' ? 'Por Local' : 'Por Sociedad';
+  $('caja-tabla-col1').textContent   = v === 'local' ? 'Sucursal' : 'Sociedad';
+  renderCajaTabla();
+}
+
+async function loadCaja() {
+  state.caja = state.caja || {};
+  const tipo = $('caja-tipo')?.value || 'ambos';
+  const sociedad = $('caja-sociedad')?.value || '';
+  const sucursal = $('caja-sucursal')?.value || '';
+  const incE = $('caja-incluir-especiales')?.checked ? 'true' : 'false';
+  // Período del selector global.
+  const p = typeof getPeriodoActivo === 'function' ? getPeriodoActivo() : { modo:'unico', periodo:null };
+  const params = new URLSearchParams();
+  if (tipo !== 'ambos') params.set('tipo', tipo);
+  if (sociedad) params.set('sociedad_id', sociedad);
+  if (sucursal) params.set('sucursal', sucursal);
+  params.set('incluir_especiales', incE);
+  if (p.modo === 'rango') {
+    if (p.desde) params.set('desde', p.desde + '-01');
+    if (p.hasta) {
+      const [yy, mm] = p.hasta.split('-').map(Number);
+      const ult = new Date(yy, mm, 0).getDate();
+      params.set('hasta', p.hasta + '-' + String(ult).padStart(2, '0'));
+    }
+  } else if (p.periodo) {
+    params.set('desde', p.periodo + '-01');
+    const [yy, mm] = p.periodo.split('-').map(Number);
+    const ult = new Date(yy, mm, 0).getDate();
+    params.set('hasta', p.periodo + '-' + String(ult).padStart(2, '0'));
+  }
+  const qs = params.toString();
+  try {
+    const [resumen, porSuc, porSoc, cats, mensual] = await Promise.all([
+      api('/api/v1/caja/resumen?' + qs),
+      api('/api/v1/caja/por-sucursal?' + qs),
+      api('/api/v1/caja/por-sociedad?' + qs),
+      api('/api/v1/caja/categorias?' + qs),
+      api('/api/v1/caja/flujo-mensual?' + qs),
+    ]);
+    state.caja.resumen = resumen;
+    state.caja.por_sucursal = porSuc.sucursales || [];
+    state.caja.por_sociedad = porSoc.sociedades || [];
+    state.caja.categorias = cats.categorias || [];
+    state.caja.mensual = mensual.meses || [];
+    state.caja.loaded = true;
+    renderCajaKpis();
+    renderCajaTabla();
+    renderCajaCategorias();
+    renderCajaMensual();
+  } catch (e) {
+    console.error('[caja] error:', e);
+    $('caja-tabla-body').innerHTML = `<tr><td colspan="7" style="padding:18px;text-align:center;color:#dc2626">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderCajaKpis() {
+  const r = state.caja?.resumen;
+  if (!r) return;
+  $('caja-kpi-ingresos').textContent = eur2(r.ingresos);
+  $('caja-kpi-egresos').textContent  = eur2(r.egresos);
+  const elNeto = $('caja-kpi-neto');
+  elNeto.textContent = (r.neto >= 0 ? '+' : '') + eur2(r.neto);
+  elNeto.style.color = r.neto >= 0 ? '#16a34a' : '#dc2626';
+  $('caja-kpi-n').textContent = r.n_movs.toLocaleString('es-ES');
+}
+
+function renderCajaTabla() {
+  const vista = state.caja?.vista || 'local';
+  const rows = vista === 'local' ? state.caja?.por_sucursal : state.caja?.por_sociedad;
+  if (!rows?.length) {
+    $('caja-tabla-body').innerHTML = '<tr><td colspan="7" style="padding:18px;text-align:center;color:var(--text-2)">Sin movimientos en este filtro.</td></tr>';
+    return;
+  }
+  const SOC_NOMBRES = Object.fromEntries((state.sociedades || []).map((s) => [s.id, s.nombre]));
+  $('caja-tabla-body').innerHTML = rows.map((r) => {
+    const sem = _semaforoFlujo(r.pct_neto);
+    const netoClass = r.neto >= 0 ? 'flujo-neto-pos' : 'flujo-neto-neg';
+    if (vista === 'local') {
+      const socNombre = r.sociedad_id ? (SOC_NOMBRES[r.sociedad_id] || r.sociedad_id) : '(especial)';
+      return `<tr style="border-bottom:.5px solid var(--border-3)">
+        <td style="padding:7px 6px;font-weight:500">${r.sucursal}</td>
+        <td style="padding:7px 6px;color:var(--text-2);font-size:11px">${socNombre}</td>
+        <td style="padding:7px 6px;text-align:right">${eur(r.ingresos)}</td>
+        <td style="padding:7px 6px;text-align:right">${eur(r.egresos)}</td>
+        <td class="${netoClass}" style="padding:7px 6px;text-align:right">${(r.neto>=0?'+':'')+eur(r.neto)}</td>
+        <td class="${sem.cssPct}" style="padding:7px 6px;text-align:right">${r.pct_neto.toFixed(1)}%</td>
+        <td class="flujo-estado" style="padding:7px 6px" title="${sem.texto}"><span class="flujo-chip ${sem.cssChip}"></span>${sem.icon}</td>
+      </tr>`;
+    }
+    // Vista por sociedad
+    const socNombre = r.sociedad_id ? (SOC_NOMBRES[r.sociedad_id] || r.sociedad_id) : '(sin sociedad)';
+    return `<tr style="border-bottom:.5px solid var(--border-3)">
+      <td style="padding:7px 6px;font-weight:500">${socNombre}</td>
+      <td style="padding:7px 6px;color:var(--text-2);font-size:11px">${r.n_movs} movs</td>
+      <td style="padding:7px 6px;text-align:right">${eur(r.ingresos)}</td>
+      <td style="padding:7px 6px;text-align:right">${eur(r.egresos)}</td>
+      <td class="${netoClass}" style="padding:7px 6px;text-align:right">${(r.neto>=0?'+':'')+eur(r.neto)}</td>
+      <td class="${sem.cssPct}" style="padding:7px 6px;text-align:right">${r.pct_neto.toFixed(1)}%</td>
+      <td class="flujo-estado" style="padding:7px 6px" title="${sem.texto}"><span class="flujo-chip ${sem.cssChip}"></span>${sem.icon}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderCajaCategorias() {
+  const cats = state.caja?.categorias || [];
+  if (!cats.length) { $('caja-categorias-body').innerHTML = '<p style="color:var(--text-2)">Sin datos.</p>'; return; }
+  $('caja-categorias-body').innerHTML = cats.map((c) => {
+    const colorTipo = (c.tipo||'').toLowerCase() === 'ingreso' ? '#16a34a' : '#dc2626';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid var(--border-3)">
+      <span style="width:9px;height:9px;border-radius:2px;background:${colorTipo};flex-shrink:0"></span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(c.subtipo||'').replace(/"/g,'&quot;')}">${c.subtipo || '(sin subtipo)'}</span>
+      <span style="color:var(--text-2);font-size:10px">${c.n_movs}</span>
+      <span style="font-weight:500;color:${colorTipo};min-width:90px;text-align:right">${eur(c.total)}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderCajaMensual() {
+  const meses = state.caja?.mensual || [];
+  if (!meses.length) { $('caja-mensual-body').innerHTML = '<tr><td colspan="5" style="padding:14px;text-align:center;color:var(--text-2)">Sin datos.</td></tr>'; return; }
+  const _mesLab = typeof _mesLabel === 'function' ? _mesLabel : (m) => m;
+  $('caja-mensual-body').innerHTML = meses.map((m) => {
+    const sem = _semaforoFlujo(m.pct_neto);
+    const netoClass = m.neto >= 0 ? 'flujo-neto-pos' : 'flujo-neto-neg';
+    return `<tr style="border-bottom:.5px solid var(--border-3)">
+      <td style="padding:6px;font-weight:500">${_mesLab(m.mes)}</td>
+      <td style="padding:6px;text-align:right">${eur(m.ingresos)}</td>
+      <td style="padding:6px;text-align:right">${eur(m.egresos)}</td>
+      <td class="${netoClass}" style="padding:6px;text-align:right">${(m.neto>=0?'+':'')+eur(m.neto)}</td>
+      <td class="flujo-estado" style="padding:6px"><span class="flujo-chip ${sem.cssChip}"></span>${sem.icon}</td>
+    </tr>`;
+  }).join('');
 }
 
 // ─── Flujo Anual: tabla mensual + comparador ─────────────────────────
@@ -1214,17 +1399,69 @@ function initFlujoFiltros() {
   _cloneSociedadOptions(sel);
 }
 
+// Vista del flujo: 'banco' (default), 'efectivo', 'combinado'.
+// Se persiste en state.flujo.vista durante la sesión.
+function setFlujoVista(v) {
+  state.flujo = state.flujo || {};
+  state.flujo.vista = v;
+  for (const k of ['banco','efectivo','combinado']) {
+    const b = $('flujo-vista-' + k);
+    if (b) {
+      b.style.background = (k === v) ? '#185FA5' : 'transparent';
+      b.style.color      = (k === v) ? '#fff'    : 'var(--text)';
+      b.style.fontWeight = (k === v) ? '500'     : 'normal';
+    }
+  }
+  // Re-cargar con la nueva vista.
+  loadFlujoAnual();
+}
+
 async function loadFlujoAnual() {
   state.flujo = state.flujo || {};
+  const vista = state.flujo.vista || 'banco';
   const sociedad = $('flujo-sociedad')?.value || '';
   const params = new URLSearchParams();
   if (sociedad) params.set('sociedad_id', sociedad);
   try {
-    const j = await api('/api/v1/bancos/flujo-mensual?' + params.toString());
-    state.flujo.meses = j.meses || [];
-    state.flujo.desglose_filtrado_por_rol = !!j.desglose_filtrado_por_rol;
+    // Según vista pegamos a un endpoint distinto. El payload se normaliza
+    // al shape estándar { meses: [{mes, ingresos, gastos, neto, pct_neto, ...}] }
+    let meses = [];
+    let avisoRol = false;
+    if (vista === 'banco') {
+      const j = await api('/api/v1/bancos/flujo-mensual?' + params.toString());
+      meses = (j.meses || []).map((m) => ({ ...m, ingresos: m.ingresos, gastos: m.gastos }));
+      avisoRol = !!j.desglose_filtrado_por_rol;
+    } else if (vista === 'efectivo') {
+      const j = await api('/api/v1/caja/flujo-mensual?' + params.toString());
+      meses = (j.meses || []).map((m) => ({
+        mes: m.mes,
+        ingresos: m.ingresos,
+        gastos: m.egresos,   // alias para reusar render
+        neto: m.neto,
+        pct_neto: m.pct_neto,
+        n_movs: m.n_movs,
+        categorias: [],
+      }));
+    } else { // combinado
+      const j = await api('/api/v1/caja/combinado?' + params.toString());
+      meses = (j.meses || []).map((m) => ({
+        mes: m.mes,
+        ingresos: m.total_ingresos,
+        gastos: m.total_gastos,
+        neto: m.total_neto,
+        pct_neto: m.pct_neto,
+        pct_efectivo: m.pct_efectivo,
+        n_movs: 0,
+        categorias: [],
+        // extras para tooltip
+        _banco_ing: m.banco_ingresos, _banco_gas: m.banco_gastos,
+        _caja_ing:  m.caja_ingresos,  _caja_gas:  m.caja_gastos,
+      }));
+    }
+    state.flujo.meses = meses;
+    state.flujo.desglose_filtrado_por_rol = avisoRol;
     state.flujo.loaded = true;
-    $('flujo-aviso-rol').style.display = state.flujo.desglose_filtrado_por_rol ? '' : 'none';
+    $('flujo-aviso-rol').style.display = avisoRol ? '' : 'none';
     renderFlujoTabla();
     populateMesDropdowns();
     renderFlujoComparativa();
@@ -2849,7 +3086,9 @@ Object.assign(window, {
   // Carga múltiple de extractos (Santander/Sabadell, XLS/PDF)
   upExtDragOver, upExtDragLeave, upExtDrop, upExtFilesChosen, upExtRetry,
   // Flujo Anual (admin/socio/gerente)
-  loadFlujoAnual, renderFlujoComparativa,
+  loadFlujoAnual, renderFlujoComparativa, setFlujoVista,
+  // Caja / Efectivo (admin/socio/gerente)
+  loadCaja, setCajaVista,
   loadProvRanking, exportProveedoresCsv,
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,

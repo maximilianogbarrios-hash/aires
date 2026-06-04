@@ -3219,3 +3219,107 @@ en Aplicar (consistente con la UX previa de Proveedores).
 
 Flujo Anual no se ve afectado — es vista de toda la historia (Jun 2025
 en adelante) y tiene su propio filtro de sociedad solamente.
+
+
+---
+
+## Módulo Efectivo — caja histórica + vista combinada banco+caja
+
+**Fecha**: 2026-06-05
+
+### Resumen
+
+Nuevo módulo de caja/efectivo integrado al panel de Bancos. Trae el
+histórico completo de movimientos en efectivo desde julio 2025 (10.986
+filas, €1.302.468 ingresos / €1.520.864 egresos / neto -€218.395). Se
+expone como nueva tab "Efectivo" dentro de Bancos y como toggle
+"Banco / Efectivo / Banco + Efectivo" en la tab Flujo Anual existente.
+
+### Cambios
+
+**Migration 26 — `crear_ab_caja_movimientos`**
+
+  CREATE TABLE ab_caja_movimientos (
+    id INTEGER PRIMARY KEY,
+    fecha DATE, hora TIME, sucursal VARCHAR(100),
+    sociedad_id VARCHAR(50),
+    tipo VARCHAR(20),                    -- 'Ingreso' | 'Egreso'
+    subtipo VARCHAR(300), metodo_pago VARCHAR(50),
+    monto DECIMAL(10,2), observaciones TEXT, fecha_carga DATE,
+    es_prorrateo BOOLEAN GENERATED ALWAYS AS (subtipo ILIKE '%prorrateo%') STORED,
+    es_especial  BOOLEAN GENERATED ALWAYS AS (sucursal IN (...)) STORED,
+    created_at TIMESTAMP DEFAULT NOW()
+  );
+
+  PK = id del CSV → INSERT ON CONFLICT DO NOTHING en cada import
+  hace el flujo idempotente. Índices en fecha, sucursal, sociedad_id,
+  tipo. Columnas calculadas STORED para filtros rápidos.
+
+**Mapeo sucursal → sociedad (`lib/caja/sucursales.js`)**
+
+  15 sucursales operativas mapeadas a `hostelero | alicante | smart |
+  murcia | benidorm` (espejo de SOCIEDADES). 11 sucursales especiales
+  (ESPECIALES, NAVE, OFICINA, IFA, MADRID, etc.) quedan sin sociedad
+  y se filtran por default. Helpers `sociedadDeSucursal()`,
+  `esSucursalEspecial()`, `normalizarSucursal()`.
+
+**Script de import (`scripts/import-caja.js`)**
+
+  Parser CSV in-house (separador `;`, quote `"`, BOM-tolerant).
+  INSERT en lotes de 500. Reporta: filas procesadas, insertadas,
+  duplicadas, rango de fechas, totales ing/egr, breakdown por
+  sucursal. Aplicado a prod 2026-06-05: 10.986/10.992 importados
+  (jul 2025 → jun 2026).
+
+**Endpoints (`routes/caja.js` — `/api/v1/caja/*`)**
+
+  Permiso `caja_view` (admin/socio/gerente). Floor por rol:
+  gerente sólo ≥ 2026-01.
+  Filtros comunes: desde, hasta, sucursal, sociedad_id (acepta
+  'sin_elche'/'solo_elche'), tipo (ingreso/egreso/ambos),
+  incluir_especiales (def false), incluir_prorrateo (def true).
+
+    GET /resumen          — KPIs totales
+    GET /por-sucursal     — desglose con ing/egr/neto/pct
+    GET /por-sociedad     — sumas por sociedad
+    GET /categorias       — top 20 subtipos
+    GET /flujo-mensual    — serie mensual
+    GET /movimientos      — paginado
+    GET /combinado        — banco + caja juntos por mes (alimenta
+                            la vista combinada de Flujo Anual)
+
+**Roles (`lib/roles.js`)**
+
+  PERMS.caja_view = ['admin','socio','gerente']
+  SUB_TABS_BANCOS.efectivo = ['admin','socio','gerente']
+
+**Frontend (`public/bancos/index.html` + `public/js/bancos.js`)**
+
+  - Tab nueva "Efectivo" entre Flujo Anual y el final.
+  - Sección `sect-efectivo` con 4 cards (ing/egr/neto/movs), filtros
+    (vista local/sociedad, tipo, sociedad, sucursal, toggle especiales)
+    y tres bloques: tabla por local/sociedad, top 20 categorías, flujo
+    mensual.
+  - Toggle "Mostrar: Banco / Efectivo / Banco + Efectivo" en Flujo
+    Anual. setFlujoVista() persiste en state.flujo.vista y re-carga
+    loadFlujoAnual() apuntando al endpoint correcto.
+  - Reusa _semaforoFlujo / _mesLabel / clases CSS flujo-* del módulo
+    de Flujo Anual.
+  - Comparador de dos meses de Flujo Anual sigue funcionando en los
+    tres modos (banco/efectivo/combinado) — el shape de meses está
+    normalizado en loadFlujoAnual.
+
+### Datos contra prod
+
+  Por sucursal (top 5, sin especiales):
+    BENIDORM       ing €224.806 · egr €150.196 · neto +€74.610
+    ELCHE          ing €145.009 · egr €141.237 · neto +€3.772
+    SANTO DOMINGO  ing €120.628 · egr €142.949 · neto -€22.321
+    ORIHUELA       ing €117.003 · egr € 64.301 · neto +€52.701
+    THADER         ing €112.180 · egr €113.856 · neto -€1.676
+
+  Combinado Mayo 2026:
+    Banco:    ing €263.335 · gas €292.430 · neto -€29.095
+    Caja:     ing € 98.665 · gas € 99.843 · neto -€ 1.178
+    Total:    ing €362.000 · gas €392.274 · neto -€30.274
+    % Efectivo del total operativo: 26,3%

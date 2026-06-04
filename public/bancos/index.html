@@ -101,6 +101,7 @@
   <button class="tab"    data-tab="proveedores" onclick="showTab('proveedores',this)">Proveedores</button>
   <button class="tab"    data-tab="cruce"     onclick="showTab('cruce',this)">Cruce TPV vs Banco</button>
   <button class="tab"    data-tab="flujo"     onclick="showTab('flujo',this)">Flujo Anual</button>
+  <button class="tab"    data-tab="efectivo"  onclick="showTab('efectivo',this)">Efectivo</button>
 </div>
 
 <!-- RESUMEN -->
@@ -344,6 +345,15 @@
         <span style="font-size:11px;color:var(--text-2)">Sociedad:</span>
         <select id="flujo-sociedad" onchange="loadFlujoAnual()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"></select>
       </div>
+      <!-- Toggle banco / efectivo / combinado -->
+      <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+        <span style="font-size:11px;color:var(--text-2)">Mostrar:</span>
+        <div role="tablist" style="display:flex;border:.5px solid var(--border-2);border-radius:6px;overflow:hidden">
+          <button type="button" id="flujo-vista-banco"     onclick="setFlujoVista('banco')"     style="padding:5px 10px;border:none;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Banco</button>
+          <button type="button" id="flujo-vista-efectivo"  onclick="setFlujoVista('efectivo')"  style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Efectivo</button>
+          <button type="button" id="flujo-vista-combinado" onclick="setFlujoVista('combinado')" style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Banco + Efectivo</button>
+        </div>
+      </div>
       <span id="flujo-aviso-rol" style="display:none;font-size:10px;color:#7E22CE">El desglose de categorías sensibles está oculto para tu rol.</span>
     </div>
     <div style="overflow-x:auto">
@@ -381,6 +391,96 @@
     </div>
     <div id="flujo-comp-table" style="overflow-x:auto"></div>
     <div id="flujo-comp-analisis" style="margin-top:1rem;padding:.75rem 1rem;background:var(--bg-secondary);border:.5px solid var(--border-3);border-radius:8px;font-size:12px;line-height:1.6"></div>
+  </div>
+</div>
+
+<!-- EFECTIVO — caja histórica (admin/socio/gerente) -->
+<div id="sect-efectivo" class="sect">
+  <!-- KPIs -->
+  <div class="g4" style="margin-bottom:1rem">
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Total Ingresos<br><span style="font-size:10px;opacity:.7">(efectivo)</span></p><p style="font-size:19px;font-weight:500;color:#16a34a" id="caja-kpi-ingresos">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Total Egresos<br><span style="font-size:10px;opacity:.7">(efectivo)</span></p><p style="font-size:19px;font-weight:500;color:#dc2626" id="caja-kpi-egresos">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Resultado Neto</p><p style="font-size:19px;font-weight:500" id="caja-kpi-neto">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Movimientos</p><p style="font-size:19px;font-weight:500" id="caja-kpi-n">—</p></div>
+  </div>
+
+  <!-- Filtros -->
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Vista:</span>
+        <div role="tablist" style="display:flex;border:.5px solid var(--border-2);border-radius:6px;overflow:hidden">
+          <button type="button" id="caja-vista-local"    onclick="setCajaVista('local')"    style="padding:5px 10px;border:none;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Por Local</button>
+          <button type="button" id="caja-vista-sociedad" onclick="setCajaVista('sociedad')" style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Por Sociedad</button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Tipo:</span>
+        <select id="caja-tipo" onchange="loadCaja()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
+          <option value="ambos">Todos</option>
+          <option value="ingreso">Ingresos</option>
+          <option value="egreso">Egresos</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Sociedad:</span>
+        <select id="caja-sociedad" onchange="loadCaja()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"></select>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Sucursal:</span>
+        <select id="caja-sucursal" onchange="loadCaja()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"><option value="">todas</option></select>
+      </div>
+      <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2);cursor:pointer">
+        <input type="checkbox" id="caja-incluir-especiales" onchange="loadCaja()"> Incluir cuentas especiales
+      </label>
+      <span style="font-size:10px;color:var(--text-2);margin-left:auto">El período se controla con el selector global de arriba.</span>
+    </div>
+  </div>
+
+  <!-- Tabla por local/sociedad -->
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.5rem" id="caja-tabla-titulo">Por Local</p>
+    <div style="overflow-x:auto">
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:.5px solid var(--border-3);color:var(--text-2)">
+            <th style="text-align:left;padding:8px 6px" id="caja-tabla-col1">Sucursal</th>
+            <th style="text-align:left;padding:8px 6px">Sociedad</th>
+            <th style="text-align:right;padding:8px 6px">Ingresos</th>
+            <th style="text-align:right;padding:8px 6px">Egresos</th>
+            <th style="text-align:right;padding:8px 6px">Neto</th>
+            <th style="text-align:right;padding:8px 6px">% Neto</th>
+            <th style="text-align:center;padding:8px 6px">Estado</th>
+          </tr>
+        </thead>
+        <tbody id="caja-tabla-body"><tr><td colspan="7" style="padding:18px;text-align:center;color:var(--text-2)">Cargando…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Top categorías + Flujo mensual -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <div class="card">
+      <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Top 20 categorías de movimiento</p>
+      <div id="caja-categorias-body" style="font-size:11px"><p style="color:var(--text-2)">Cargando…</p></div>
+    </div>
+    <div class="card">
+      <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">Flujo mensual efectivo</p>
+      <div style="overflow-x:auto">
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <thead>
+            <tr style="border-bottom:.5px solid var(--border-3);color:var(--text-2)">
+              <th style="text-align:left;padding:6px">Mes</th>
+              <th style="text-align:right;padding:6px">Ingresos</th>
+              <th style="text-align:right;padding:6px">Egresos</th>
+              <th style="text-align:right;padding:6px">Neto</th>
+              <th style="text-align:center;padding:6px">Estado</th>
+            </tr>
+          </thead>
+          <tbody id="caja-mensual-body"><tr><td colspan="5" style="padding:14px;text-align:center;color:var(--text-2)">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
