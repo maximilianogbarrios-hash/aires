@@ -90,6 +90,26 @@ input[type=number].real-inp{width:80px;text-align:right;font-size:12px;padding:3
 .ped-pay-dot.pd-r{background:#dc2626}
 .ped-pay-dot.pd-a{background:#eab308}
 .ped-pay-dot.pd-v{background:#22c55e}
+/* Tab Flujo Anual — colores del Neto / % Neto y chip de semáforo.
+   Usamos clases con !important porque los emojis (🟢🟡🔴) renderizan en
+   monocromo en algunos navegadores/temas, y los inline `style="color:..."`
+   pueden ser sobreescritos por reglas globales de `.card` / theme.
+   El chip cuadrado va al lado del emoji para garantizar visibilidad
+   incluso si el sistema no soporta emojis de color. */
+.flujo-neto-pos{color:#16a34a !important;font-weight:600}
+.flujo-neto-neg{color:#dc2626 !important;font-weight:600}
+.flujo-pct-exc {color:#15803d !important;font-weight:600}
+.flujo-pct-bien{color:#16a34a !important;font-weight:500}
+.flujo-pct-ajus{color:#b45309 !important;font-weight:500}
+.flujo-pct-neg {color:#dc2626 !important;font-weight:500}
+.flujo-chip{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:middle;margin-right:6px;border:.5px solid rgba(0,0,0,.15)}
+.flujo-chip-exc {background:#15803d}
+.flujo-chip-bien{background:#22c55e}
+.flujo-chip-ajus{background:#eab308}
+.flujo-chip-neg {background:#dc2626}
+/* Forzar fuente con emoji a color en la columna Estado para que
+   🟢/🟡/🔴 se rendericen con su color y no en blanco/negro. */
+.flujo-estado{font-family:'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji','Twemoji Mozilla',sans-serif;text-align:center}
 /* Sliders y celdas con cambios sin guardar (Bloque 2) */
 input[type=range].param-dirty{accent-color:#D97706}
 input[type=range].param-dirty::-webkit-slider-runnable-track{background:#FEF3C7}

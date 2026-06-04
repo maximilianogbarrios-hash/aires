@@ -1155,10 +1155,15 @@ function _mesLabel(yyyymm) {
   return `${MESES_FLUJO_ES[m-1]} ${y}`;
 }
 function _semaforoFlujo(pct) {
-  if (pct > 20) return { icon: '🟢🟢', color: '#16a34a' };
-  if (pct > 10) return { icon: '🟢', color: '#16a34a' };
-  if (pct > 0)  return { icon: '🟡', color: '#ca8a04' };
-  return { icon: '🔴', color: '#dc2626' };
+  // Devuelve emoji + clases CSS para chip + color del % Neto.
+  // Las clases viven en public/css/styles.css con !important — los
+  // emojis solos no son confiables (algunos navegadores los renderizan
+  // en monocromo); el chip cuadrado va al lado para garantizar
+  // visibilidad siempre.
+  if (pct > 20) return { icon: '🟢🟢', cssChip: 'flujo-chip-exc',  cssPct: 'flujo-pct-exc',  texto: 'Excelente' };
+  if (pct > 10) return { icon: '🟢',   cssChip: 'flujo-chip-bien', cssPct: 'flujo-pct-bien', texto: 'Bien' };
+  if (pct > 0)  return { icon: '🟡',   cssChip: 'flujo-chip-ajus', cssPct: 'flujo-pct-ajus', texto: 'Ajustado' };
+  return            { icon: '🔴',   cssChip: 'flujo-chip-neg',  cssPct: 'flujo-pct-neg',  texto: 'Negativo' };
 }
 function _eurSigned(n) {
   const s = n >= 0 ? '+' : '−';
@@ -1173,14 +1178,14 @@ function renderFlujoTabla() {
   }
   $('flujo-tbody').innerHTML = meses.map((m) => {
     const sem = _semaforoFlujo(m.pct_neto);
-    const netoColor = m.neto >= 0 ? '#16a34a' : '#dc2626';
+    const netoClass = m.neto >= 0 ? 'flujo-neto-pos' : 'flujo-neto-neg';
     return `<tr style="border-bottom:.5px solid var(--border-3)">
       <td style="padding:8px 6px;font-weight:500">${_mesLabel(m.mes)}</td>
       <td style="padding:8px 6px;text-align:right">${eur(m.ingresos)}</td>
       <td style="padding:8px 6px;text-align:right">${eur(m.gastos)}</td>
-      <td style="padding:8px 6px;text-align:right;color:${netoColor};font-weight:500">${_eurSigned(m.neto)}</td>
-      <td style="padding:8px 6px;text-align:right;color:${sem.color}">${m.pct_neto.toFixed(1)}%</td>
-      <td style="padding:8px 6px;text-align:center">${sem.icon}</td>
+      <td class="${netoClass}" style="padding:8px 6px;text-align:right">${_eurSigned(m.neto)}</td>
+      <td class="${sem.cssPct}" style="padding:8px 6px;text-align:right">${m.pct_neto.toFixed(1)}%</td>
+      <td class="flujo-estado" style="padding:8px 6px" title="${sem.texto}"><span class="flujo-chip ${sem.cssChip}"></span>${sem.icon}</td>
     </tr>`;
   }).join('');
 }
@@ -1227,41 +1232,45 @@ function renderFlujoComparativa() {
   const difNeto = A.neto - B.neto;
   const difPctNeto = A.pct_neto - B.pct_neto;
 
-  // Para los DIFs: para INGRESOS, subir es bueno (verde). Para GASTOS, subir es malo (rojo).
+  // Para los DIFs: para INGRESOS, subir es bueno (verde). Para GASTOS, subir
+  // es malo (rojo). Devuelve clases CSS reutilizando flujo-* + chip de color.
   function _signoIcono(dif, gastoes) {
-    if (Math.abs(dif) < 1) return { ico: '→', color: '#6B7280' };
+    if (Math.abs(dif) < 1) return { ico: '→', cssTxt: '', cssChip: '' };
     const subio = dif > 0;
-    if (gastoes) return subio ? { ico: '🔴', color: '#dc2626' } : { ico: '🟢', color: '#16a34a' };
-    return subio ? { ico: '🟢', color: '#16a34a' } : { ico: '🔴', color: '#dc2626' };
+    const malo = (gastoes && subio) || (!gastoes && !subio);
+    return malo
+      ? { ico: '🔴', cssTxt: 'flujo-pct-neg',  cssChip: 'flujo-chip-neg' }
+      : { ico: '🟢', cssTxt: 'flujo-pct-bien', cssChip: 'flujo-chip-bien' };
   }
   const lblA = _mesLabel(A.mes); const lblB = _mesLabel(B.mes);
 
   function row(label, valA, valB, dif, gastoes, indent=false) {
     const sg = _signoIcono(dif, gastoes);
-    const colDif = sg.color;
     const lblHtml = indent ? `<span style="color:var(--text-2)">└</span> ${label}` : `<strong>${label}</strong>`;
+    const chip = sg.cssChip ? `<span class="flujo-chip ${sg.cssChip}"></span>` : '';
     return `<tr style="border-bottom:.5px solid var(--border-3)">
       <td style="padding:6px;${indent?'padding-left:24px':''}">${lblHtml}</td>
       <td style="padding:6px;text-align:right">${eur(valA)}</td>
       <td style="padding:6px;text-align:right;color:var(--text-2)">${eur(valB)}</td>
-      <td style="padding:6px;text-align:right;color:${colDif};font-weight:500">${_eurSigned(dif)} ${sg.ico}</td>
+      <td class="${sg.cssTxt}" style="padding:6px;text-align:right" title="${sg.ico==='→'?'sin cambio relevante':(sg.cssTxt==='flujo-pct-neg'?'empeora':'mejora')}">${chip}${_eurSigned(dif)} ${sg.ico}</td>
     </tr>`;
   }
   function rowNeto() {
-    const colA = A.neto >= 0 ? '#16a34a' : '#dc2626';
-    const colB = B.neto >= 0 ? '#16a34a' : '#dc2626';
+    const clsA = A.neto >= 0 ? 'flujo-neto-pos' : 'flujo-neto-neg';
+    const clsB = B.neto >= 0 ? 'flujo-neto-pos' : 'flujo-neto-neg';
     const sg = _signoIcono(difNeto, false);
+    const chip = sg.cssChip ? `<span class="flujo-chip ${sg.cssChip}"></span>` : '';
     return `<tr style="border-top:1px solid var(--border-2);background:var(--bg-secondary)">
       <td style="padding:8px 6px"><strong>Neto</strong></td>
-      <td style="padding:8px 6px;text-align:right;color:${colA};font-weight:500">${_eurSigned(A.neto)}</td>
-      <td style="padding:8px 6px;text-align:right;color:${colB};font-weight:500">${_eurSigned(B.neto)}</td>
-      <td style="padding:8px 6px;text-align:right;color:${sg.color};font-weight:500">${_eurSigned(difNeto)} ${sg.ico}</td>
+      <td class="${clsA}" style="padding:8px 6px;text-align:right">${_eurSigned(A.neto)}</td>
+      <td class="${clsB}" style="padding:8px 6px;text-align:right">${_eurSigned(B.neto)}</td>
+      <td class="${sg.cssTxt}" style="padding:8px 6px;text-align:right">${chip}${_eurSigned(difNeto)} ${sg.ico}</td>
     </tr>
     <tr>
       <td style="padding:6px"><strong>% Neto</strong></td>
       <td style="padding:6px;text-align:right">${A.pct_neto.toFixed(1)}%</td>
       <td style="padding:6px;text-align:right;color:var(--text-2)">${B.pct_neto.toFixed(1)}%</td>
-      <td style="padding:6px;text-align:right;color:${sg.color}">${(difPctNeto>=0?'+':'')}${difPctNeto.toFixed(1)}pp</td>
+      <td class="${sg.cssTxt}" style="padding:6px;text-align:right">${(difPctNeto>=0?'+':'')}${difPctNeto.toFixed(1)}pp</td>
     </tr>`;
   }
 
