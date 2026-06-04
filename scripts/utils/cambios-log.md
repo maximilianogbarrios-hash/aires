@@ -3130,3 +3130,92 @@ Sin cambios — el endpoint `/api/v1/bancos/categoria-movimientos` ya
 devuelve `movimientos[]` con `proveedor_resuelto` por mov. La agrupación
 por proveedor se hace en frontend (evita un round-trip extra; los datos
 de Nivel 2 son un filtro local sobre los mismos movs).
+
+
+---
+
+## Bancos — Selector de período unificado: Mes único / Rango
+
+**Fecha**: 2026-06-04
+
+### Pedido
+
+El header de Bancos tenía un selector global de período (un dropdown
+`f-periodo` con `(todos)` + lista de meses), y la pestaña Proveedores
+tenía SU PROPIO selector con dos dropdowns Desde/Hasta + botón Aplicar.
+Eran dos UX distintas para lo mismo. Pedido: unificarlo con dos modos
+y aplicar a TODAS las tabs (Resumen, Movimientos, Análisis de gastos,
+Proveedores, Cruce TPV vs Banco).
+
+### Modos
+
+**Modo 1 — Mes único (default)**
+
+  [ Mayo 2026 ▼ ]   Seleccionar rango →
+
+Un único dropdown. Al cambiarlo dispara `reload()` automático con
+debounce 300ms (para evitar racing si el usuario cambia rápido).
+
+**Modo 2 — Rango**
+
+  ← Mes único   Desde [ Mar 2026 ▼ ]   Hasta [ May 2026 ▼ ]   [ Aplicar ]
+
+Dos dropdowns + botón. Cambiar los dropdowns NO carga; espera el click
+en Aplicar (consistente con la UX previa de Proveedores).
+
+### Cambios
+
+**public/bancos/index.html**
+
+- Card de filtros principal — el bloque "Período" pasa a tener dos
+  contenedores `#filtro-modo-unico` (default visible) y `#filtro-modo-rango`
+  (oculto), con un toggle por link entre ambos.
+- Header de Proveedores: ELIMINADOS los selectores propios
+  `prov-periodo-desde/hasta` y el botón Aplicar. Ahora muestra sólo
+  `<select id="prov-sociedad">` con onchange="loadProvRanking()" + un
+  span `prov-periodo-resumen` que dice "Período: Mayo 2026" sincronizado
+  con el selector global. El export CSV queda al final.
+
+**public/js/bancos.js**
+
+- `buildPeriodSelector()` ahora popula los TRES selectores
+  (`f-periodo`, `f-desde`, `f-hasta`) con la lista de meses. Default:
+  el último mes en los tres. El listener del modo único usa
+  `setTimeout(reload, 300)` para debounce.
+
+- `setFiltroModo(modo)` toggle entre 'unico' y 'rango':
+  - guarda `state.filtroPeriodo.modo`,
+  - muestra/oculta los contenedores,
+  - si pasa a 'unico' dispara `reload()` inmediato (porque el dropdown
+    siempre tiene un valor); si pasa a 'rango' NO carga (espera Aplicar).
+
+- `getPeriodoActivo()` — fuente única de verdad. Devuelve
+  `{ modo, periodo, desde, hasta }` según el modo activo. Todas las
+  funciones de carga (loadProvRanking, buildGrupoDetalleQuery,
+  exportProveedoresCsv, _rcFiltrosActivos) la consumen en lugar de
+  leer DOM viejo.
+
+- `labelPeriodoActivo()` — formato corto para el span de Proveedores:
+  "Mayo 2026" (único), "Marzo 2026 – Mayo 2026" (rango).
+
+- `reload()` mantiene `state.current_periodo` (modo único) y agrega
+  `state.current_desde`/`state.current_hasta` (modo rango) para compat
+  con código existente. Si la tab Proveedores ya estaba cargada,
+  dispara también `loadProvRanking()` para refrescar.
+
+- `initProvFiltros()` ya no popula período (vive en el global). Sólo
+  setea sociedad default ("Sin Elche") y umbral del donut. El label
+  "Período: …" se refresca cada vez que `loadProvRanking` se ejecuta.
+
+### Comportamiento por tab
+
+| Tab                  | Reacción al cambio del selector global    |
+|----------------------|-------------------------------------------|
+| Resumen              | `loadResumen()` desde `reload()`          |
+| Movimientos          | `loadMovs()` desde `reload()`             |
+| Análisis de gastos   | `loadProveedores()` desde `reload()`      |
+| Proveedores          | `loadProvRanking()` (si tab ya cargada)   |
+| Cruce TPV vs Banco   | `loadCruces()` desde `reload()`           |
+
+Flujo Anual no se ve afectado — es vista de toda la historia (Jun 2025
+en adelante) y tiene su propio filtro de sociedad solamente.

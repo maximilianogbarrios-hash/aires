@@ -178,30 +178,116 @@ function buildSelectors() {
 }
 
 function buildPeriodSelector() {
-  const sel = $('f-periodo');
-  sel.innerHTML = '';
+  // Popula los TRES selectores globales con la lista de períodos:
+  //   f-periodo (modo Mes único) → único select con default "más reciente"
+  //   f-desde / f-hasta (modo Rango) → lista ascendente / descendente
   if (!state.periodos.length) {
-    const opt = document.createElement('option');
-    opt.value = ''; opt.textContent = '(sin datos)';
-    sel.appendChild(opt);
+    for (const id of ['f-periodo', 'f-desde', 'f-hasta']) {
+      const sel = $(id);
+      if (sel) { sel.innerHTML = ''; const opt = document.createElement('option'); opt.value=''; opt.textContent='(sin datos)'; sel.appendChild(opt); }
+    }
     return;
   }
-  const all = document.createElement('option');
-  all.value = ''; all.textContent = '(todos)';
-  sel.appendChild(all);
-  for (const p of [...state.periodos].reverse()) {
-    const opt = document.createElement('option');
-    opt.value = p; opt.textContent = PERIOD_LABELS(p);
-    sel.appendChild(opt);
+  const ultimo = state.periodos[state.periodos.length - 1];
+  // f-periodo (Mes único): no incluye opción "(todos)" porque el modo es
+  // de un mes; quien quiera rango usa el otro modo.
+  const selU = $('f-periodo');
+  if (selU) {
+    selU.innerHTML = '';
+    for (const p of [...state.periodos].reverse()) {
+      const opt = document.createElement('option');
+      opt.value = p; opt.textContent = PERIOD_LABELS(p);
+      selU.appendChild(opt);
+    }
+    selU.value = ultimo;
   }
-  // Por default el más reciente
-  sel.value = state.periodos[state.periodos.length - 1];
+  // f-desde / f-hasta (Rango): orden descendente para consistencia con
+  // el modo único.
+  for (const id of ['f-desde', 'f-hasta']) {
+    const sel = $(id);
+    if (!sel) continue;
+    sel.innerHTML = '';
+    for (const p of [...state.periodos].reverse()) {
+      const opt = document.createElement('option');
+      opt.value = p; opt.textContent = PERIOD_LABELS(p);
+      sel.appendChild(opt);
+    }
+  }
+  // Default rango = último mes (Desde = Hasta = último mes).
+  $('f-desde').value = ultimo;
+  $('f-hasta').value = ultimo;
+  // Estado inicial del modo si no se setea antes.
+  if (!state.filtroPeriodo) state.filtroPeriodo = { modo: 'unico' };
+  // Listener del modo único — debounce 300ms para autocarga.
+  if (selU && !selU._listenerOk) {
+    let _t;
+    selU.addEventListener('change', () => {
+      clearTimeout(_t);
+      _t = setTimeout(() => reload(), 300);
+    });
+    selU._listenerOk = true;
+  }
+}
+
+// Toggle entre modo "Mes único" y "Rango". El modo se guarda en
+// state.filtroPeriodo.modo y persiste durante la sesión.
+function setFiltroModo(modo) {
+  if (modo !== 'unico' && modo !== 'rango') return;
+  state.filtroPeriodo = state.filtroPeriodo || {};
+  state.filtroPeriodo.modo = modo;
+  const elU = $('filtro-modo-unico');
+  const elR = $('filtro-modo-rango');
+  if (elU) elU.style.display = modo === 'unico' ? 'flex' : 'none';
+  if (elR) elR.style.display = modo === 'rango' ? 'flex' : 'none';
+  if (modo === 'unico') {
+    // Al volver a único, recargar inmediato con el mes actual del dropdown.
+    reload();
+  }
+  // Si se cambió a 'rango' no recargamos: esperamos al Aplicar.
+}
+
+// Fuente única de verdad del período activo. Devuelve la shape que los
+// endpoints esperan en query params:
+//   modo único → { periodo, desde:null, hasta:null }
+//   modo rango → { periodo:null, desde, hasta }
+function getPeriodoActivo() {
+  const modo = state.filtroPeriodo?.modo || 'unico';
+  if (modo === 'rango') {
+    const desde = $('f-desde')?.value || null;
+    const hasta = $('f-hasta')?.value || null;
+    return { modo, periodo: null, desde, hasta };
+  }
+  return { modo, periodo: $('f-periodo')?.value || null, desde: null, hasta: null };
+}
+
+// Label corto del período activo para el resumen "Período: Mayo 2026"
+// que aparece en el header de Proveedores.
+function labelPeriodoActivo() {
+  const p = getPeriodoActivo();
+  if (p.modo === 'rango') {
+    if (!p.desde && !p.hasta) return '—';
+    if (p.desde === p.hasta) return PERIOD_LABELS(p.desde);
+    return `${PERIOD_LABELS(p.desde)} – ${PERIOD_LABELS(p.hasta)}`;
+  }
+  return p.periodo ? PERIOD_LABELS(p.periodo) : '(todos)';
 }
 
 async function reload() {
   state.current_sociedad = $('f-sociedad').value || null;
-  state.current_periodo  = $('f-periodo').value || null;
+  const p = getPeriodoActivo();
+  // Compat con código existente: el modo único expone `current_periodo`
+  // como string YYYY-MM (o null = todos). El modo rango lo expone como
+  // null y los handlers usan getPeriodoActivo() directamente.
+  state.current_periodo = p.modo === 'unico' ? p.periodo : null;
+  state.current_desde   = p.modo === 'rango' ? p.desde   : null;
+  state.current_hasta   = p.modo === 'rango' ? p.hasta   : null;
+  // Refrescar el label en el header de Proveedores (si está visible).
+  const lblProv = $('prov-periodo-resumen');
+  if (lblProv) lblProv.querySelector('strong').textContent = labelPeriodoActivo();
   await Promise.all([loadResumen(), loadCruces(), loadProveedores(), loadMovs()]);
+  // Si la tab Proveedores ya está cargada, refrescarla (lee el período
+  // global vía getPeriodoActivo en loadProvRanking).
+  if (state.prov?.loaded) loadProvRanking();
 }
 
 async function loadResumen() {
@@ -351,20 +437,6 @@ function initProvFiltros() {
   // en ambos selectores (Desde y Hasta). El backend también clampea
   // (defense in depth) en /proveedores, /grupo-detalle y
   // /proveedor-evolucion.
-  const FLOOR = '2026-01';
-  const periodosPermitidos = rolEsAdmin()
-    ? state.periodos
-    : state.periodos.filter((p) => p >= FLOOR);
-  for (const id of ['prov-periodo-desde', 'prov-periodo-hasta']) {
-    const sel = $(id);
-    if (sel.options.length === 0) {
-      for (const p of periodosPermitidos) {
-        const o = document.createElement('option');
-        o.value = p; o.textContent = PERIOD_LABELS(p);
-        sel.appendChild(o);
-      }
-    }
-  }
   // Nota del suelo de fecha: visible sólo para rol 'admin' (no socio
   // ni el resto). Es un texto interno/diagnóstico que no aporta a la
   // experiencia de los demás roles.
@@ -372,35 +444,17 @@ function initProvFiltros() {
   if (note) note.style.display = state.user?.role === 'admin' ? '' : 'none';
 
   // Defaults aplicados sólo la PRIMERA vez que el usuario entra a la
-  // pestaña. Después se respeta lo que el usuario haya elegido. El guard
-  // anterior `if (!sSel.value)` no funcionaba porque tras appendChild el
-  // browser autoselecciona el primer <option> — sSel.value nunca está
-  // vacío. Usamos un flag explícito state.prov.defaultsAplicados.
+  // pestaña. Después se respeta lo que el usuario haya elegido. El
+  // período ya NO se setea acá — vive en el selector global (f-periodo
+  // o f-desde/f-hasta). Acá sólo seteamos sociedad y umbral del donut.
   if (!state.prov.defaultsAplicados) {
-    // Default sociedad: "Sin Elche" (4 sociedades — excluye Grupo Hostelero).
     if (sSel) sSel.value = 'sin_elche';
-    // Default período: mes anterior al actual (Desde = Hasta = ese mes).
-    // Se calcula al vuelo con new Date() — el comportamiento sigue al
-    // calendario real, no al último período cargado. Para no-admin/socio
-    // se eleva al suelo (2026-01) si el mes anterior es menor. Si el
-    // período calculado no existe en la lista disponible (porque aún no
-    // se cargó ese extracto), caemos al último período disponible.
-    if (periodosPermitidos.length > 0) {
-      const hoy = new Date();
-      const prev = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
-      let target = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
-      if (!rolEsAdmin() && target < FLOOR) target = FLOOR;
-      const ultimo = periodosPermitidos[periodosPermitidos.length - 1];
-      const elegido = periodosPermitidos.includes(target) ? target : ultimo;
-      $('prov-periodo-desde').value = elegido;
-      $('prov-periodo-hasta').value = elegido;
-    }
-    // Default umbral del donut: "Ver todos" (null). El HTML ya marca
-    // <option value="all" selected> pero forzamos para asegurar
-    // consistencia tras reload o navegación por consola.
     setDonutThreshold('all');
     state.prov.defaultsAplicados = true;
   }
+  // Refrescar el label "Período: Mayo 2026" del header de Proveedores.
+  const lblProv = $('prov-periodo-resumen');
+  if (lblProv) lblProv.querySelector('strong').textContent = labelPeriodoActivo();
 }
 
 function rolEsAdmin() {
@@ -443,15 +497,21 @@ function aplicarVistaSegunRol() {
 async function loadProvRanking() {
   const params = new URLSearchParams();
   const soc = $('prov-sociedad').value;
-  const desde = $('prov-periodo-desde').value;
-  const hasta = $('prov-periodo-hasta').value;
   if (soc) params.set('sociedad_id', soc);
-  if (desde && hasta && desde === hasta) {
-    params.set('periodo', desde);
-  } else {
-    if (desde) params.set('periodo_desde', desde);
-    if (hasta) params.set('periodo_hasta', hasta);
+  // Período viene del selector GLOBAL (modo único o rango).
+  const p = getPeriodoActivo();
+  if (p.modo === 'rango') {
+    if (p.desde && p.hasta && p.desde === p.hasta) params.set('periodo', p.desde);
+    else {
+      if (p.desde) params.set('periodo_desde', p.desde);
+      if (p.hasta) params.set('periodo_hasta', p.hasta);
+    }
+  } else if (p.periodo) {
+    params.set('periodo', p.periodo);
   }
+  // Refrescar el label visible del header de Proveedores cada vez.
+  const lblProv = $('prov-periodo-resumen');
+  if (lblProv) lblProv.querySelector('strong').textContent = labelPeriodoActivo();
   // El backend filtra por rol; el front no envía vista (la deja en backend).
   const j = await api('/api/v1/bancos/proveedores?' + params.toString());
   // BUG fix — `state.prov = {...}` perdía propiedades del estado original
@@ -980,9 +1040,14 @@ function exportProveedoresCsv() {
   const csv = '﻿' + csvRows.join('\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const soc = $('prov-sociedad').value || 'todas';
-  const desde = $('prov-periodo-desde').value || '';
-  const hasta = $('prov-periodo-hasta').value || '';
-  const rango = desde === hasta ? desde : `${desde}_a_${hasta}`;
+  const p = getPeriodoActivo();
+  let rango;
+  if (p.modo === 'rango') {
+    const d = p.desde || '', h = p.hasta || '';
+    rango = d === h ? d : `${d}_a_${h}`;
+  } else {
+    rango = p.periodo || 'todos';
+  }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `proveedores_${soc}_${rango}.csv`;
@@ -1840,13 +1905,17 @@ async function _refreshCategoriasTodas() {
 function buildGrupoDetalleQuery() {
   const params = new URLSearchParams();
   const soc = $('prov-sociedad')?.value;
-  const desde = $('prov-periodo-desde')?.value;
-  const hasta = $('prov-periodo-hasta')?.value;
   if (soc) params.set('sociedad_id', soc);
-  if (desde && hasta && desde === hasta) params.set('periodo', desde);
-  else {
-    if (desde) params.set('periodo_desde', desde);
-    if (hasta) params.set('periodo_hasta', hasta);
+  // Período del selector GLOBAL (modo único o rango).
+  const p = getPeriodoActivo();
+  if (p.modo === 'rango') {
+    if (p.desde && p.hasta && p.desde === p.hasta) params.set('periodo', p.desde);
+    else {
+      if (p.desde) params.set('periodo_desde', p.desde);
+      if (p.hasta) params.set('periodo_hasta', p.hasta);
+    }
+  } else if (p.periodo) {
+    params.set('periodo', p.periodo);
   }
   return params;
 }
@@ -2250,18 +2319,24 @@ function _rcFiltrosActivos() {
   // Abr 2026", el dropdown sólo debe ofrecer grupos que aparecen en ese
   // corte — no la lista global de ~500.
   const soc = $('prov-sociedad')?.value || '';
-  const desde = $('prov-periodo-desde')?.value || '';
-  const hasta = $('prov-periodo-hasta')?.value || '';
+  const p = getPeriodoActivo();
   const params = new URLSearchParams();
-  if (soc)   params.set('sociedad_id', soc);
-  if (desde && hasta && desde === hasta) {
-    params.set('periodo', desde);
+  if (soc) params.set('sociedad_id', soc);
+  let keyPeriodo;
+  if (p.modo === 'rango') {
+    const d = p.desde || '', h = p.hasta || '';
+    if (d && h && d === h) params.set('periodo', d);
+    else {
+      if (d) params.set('periodo_desde', d);
+      if (h) params.set('periodo_hasta', h);
+    }
+    keyPeriodo = `${d}|${h}`;
   } else {
-    if (desde) params.set('periodo_desde', desde);
-    if (hasta) params.set('periodo_hasta', hasta);
+    if (p.periodo) params.set('periodo', p.periodo);
+    keyPeriodo = `u:${p.periodo || ''}`;
   }
   params.set('limit', '500');
-  return { qs: params.toString(), key: `${soc}|${desde}|${hasta}` };
+  return { qs: params.toString(), key: `${soc}|${keyPeriodo}` };
 }
 
 async function rcRefreshNombres(i) {
@@ -2755,6 +2830,8 @@ async function submitAddProv() {
 
 Object.assign(window, {
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
+  // Selector global de período (Mes único / Rango)
+  setFiltroModo,
   // Carga múltiple de extractos (Santander/Sabadell, XLS/PDF)
   upExtDragOver, upExtDragLeave, upExtDrop, upExtFilesChosen, upExtRetry,
   // Flujo Anual (admin/socio/gerente)

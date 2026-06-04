@@ -36,14 +36,27 @@
 
 <!-- FILTROS GLOBALES -->
 <div class="card" style="margin-bottom:1rem">
-  <div style="display:grid;grid-template-columns:200px 160px 1fr;gap:10px;align-items:end">
+  <div style="display:grid;grid-template-columns:200px 1fr auto;gap:14px;align-items:end">
     <div>
       <label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Sociedad</label>
       <select id="f-sociedad" onchange="reload()" style="width:100%;padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
     </div>
     <div>
       <label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:4px;text-transform:uppercase">Período</label>
-      <select id="f-periodo" onchange="reload()" style="width:100%;padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
+      <!-- Modo MES ÚNICO (default) — un dropdown + link a modo rango -->
+      <div id="filtro-modo-unico" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <select id="f-periodo" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px;min-width:160px"></select>
+        <a href="#" onclick="setFiltroModo('rango');return false" style="font-size:11px;color:#185FA5;cursor:pointer;text-decoration:none">Seleccionar rango →</a>
+      </div>
+      <!-- Modo RANGO — Desde / Hasta + Aplicar + link de vuelta a único -->
+      <div id="filtro-modo-rango" style="display:none;align-items:center;gap:8px;flex-wrap:wrap">
+        <a href="#" onclick="setFiltroModo('unico');return false" style="font-size:11px;color:#185FA5;cursor:pointer;text-decoration:none">← Mes único</a>
+        <span style="font-size:11px;color:var(--text-2)">Desde</span>
+        <select id="f-desde" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
+        <span style="font-size:11px;color:var(--text-2)">Hasta</span>
+        <select id="f-hasta" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
+        <button onclick="reload()" style="padding:6px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Aplicar</button>
+      </div>
     </div>
     <div style="text-align:right">
       <button id="btn-upload-toggle" onclick="toggleUpload()" style="display:none;padding:7px 14px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);cursor:pointer;font-size:12px">⬆ Subir extracto / cierres</button>
@@ -183,8 +196,8 @@
       <p style="font-size:13px;font-weight:500">Análisis de proveedores</p>
       <span id="prov-vista-badge" style="display:none;font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;background:var(--bg-secondary);color:var(--text-2)">—</span>
     </div>
-    <div style="display:grid;grid-template-columns:200px 160px 160px auto auto;gap:8px;align-items:end">
-      <select id="prov-sociedad" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
+    <div style="display:grid;grid-template-columns:240px auto 1fr auto;gap:8px;align-items:center">
+      <select id="prov-sociedad" onchange="loadProvRanking()" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px">
         <option value="">Todas las sociedades</option>
         <option value="sin_elche">Sin Elche (4 sociedades)</option>
         <option value="solo_elche">Solo Elche (Grupo Hostelero)</option>
@@ -193,12 +206,11 @@
         <option value="murcia">Aires Burger Bar Murcia SL</option>
         <option value="benidorm">Aires Burger Bar Benidorm SL</option>
       </select>
-      <select id="prov-periodo-desde" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
-      <select id="prov-periodo-hasta" style="padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:13px"></select>
-      <button onclick="loadProvRanking()" style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:12px">Aplicar</button>
+      <span id="prov-periodo-resumen" style="font-size:11px;color:var(--text-2)">Período: <strong style="color:var(--text)">—</strong></span>
+      <span></span>
       <button id="prov-btn-export" onclick="exportProveedoresCsv()" style="display:none;padding:6px 12px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Export CSV</button>
     </div>
-    <p id="prov-selector-help" style="display:none;font-size:10px;color:var(--text-2);margin-top:.5rem">Selector "Desde" igual a "Hasta" → análisis de un solo mes. Rangos completos suman los meses elegidos. La vista se elige automáticamente según tu rol: admin/socio ven todos los gastos (impuestos, nóminas, etc.); el resto sólo ve proveedores operativos.</p>
+    <p id="prov-selector-help" style="display:none;font-size:10px;color:var(--text-2);margin-top:.5rem">El período se controla con el selector global de arriba (Mes único o Rango). La vista se elige automáticamente según tu rol: admin/socio ven todos los gastos (impuestos, nóminas, etc.); el resto sólo ve proveedores operativos.</p>
     <p id="prov-period-floor-note" style="display:none;font-size:10px;color:#7E22CE;margin-top:.25rem">Solo se pueden ver datos desde enero 2026.</p>
   </div>
 
