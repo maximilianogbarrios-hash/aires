@@ -428,7 +428,18 @@ router.post('/upload-cierres-tpv', requirePerm('bancos_upload_admin'), upload.si
 router.get('/movimientos', async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
-    const periodo = req.query.periodo || null;
+    // Clamp del período por rol — no-admin no puede consultar meses
+    // anteriores a PERIODO_FLOOR_NO_ADMIN (defense in depth: el frontend
+    // también esconde esos meses del dropdown, pero un usuario que
+    // manipule el request a mano queda igualmente acotado).
+    const clampedMov = clampPeriodoParaNoAdmin(req, {
+      periodo: req.query.periodo || null,
+      periodo_desde: null, periodo_hasta: null,
+    });
+    if (clampedMov.fueraDeRango) {
+      return res.json({ total: 0, total_importe: 0, limit: +req.query.limit || 50, offset: +req.query.offset || 0, rows: [], periodo_floor_aplicado: PERIODO_FLOOR_NO_ADMIN });
+    }
+    const periodo = clampedMov.periodo;
     const categoria = req.query.categoria || null;
     const banco = req.query.banco || null;
     const local_id = req.query.local_id || null;
@@ -443,6 +454,11 @@ router.get('/movimientos', async (req, res) => {
     if (banco)       { where.push(`banco=$${vals.length+1}`);       vals.push(banco); }
     if (local_id)    { where.push(`local_id=$${vals.length+1}`);    vals.push(local_id); }
     if (search)      { where.push(`concepto ILIKE $${vals.length+1}`); vals.push(`%${search}%`); }
+    // Suelo de período para no-admin aplicado al WHERE (no-op para admin).
+    if (!esAdminLike(req)) {
+      where.push(`periodo >= $${vals.length+1}`);
+      vals.push(PERIODO_FLOOR_NO_ADMIN);
+    }
     // Filtro de visibilidad: no-admin no ve INTRAGRUPO/Raba/categorías de dirección.
     const visCl = clausulaVisibilidadParaRol(req, vals.length + 1);
     if (visCl) { where.push(visCl.sql); vals.push(...visCl.vals); }
@@ -480,7 +496,15 @@ router.get('/resumen', async (req, res) => {
                       n_movimientos, updated_at
                FROM ab_resumen_mensual`;
     const vals = [];
-    if (sociedad_id) { sql += ' WHERE sociedad_id=$1'; vals.push(sociedad_id); }
+    const where = [];
+    if (sociedad_id) { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
+    // Suelo de período para no-admin (gerente/administrativo): sólo
+    // pueden ver resúmenes >= PERIODO_FLOOR_NO_ADMIN.
+    if (!esAdminLike(req)) {
+      where.push(`periodo >= $${vals.length+1}`);
+      vals.push(PERIODO_FLOOR_NO_ADMIN);
+    }
+    if (where.length) sql += ' WHERE ' + where.join(' AND ');
     sql += ' ORDER BY sociedad_id, periodo';
     const rows = await many(sql, vals);
     // Para no-admin: ocultar categorías sensibles del detalle_categorias.
@@ -515,10 +539,23 @@ router.get('/resumen', async (req, res) => {
 router.get('/gastos-por-proveedor', async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
-    const periodo = req.query.periodo || null;
+    // Clamp del período por rol (defense in depth con frontend).
+    const clampedGpp = clampPeriodoParaNoAdmin(req, {
+      periodo: req.query.periodo || null,
+      periodo_desde: null, periodo_hasta: null,
+    });
+    if (clampedGpp.fueraDeRango) {
+      return res.json({ proveedores: [], por_categoria: [], periodo_floor_aplicado: PERIODO_FLOOR_NO_ADMIN });
+    }
+    const periodo = clampedGpp.periodo;
     const where = ['importe < 0']; const vals = [];
     if (sociedad_id) { where.push(`sociedad_id=$${vals.length+1}`); vals.push(sociedad_id); }
     if (periodo)     { where.push(`periodo=$${vals.length+1}`);     vals.push(periodo); }
+    // Suelo de período para no-admin si no envía periodo específico.
+    if (!esAdminLike(req)) {
+      where.push(`periodo >= $${vals.length+1}`);
+      vals.push(PERIODO_FLOOR_NO_ADMIN);
+    }
     // SIN cláusula de visibilidad SQL: el donut por categoría muestra los
     // totales reales (incluyendo cats sensibles) para todos los roles. El
     // filtrado por rol se aplica abajo a nivel proveedor (tabla Top 50).

@@ -177,24 +177,38 @@ function buildSelectors() {
   }
 }
 
+// Suelo de período aplicado en frontend para no-admin. Espejo del backend
+// PERIODO_FLOOR_NO_ADMIN — ambos deben coincidir o el dropdown ofrecerá
+// meses que el backend va a rechazar. Si llega a divergir, cambiar acá
+// (frontend) y en routes/bancos.js (backend) juntos.
+const PERIODO_FLOOR_NO_ADMIN = '2026-01';
+function periodosPermitidosParaRol() {
+  if (rolEsAdmin()) return state.periodos;
+  return state.periodos.filter((p) => p >= PERIODO_FLOOR_NO_ADMIN);
+}
+
 function buildPeriodSelector() {
   // Popula los TRES selectores globales con la lista de períodos:
   //   f-periodo (modo Mes único) → único select con default "más reciente"
   //   f-desde / f-hasta (modo Rango) → lista ascendente / descendente
-  if (!state.periodos.length) {
+  // Para no-admin (gerente / administrativo) sólo se ofrecen meses
+  // >= PERIODO_FLOOR_NO_ADMIN — los meses anteriores no aparecen en
+  // ningún dropdown.
+  const periodos = periodosPermitidosParaRol();
+  if (!periodos.length) {
     for (const id of ['f-periodo', 'f-desde', 'f-hasta']) {
       const sel = $(id);
       if (sel) { sel.innerHTML = ''; const opt = document.createElement('option'); opt.value=''; opt.textContent='(sin datos)'; sel.appendChild(opt); }
     }
     return;
   }
-  const ultimo = state.periodos[state.periodos.length - 1];
+  const ultimo = periodos[periodos.length - 1];
   // f-periodo (Mes único): no incluye opción "(todos)" porque el modo es
   // de un mes; quien quiera rango usa el otro modo.
   const selU = $('f-periodo');
   if (selU) {
     selU.innerHTML = '';
-    for (const p of [...state.periodos].reverse()) {
+    for (const p of [...periodos].reverse()) {
       const opt = document.createElement('option');
       opt.value = p; opt.textContent = PERIOD_LABELS(p);
       selU.appendChild(opt);
@@ -207,7 +221,7 @@ function buildPeriodSelector() {
     const sel = $(id);
     if (!sel) continue;
     sel.innerHTML = '';
-    for (const p of [...state.periodos].reverse()) {
+    for (const p of [...periodos].reverse()) {
       const opt = document.createElement('option');
       opt.value = p; opt.textContent = PERIOD_LABELS(p);
       sel.appendChild(opt);
