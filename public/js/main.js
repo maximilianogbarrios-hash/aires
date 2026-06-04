@@ -354,8 +354,13 @@ function buildFacInputs() {
 }
 
 function buildLocFilter() {
+  // El filtro de locales vive en la tab Evolución, que se removió del HTML.
+  // Sin guard, $('loc-filter').innerHTML tira null-ref en boot() ANTES
+  // de update() y deja todas las cards en "—". Mismo patrón que mkChart
+  // (commit 0020ce1) para canvas faltantes.
+  const el = $('loc-filter'); if (!el) return;
   const avail = ctx.locales.filter((l) => !(ctx.config.modoSociedad && l.dani_only));
-  $('loc-filter').innerHTML = avail.filter((l) => l.grupo === 'A' || l.grupo === 'B').map((l) => `
+  el.innerHTML = avail.filter((l) => l.grupo === 'A' || l.grupo === 'B').map((l) => `
     <button class="tgl${uiState.selLoc.has(l.id) ? ' on' : ''}" style="font-size:10px;padding:2px 6px" onclick="togLoc('${l.id}')">${l.short_name}</button>
   `).join('');
 }
@@ -1186,7 +1191,8 @@ function updLocChart() {
     tension: .3, pointRadius: 3,
   }));
   chEvLoc.update();
-  $('leg-evloc').innerHTML = sel.map((id, i) => `<span class="lbl"><span class="lbl-sq" style="background:${UI.LCOLORS[i % UI.LCOLORS.length]}"></span>${locById(id)?.nombre_display || id}</span>`).join('');
+  const leg = $('leg-evloc'); if (!leg) return;
+  leg.innerHTML = sel.map((id, i) => `<span class="lbl"><span class="lbl-sq" style="background:${UI.LCOLORS[i % UI.LCOLORS.length]}"></span>${locById(id)?.nombre_display || id}</span>`).join('');
 }
 
 function navMes(dir) {
