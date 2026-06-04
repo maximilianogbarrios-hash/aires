@@ -2841,3 +2841,92 @@ Junto con la card "Gasto total filtrado" existente y otras (proveedores
     Gasto:    €54.386,55
     Ingresos: €123.031,81
     Neto:     +€68.645,26
+
+
+---
+
+## Bancos — Fix ingresos intra-grupo mal categorizados
+
+**Fecha**: 2026-06-04
+
+### Diagnóstico
+
+El card "Total ingresos" de Bancos → Proveedores mostraba €423.175 para
+mayo 2026 pero el real debía ser ~€263k (similar a los gastos €292k).
+Diferencia de ~€160k investigada y explicada: 33 movs de mayo (€159.840
+exactos) eran traspasos/préstamos entrantes desde sociedades hermanas
+("Transferencia De Aires Alicante Sl., Concepto Traspaso Entre",
+"Transferencia De Aires Alicante Sl., Concepto Prestamo De Aires Alicante
+Sl A Smart Aires Sl", etc.) categorizados como INGRESO_OTROS /
+INGRESO_TRANSFERENCIA en lugar de INTRAGRUPO.
+
+Causa raíz: `categorizarIngreso` en `lib/bank/categorizer.js` no chequeaba
+`esIntraGrupo(concepto)` antes de aplicar las reglas
+glovo/justeat/bizum/stripe/transferencia. La regla genérica
+`/transferencia de|abono transferencia/` matcheaba cualquier ingreso
+entrante de sociedad hermana → INGRESO_TRANSFERENCIA. Para gastos sí se
+chequeaba (`categorizarGasto` línea 285) — pero ingresos quedaron
+desprotegidos.
+
+A nivel histórico el bug afectó **246 movs / €1.168.367,33 acumulado**
+desde junio 2025 (≈12-37 movs por mes).
+
+### Cambios
+
+**lib/bank/normalizers.js**
+
+- `esIntraGrupo(concepto)` se mantiene como API estable pero ahora
+  rechaza explícitamente prefijos comunes que mencionan a la sociedad en
+  el texto pero NO son intra-grupo:
+  - `/^liquidacion efectuada/i` — cobro TPV Santander
+  - `/^abono tpv/i` — cobro TPV Sabadell
+  - `/^comisiones /i` — comisión bancaria del TPV
+  - `/^recibo /i` — recibo a proveedor real (la referencia de mandato
+    bancaria puede contener el nombre de la sociedad como Smart Aires)
+  - `/^transferencia (?:inmediata )?a favor de /i` — pago saliente a
+    proveedor
+- Constante `FALSOS_POSITIVOS_INTRA_GRUPO_PREFIJOS` exportada para
+  reutilizar.
+- 10 tests de regresión pasan ✓ (TPV/ABONO/Comisiones/Recibo proveedor
+  → false; Transferencia De Aires X/Traspaso: Prestamo X → true).
+
+**lib/bank/categorizer.js**
+
+- `categorizarIngreso` ahora chequea `esIntraGrupo` ANTES de aplicar
+  REGLAS_INGRESO. Si matchea → 'INTRAGRUPO'. Esto bloquea la cascada que
+  enviaba "Transferencia De Aires Alicante Sl., Concepto Traspaso" a
+  INGRESO_TRANSFERENCIA por la regla genérica
+  `/transferencia de|abono transferencia/`.
+
+**UPDATE histórico aplicado a prod 2026-06-04**
+
+- 246 movs reclasificados de INGRESO_OTROS/INGRESO_TRANSFERENCIA →
+  INTRAGRUPO (€1.168.367,33 acumulado).
+- Recalcs `ab_resumen_mensual` y `ab_cruces` para los 48 combos
+  (sociedad × periodo) afectados.
+
+**lib/migrations.js — migration 25** `backfill_ingresos_intragrupo_mal_categorizados`
+
+- Perpetúa el cambio para deploys frescos (staging, restore desde backup
+  viejo). SQL espejo del filtro JS: incluye los mismos prefijos de
+  falsos positivos como exclusiones (`!~*`) + las mismas keywords de
+  sociedades hermanas como condición de match.
+- Idempotente: el filtro `categoria IN ('INGRESO_OTROS',
+  'INGRESO_TRANSFERENCIA')` evita re-aplicar; verificado re-corriendo
+  el SQL contra prod = 0 filas afectadas.
+
+### Verificación
+
+  Mayo 2026 post-fix:
+    Ingresos cat<>INTRAGRUPO:  €263.335,20  (627 movs)
+    Gastos   cat<>INTRAGRUPO:  €292.430,79  (708 movs)
+    Neto operativo:            −€29.095,59
+
+  El card "Resultado neto" ahora muestra valor coherente con la realidad
+  operativa (mayo cerró ligeramente en negativo, NO +€130k inflado).
+
+### Comportamiento futuro
+
+Importaciones nuevas: el parser categoriza ingresos intra-grupo
+directamente como INTRAGRUPO en el momento del parse (vía
+`categorizarIngreso` → `esIntraGrupo`). El bug no se reproduce.
