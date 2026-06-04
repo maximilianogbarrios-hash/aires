@@ -86,6 +86,38 @@ function clausulaVisibilidadParaRol(req, paramIndex) {
   return { sql, vals: [] };
 }
 
+// Helpers de período anterior — usados por /proveedores para devolver la
+// comparativa contra el período inmediatamente previo del mismo tamaño.
+function shiftPeriodMonths(periodo, deltaMeses) {
+  const [yyyy, mm] = periodo.split('-').map(Number);
+  const d = new Date(Date.UTC(yyyy, mm - 1 + deltaMeses, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+function monthsBetweenInclusive(desde, hasta) {
+  const [yd, md] = desde.split('-').map(Number);
+  const [yh, mh] = hasta.split('-').map(Number);
+  return (yh - yd) * 12 + (mh - md) + 1;
+}
+// Devuelve los filtros del período inmediatamente anterior del MISMO tamaño.
+// - `periodo='2026-05'` → `periodo='2026-04'`
+// - `periodo_desde='2026-03', periodo_hasta='2026-05'` (3 meses) →
+//    `periodo_desde='2025-12', periodo_hasta='2026-02'`
+// Null si no hay datos de período suficientes para inferir.
+function periodoAnterior({ periodo, periodo_desde, periodo_hasta }) {
+  if (periodo) {
+    return { periodo: shiftPeriodMonths(periodo, -1), periodo_desde: null, periodo_hasta: null };
+  }
+  if (periodo_desde && periodo_hasta) {
+    const n = monthsBetweenInclusive(periodo_desde, periodo_hasta);
+    return {
+      periodo: null,
+      periodo_desde: shiftPeriodMonths(periodo_desde, -n),
+      periodo_hasta: shiftPeriodMonths(periodo_hasta, -n),
+    };
+  }
+  return null;
+}
+
 // Aplica el suelo de periodo para roles no-admin/socio. Recibe los
 // params crudos y devuelve los valores efectivos a usar en la query.
 // Si el rango entero queda fuera del suelo, devuelve { fueraDeRango: true }
@@ -1044,6 +1076,53 @@ router.get('/proveedores', async (req, res) => {
       }
     }
 
+    // ─── Comparativa con período anterior ───
+    // Calculamos el mismo total agregado por categoría para el período
+    // inmediatamente previo del MISMO tamaño que el filtro actual:
+    //   - filtro mes único → mes anterior
+    //   - filtro rango N meses → N meses previos
+    // No re-corremos el pipeline completo; solo necesitamos total absoluto
+    // por categoría resuelta. Si el período previo queda fuera del suelo
+    // para no-admin (PERIODO_FLOOR_NO_ADMIN), devolvemos sin comparativa.
+    const prevRaw = periodoAnterior({ periodo, periodo_desde, periodo_hasta });
+    const prevClamped = prevRaw ? clampPeriodoParaNoAdmin(req, prevRaw) : null;
+    const tieneAnterior = !!(prevClamped && !prevClamped.fueraDeRango
+                              && (prevClamped.periodo || (prevClamped.periodo_desde && prevClamped.periodo_hasta)));
+    const catAggPrev = new Map();
+    let totalPrev = 0;
+    let nMovsPrev = 0;
+    if (tieneAnterior) {
+      const wherePrev = ['importe < 0'];
+      const valsPrev = [];
+      const socClPrev = buildSociedadClause(sociedad_id, valsPrev.length + 1);
+      if (socClPrev)                  { wherePrev.push(socClPrev.sql);                       valsPrev.push(...socClPrev.vals); }
+      if (prevClamped.periodo)        { wherePrev.push(`periodo=$${valsPrev.length+1}`);    valsPrev.push(prevClamped.periodo); }
+      if (prevClamped.periodo_desde)  { wherePrev.push(`periodo>=$${valsPrev.length+1}`);   valsPrev.push(prevClamped.periodo_desde); }
+      if (prevClamped.periodo_hasta)  { wherePrev.push(`periodo<=$${valsPrev.length+1}`);   valsPrev.push(prevClamped.periodo_hasta); }
+      const rowsPrev = await many(
+        `SELECT concepto, categoria, importe::float8 AS importe, proveedor_normalizado
+           FROM ab_movimientos
+          WHERE ${wherePrev.join(' AND ')}`,
+        valsPrev
+      );
+      // Pipeline idéntico al actual: regla > histórico > heurística.
+      // Aplicamos misma política de visibilidad (no-admin: cats sensibles
+      // suman al total — el donut muestra el monto, solo el drill se bloquea).
+      for (const r of rowsPrev) {
+        if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+        let proveedor, categoria;
+        const rule = matchRegla(r.concepto, reglasDb);
+        if (rule) { proveedor = rule.proveedor_normalizado; categoria = rule.categoria; }
+        else if (r.proveedor_normalizado) { proveedor = r.proveedor_normalizado; categoria = r.categoria || 'SIN_CLASIFICAR'; }
+        else { const n = normalizarProveedor(r.concepto, r.categoria); proveedor = n.proveedor || r.concepto; categoria = n.categoria || 'SIN_CLASIFICAR'; }
+        if (categoria === 'INTRAGRUPO') continue;
+        const abs = Math.abs(+r.importe);
+        catAggPrev.set(categoria, (catAggPrev.get(categoria) || 0) + abs);
+        totalPrev += abs;
+        nMovsPrev++;
+      }
+    }
+
     // Construir entradas individuales por categoría.
     // Política de visibilidad (rev. 2026-05-28): todas las cats aparecen
     // como slices individuales para TODOS los roles. La diferencia es
@@ -1055,6 +1134,9 @@ router.get('/proveedores', async (req, res) => {
     const adminLike = esAdminLike(req);
     let porCategoria = [...catAgg.values()].map((c) => {
       const sensible = CATEGORIAS_DIRECCION_FUSE.has(c.codigo);
+      const importeAnt = catAggPrev.get(c.codigo) || 0;
+      const pctActual = totalGasto > 0 ? c.total / totalGasto : 0;
+      const pctAnt = (tieneAnterior && totalPrev > 0) ? importeAnt / totalPrev : 0;
       return {
         codigo: c.codigo,
         nombre_display: catDisplay.get(c.codigo) || c.codigo,
@@ -1062,10 +1144,21 @@ router.get('/proveedores', async (req, res) => {
         n_movs: c.n_movs,
         n_proveedores: c.proveedores.size,
         ultima_fecha: c.ultima_fecha,
-        porcentaje: totalGasto > 0 ? c.total / totalGasto : 0,
+        porcentaje: pctActual,
         es_fusion: false,
         es_sensible: sensible,
         puede_drilldown: adminLike || !sensible,
+        // Comparativa con período anterior. `tiene_anterior=false` cuando
+        // no hay datos (rango fuera del floor, sin período previo válido,
+        // o totalPrev=0 — ningún gasto en el período de comparación).
+        tiene_anterior: tieneAnterior && totalPrev > 0,
+        importe_anterior: importeAnt,
+        pct_anterior: pctAnt,
+        var_importe: c.total - importeAnt,
+        // Variación de participación en puntos porcentuales (pct_actual y
+        // pct_ant están en [0,1], los pasamos a porcentaje × 100 para que
+        // el diff quede en pp directamente legibles).
+        var_pp: (pctActual - pctAnt) * 100,
       };
     }).sort((a, b) => b.total - a.total);
 
@@ -1104,8 +1197,20 @@ router.get('/proveedores', async (req, res) => {
       // Lista de categorías canónicas para el donut nuevo. Cada entrada con
       // `codigo` (PK ab_categorias o '__GASTOS_DIRECCION_FUSE__' para la
       // fusión), `nombre_display`, `total`, `n_movs`, `n_proveedores`,
-      // `porcentaje`. Ordenado por total desc.
+      // `porcentaje`, y comparativa contra período anterior:
+      // `tiene_anterior`, `importe_anterior`, `pct_anterior`, `var_importe`,
+      // `var_pp`. Ordenado por total desc.
       por_categoria: porCategoria,
+      // Filtros del período anterior — la UI los muestra en el tooltip
+      // de cada categoría ("Abril 2026: …") para que el usuario sepa
+      // contra qué se está comparando.
+      comparativa_anterior: tieneAnterior ? {
+        periodo: prevClamped.periodo,
+        periodo_desde: prevClamped.periodo_desde,
+        periodo_hasta: prevClamped.periodo_hasta,
+        total_gasto: totalPrev,
+        n_movs: nMovsPrev,
+      } : null,
     });
   } catch (e) {
     console.error('[bancos.proveedores]', e);

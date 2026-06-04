@@ -476,6 +476,10 @@ async function loadProvRanking() {
     // de state.prov.rows. La tabla de proveedores sigue usando rows.
     por_categoria: j.por_categoria || [],
     fusion_categoria: j.fusion_categoria || null,
+    // Filtros activos + período anterior contra el que se compara
+    // (usados por renderProvDonut para etiquetar el tooltip de variación).
+    filtros: j.filtros || null,
+    comparativaPrev: j.comparativa_anterior || null,
   });
   // Defensa adicional: si por cualquier ruta el sort se hubiera perdido,
   // re-inicializarlo a su default.
@@ -549,6 +553,14 @@ function renderProvDonut() {
     n_proveedores: c.n_proveedores,
     es_fusion: !!c.es_fusion,
     puede_drilldown: c.puede_drilldown !== false, // default permitido
+    // Comparativa contra período anterior (mismo tamaño que el filtro).
+    // tiene_anterior=false desactiva la flecha/variación en la leyenda y
+    // muestra "—" en su lugar.
+    tiene_anterior: !!c.tiene_anterior,
+    importe_anterior: +c.importe_anterior || 0,
+    pct_anterior: +c.pct_anterior || 0,
+    var_importe: +c.var_importe || 0,
+    var_pp: +c.var_pp || 0,
   }));
 
   const threshold = state.prov.donutThreshold;
@@ -629,6 +641,47 @@ function renderProvDonut() {
   chProvDonut.data.labels = labels.map(labelUpper);
   chProvDonut.update('none');
 
+  // Etiqueta legible del período (actual y anterior) para el tooltip de la
+  // comparativa: "Mayo 2026" si es un mes único, "Marzo–Mayo 2026" si es
+  // un rango. Usa state.prov.filtros (current) y state.prov.comparativaPrev.
+  const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  function _labelPeriodo(p) {
+    if (!p) return '';
+    if (p.periodo) {
+      const [y, m] = p.periodo.split('-').map(Number);
+      return `${MESES_ES[m-1]} ${y}`;
+    }
+    if (p.periodo_desde && p.periodo_hasta) {
+      const [yd, md] = p.periodo_desde.split('-').map(Number);
+      const [yh, mh] = p.periodo_hasta.split('-').map(Number);
+      if (p.periodo_desde === p.periodo_hasta) return `${MESES_ES[md-1]} ${yd}`;
+      return yd === yh
+        ? `${MESES_ES[md-1]}–${MESES_ES[mh-1]} ${yh}`
+        : `${MESES_ES[md-1]} ${yd}–${MESES_ES[mh-1]} ${yh}`;
+    }
+    return '';
+  }
+  const labelActual = _labelPeriodo(state.prov.filtros);
+  const labelPrev = _labelPeriodo(state.prov.comparativaPrev);
+
+  // Indicador de variación: flecha + color según el cambio de participación
+  // (pp). Umbral neutral 0,5pp. Verde = subió (gasto creció), rojo = bajó,
+  // gris = sin cambio relevante.
+  function _flecha(varPp, varImporte) {
+    if (Math.abs(varPp) < 0.5) return { ch: '→', color: '#6B7280' };
+    if (varImporte > 0)        return { ch: '↑', color: '#16a34a' };
+    return { ch: '↓', color: '#dc2626' };
+  }
+  const _fmtEurSigned = (n) => (n >= 0 ? '+' : '') + eur(Math.abs(n)) * (n < 0 ? -1 : 1); // Math hack: eur() devuelve string
+  function _fmtVarImporte(n) {
+    const sign = n >= 0 ? '+' : '−';
+    return sign + eur(Math.abs(n));
+  }
+  function _fmtVarPp(n) {
+    const sign = n >= 0 ? '+' : '−';
+    return sign + Math.abs(n).toFixed(1) + 'pp';
+  }
+
   $('prov-legend').innerHTML = view.map((v, i) => {
     const pctV = tot > 0 ? (v.value / tot * 100).toFixed(1) : '0';
     const isOtros = !!v.isOtros;
@@ -646,19 +699,40 @@ function renderProvDonut() {
     if (drillBloqueado) lockIcon = ' 🔒';
     else if (esSensible) lockIcon = ' 🔓';
     const sufijo = isOtros ? ' →' : lockIcon;
-    // Tooltip: nombre_display (legible) cuando difiere del código, + stats.
     const labelDisplay = labelUpper(v.label);
     const displayDiff = v.label_full && v.label_full.toUpperCase() !== labelDisplay;
+
+    // Comparativa contra período anterior. Si la cat es "Otros" (bucket
+    // virtual del threshold) no mostramos comparativa porque sus miembros
+    // varían según el threshold. Si v.tiene_anterior=false → muestra "—".
+    let varHtmlImporte = '<span style="color:var(--text-2);font-size:10px">—</span>';
+    let varHtmlPp = '<span style="color:var(--text-2);font-size:10px">—</span>';
+    let tooltipVar = '';
+    if (!isOtros && v.tiene_anterior) {
+      const fl = _flecha(v.var_pp, v.var_importe);
+      varHtmlImporte = `<span style="color:${fl.color};font-size:10px;font-weight:500">${fl.ch}${_fmtVarImporte(v.var_importe)}</span>`;
+      varHtmlPp = `<span style="color:${fl.color};font-size:10px">${fl.ch}${_fmtVarPp(v.var_pp)}</span>`;
+      const pctActualS = (v.porcentaje * 100).toFixed(1);
+      const pctAntS = (v.pct_anterior * 100).toFixed(1);
+      tooltipVar = `\n${labelActual}: ${eur(v.value)}  (${pctActualS}%)\n${labelPrev}: ${eur(v.importe_anterior)}  (${pctAntS}%)\nVariación: ${_fmtVarImporte(v.var_importe)} (${_fmtVarPp(v.var_pp)}) ${fl.ch}`;
+    } else if (!isOtros && labelPrev) {
+      tooltipVar = `\n${labelActual}: ${eur(v.value)}  (${(v.porcentaje*100).toFixed(1)}%)\n${labelPrev}: sin datos`;
+    }
+
     const tooltipParts = [];
     if (displayDiff) tooltipParts.push(v.label_full);
     if (!isOtros) tooltipParts.push(`${v.n_proveedores || 0} prov · ${v.count} mvs`);
     if (drillBloqueado) tooltipParts.push('sin acceso al detalle por proveedor');
     const tooltipText = tooltipParts.join(' · ');
-    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover} title="${labelDisplay}${tooltipText ? ' — ' + tooltipText : ''}">
+    const tooltipFull = `${labelDisplay}${tooltipText ? ' — ' + tooltipText : ''}${tooltipVar}`;
+
+    return `<div onclick="${onClick}" style="display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:${cursor};border-radius:6px"${hover} title="${tooltipFull.replace(/"/g,'&quot;')}">
       <span style="width:10px;height:10px;border-radius:2px;background:${colors[i]};flex-shrink:0;display:inline-block"></span>
       <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${labelDisplay}${sufijo}</span>
-      <span style="font-size:11px;font-weight:500">${eur(v.value)}</span>
-      <span style="font-size:11px;color:var(--text-2);min-width:40px;text-align:right">${pctV}%</span>
+      <span style="font-size:11px;font-weight:500;min-width:70px;text-align:right">${eur(v.value)}</span>
+      <span style="min-width:80px;text-align:right">${varHtmlImporte}</span>
+      <span style="font-size:11px;color:var(--text-2);min-width:50px;text-align:right">${pctV}%</span>
+      <span style="min-width:65px;text-align:right">${varHtmlPp}</span>
     </div>`;
   }).join('');
 }

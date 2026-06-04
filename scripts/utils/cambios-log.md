@@ -2676,3 +2676,99 @@ visible al seleccionar. Row seleccionada con background violeta.
 - El parser PDF Santander usa el texto que extrae `pdf-parse` — si
   Santander cambia el layout (nuevos PDFs con tablas vectorizadas en vez
   de texto plano) el parser puede fallar y habrá que ajustar regex.
+
+
+---
+
+## Bancos — Comparativa contra período anterior en la leyenda del donut
+
+**Fecha**: 2026-06-04
+
+### Pedido
+
+En el donut de Bancos → Proveedores, agregar indicadores de variación contra
+el período anterior junto al monto y porcentaje de cada categoría:
+
+  ■ PROVEEDOR_CARNES    52.131€ ↑+8.234€  17,8% ↑+2,1pp
+  ■ ALQUILER            46.250€ ↓-890€    15,3% ↓-0,3pp
+
+- Período anterior se calcula automáticamente del MISMO tamaño que el filtro
+  actual (mes único → mes previo; rango N meses → N meses previos).
+- Tooltip al hover muestra el detalle completo (montos + % de ambos
+  períodos + variación).
+
+### Cambios
+
+**Backend** (`routes/bancos.js`)
+
+- Helpers nuevos cerca del top del archivo:
+  - `shiftPeriodMonths(periodo, delta)` — desplaza un YYYY-MM en N meses
+    usando `Date.UTC` (evita drift por DST/timezone).
+  - `monthsBetweenInclusive(desde, hasta)` — número de meses inclusive.
+  - `periodoAnterior({periodo, periodo_desde, periodo_hasta})` — devuelve
+    los filtros del período anterior del mismo tamaño, o null si no hay
+    contexto suficiente.
+
+- Endpoint `GET /api/v1/bancos/proveedores`:
+  - Antes de construir `por_categoria`, computa `prevClamped` aplicando
+    `clampPeriodoParaNoAdmin` (respeta el suelo de fecha para no-admin).
+  - Re-ejecuta el query de movs (`WHERE importe<0 AND periodo[...]`)
+    para el período anterior y aplica el mismo pipeline regla>histórico>
+    heurística para agrupar por categoría resuelta. No re-corre el agg
+    por proveedor (no necesario para el donut). Total ~30ms extra.
+  - Cada entrada de `por_categoria` se enriquece con:
+    - `tiene_anterior` (bool — false si totalPrev=0 o sin período previo
+      o fuera del suelo no-admin)
+    - `importe_anterior`
+    - `pct_anterior` (0..1)
+    - `var_importe` (€ delta)
+    - `var_pp` (puntos porcentuales delta — pct_actual × 100 − pct_ant × 100)
+  - Response añade campo `comparativa_anterior` con los filtros del período
+    previo + `total_gasto` + `n_movs` (para el label del tooltip).
+
+**Frontend** (`public/js/bancos.js`)
+
+- `loadProvRanking`: `state.prov.filtros` y `state.prov.comparativaPrev`
+  ahora se populan desde el response del backend.
+
+- `renderProvDonut`:
+  - `items` map incluye `tiene_anterior`, `importe_anterior`, `pct_anterior`,
+    `var_importe`, `var_pp` pasados al view.
+  - Helper `_labelPeriodo(p)` formatea un filtro como "Mayo 2026" /
+    "Marzo–Mayo 2026" para el tooltip.
+  - Helper `_flecha(varPp, varImporte)` devuelve `{ ch, color }`:
+    - `→` gris (`#6B7280`) cuando `|var_pp| < 0,5pp` (umbral neutral)
+    - `↑` verde (`#16a34a`) cuando el gasto subió
+    - `↓` rojo (`#dc2626`) cuando bajó
+  - El render de cada fila de leyenda añade DOS spans extra:
+    - `varHtmlImporte` (flecha + variación absoluta €)
+    - `varHtmlPp` (flecha + variación en pp)
+  - Cuando la cat no tiene comparativa (`tiene_anterior=false`) o es el
+    bucket "Otros" del threshold, muestra "—" en gris.
+  - El `title` del div ahora es multilínea (con `\n` real) y muestra:
+    - Etiqueta del período actual + monto + %
+    - Etiqueta del período anterior + monto + %
+    - Variación absoluta + pp + flecha
+  - Anchos min-width ajustados en los spans para evitar saltos cuando
+    una fila no tiene variación y otra sí.
+
+### Comportamiento ante filtros
+
+  filtro `periodo=2026-05`               → compara contra `periodo=2026-04`
+  filtro `periodo_desde=2026-03,
+          periodo_hasta=2026-05` (3 m)   → `periodo_desde=2025-12,
+                                           periodo_hasta=2026-02` (3 m)
+  filtro sin período (todo)              → `comparativa_anterior=null`
+  no-admin con período prev < 2026-01    → `comparativa_anterior=null`
+
+### Verificado en DB
+
+  Gastos abril 2026: €477.305,64
+  Gastos mayo 2026:  €414.532,20
+
+  Top 5 cats mayo vs abril (sample):
+    INTRAGRUPO       122.101  ↑+10.402   (excluido del donut)
+    PROVEEDOR_CARNES  52.131  ↑+ 8.145
+    ALQUILER          38.798  ↓- 6.562
+    SS_LABORAL        37.783  ↑+ 6.347
+    NOMINAS           30.838  ↑+ 1.399
