@@ -1205,6 +1205,15 @@ function populateMesDropdowns() {
   selB.value = meses[defaultBIdx].mes;
 }
 
+// Categorías de gasto "fijas" (no recortables a corto plazo) — usadas
+// por el análisis automático para decidir si el gap del neto se puede
+// cerrar tocando solo gastos variables o si requiere apretar fijos.
+const FLUJO_CATS_FIJAS = new Set([
+  'ALQUILER', 'NOMINAS', 'NOMINAS_DIRECCION', 'SS_LABORAL',
+  'PRESTAMOS', 'FINANCIERO', 'SUMINISTROS_ENERGIA', 'SUMINISTROS_AGUA',
+  'SUMINISTROS_LUZ', 'SEGUROS', 'IMPUESTOS', 'TELECOMUNICACIONES',
+]);
+
 function renderFlujoComparativa() {
   const meses = state.flujo?.meses || [];
   if (!meses.length) { $('flujo-comp-table').innerHTML = ''; $('flujo-comp-analisis').innerHTML = ''; return; }
@@ -1214,7 +1223,9 @@ function renderFlujoComparativa() {
   const B = meses.find((m) => m.mes === codB);
   if (!A || !B) { $('flujo-comp-table').innerHTML = ''; return; }
 
-  // Construir comparativa por categoría — solo cats con dif > 500€ (en cualquier signo)
+  // Construir comparativa por categoría — cats con |dif| > €300.
+  // El umbral va al input del análisis automático (las cats agregadas en
+  // el bloque "ANÁLISIS" pueden ser un poco más conservadoras).
   const catsMap = new Map(); // codigo → { display, a, b }
   for (const c of A.categorias) catsMap.set(c.codigo, { display: c.nombre_display, a: c.total, b: 0 });
   for (const c of B.categorias) {
@@ -1224,18 +1235,23 @@ function renderFlujoComparativa() {
   }
   const catsDif = [...catsMap.entries()]
     .map(([codigo, v]) => ({ codigo, display: v.display, a: v.a, b: v.b, dif: v.a - v.b }))
-    .filter((x) => Math.abs(x.dif) > 500)
+    .filter((x) => Math.abs(x.dif) > 300)
     .sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif));
 
+  // Convención de signos del diff:
+  //   A vs B: dif > 0  →  el valor en A es mayor que en B
+  //                       (gasto subió respecto a B / ingreso subió respecto a B)
+  //   dif < 0 → bajó.
+  // Para los iconos de "buen/mal" cambio:
+  //   en INGRESOS:  subir = bueno (verde) / bajar = malo (rojo)
+  //   en GASTOS:    subir = malo (rojo)  / bajar = bueno (verde)
   const difIng = A.ingresos - B.ingresos;
   const difGas = A.gastos - B.gastos;
   const difNeto = A.neto - B.neto;
   const difPctNeto = A.pct_neto - B.pct_neto;
 
-  // Para los DIFs: para INGRESOS, subir es bueno (verde). Para GASTOS, subir
-  // es malo (rojo). Devuelve clases CSS reutilizando flujo-* + chip de color.
   function _signoIcono(dif, gastoes) {
-    if (Math.abs(dif) < 1) return { ico: '→', cssTxt: '', cssChip: '' };
+    if (Math.abs(dif) < 300) return { ico: '→', cssTxt: '', cssChip: 'flujo-chip-neu' };
     const subio = dif > 0;
     const malo = (gastoes && subio) || (!gastoes && !subio);
     return malo
@@ -1244,83 +1260,137 @@ function renderFlujoComparativa() {
   }
   const lblA = _mesLabel(A.mes); const lblB = _mesLabel(B.mes);
 
-  function row(label, valA, valB, dif, gastoes, indent=false) {
+  function rowTotal(label, valA, valB, dif, gastoes) {
     const sg = _signoIcono(dif, gastoes);
-    const lblHtml = indent ? `<span style="color:var(--text-2)">└</span> ${label}` : `<strong>${label}</strong>`;
-    const chip = sg.cssChip ? `<span class="flujo-chip ${sg.cssChip}"></span>` : '';
-    return `<tr style="border-bottom:.5px solid var(--border-3)">
-      <td style="padding:6px;${indent?'padding-left:24px':''}">${lblHtml}</td>
-      <td style="padding:6px;text-align:right">${eur(valA)}</td>
-      <td style="padding:6px;text-align:right;color:var(--text-2)">${eur(valB)}</td>
-      <td class="${sg.cssTxt}" style="padding:6px;text-align:right" title="${sg.ico==='→'?'sin cambio relevante':(sg.cssTxt==='flujo-pct-neg'?'empeora':'mejora')}">${chip}${_eurSigned(dif)} ${sg.ico}</td>
+    return `<tr class="flujo-comp-total">
+      <td style="padding:8px 6px">${label}</td>
+      <td style="padding:8px 6px;text-align:right">${eur(valA)}</td>
+      <td style="padding:8px 6px;text-align:right">${eur(valB)}</td>
+      <td class="${sg.cssTxt}" style="padding:8px 6px;text-align:right"><span class="flujo-chip ${sg.cssChip}"></span>${_eurSigned(dif)} ${sg.ico}</td>
     </tr>`;
   }
-  function rowNeto() {
+  function rowCat(c) {
+    const sg = _signoIcono(c.dif, true);
+    return `<tr class="flujo-comp-cat">
+      <td style="padding:5px 6px">└ ${c.display}</td>
+      <td style="padding:5px 6px;text-align:right">${eur(c.a)}</td>
+      <td style="padding:5px 6px;text-align:right;color:var(--text-2)">${eur(c.b)}</td>
+      <td class="${sg.cssTxt}" style="padding:5px 6px;text-align:right"><span class="flujo-chip ${sg.cssChip}"></span>${_eurSigned(c.dif)} ${sg.ico}</td>
+    </tr>`;
+  }
+  function rowNetoBloque() {
     const clsA = A.neto >= 0 ? 'flujo-neto-pos' : 'flujo-neto-neg';
     const clsB = B.neto >= 0 ? 'flujo-neto-pos' : 'flujo-neto-neg';
-    const sg = _signoIcono(difNeto, false);
-    const chip = sg.cssChip ? `<span class="flujo-chip ${sg.cssChip}"></span>` : '';
-    return `<tr style="border-top:1px solid var(--border-2);background:var(--bg-secondary)">
-      <td style="padding:8px 6px"><strong>Neto</strong></td>
-      <td class="${clsA}" style="padding:8px 6px;text-align:right">${_eurSigned(A.neto)}</td>
-      <td class="${clsB}" style="padding:8px 6px;text-align:right">${_eurSigned(B.neto)}</td>
-      <td class="${sg.cssTxt}" style="padding:8px 6px;text-align:right">${chip}${_eurSigned(difNeto)} ${sg.ico}</td>
+    const sgN = _signoIcono(difNeto, false);
+    const sgP = _signoIcono(difPctNeto * 1000, false); // amplifico para que el umbral 300 aplique a pp
+    return `<tr class="flujo-comp-neto">
+      <td style="padding:10px 6px">Neto</td>
+      <td class="${clsA}" style="padding:10px 6px;text-align:right">${_eurSigned(A.neto)}</td>
+      <td class="${clsB}" style="padding:10px 6px;text-align:right">${_eurSigned(B.neto)}</td>
+      <td class="${sgN.cssTxt}" style="padding:10px 6px;text-align:right"><span class="flujo-chip ${sgN.cssChip}"></span>${_eurSigned(difNeto)} ${sgN.ico}</td>
     </tr>
-    <tr>
-      <td style="padding:6px"><strong>% Neto</strong></td>
+    <tr class="flujo-comp-neto">
+      <td style="padding:6px">% Neto</td>
       <td style="padding:6px;text-align:right">${A.pct_neto.toFixed(1)}%</td>
       <td style="padding:6px;text-align:right;color:var(--text-2)">${B.pct_neto.toFixed(1)}%</td>
-      <td class="${sg.cssTxt}" style="padding:6px;text-align:right">${(difPctNeto>=0?'+':'')}${difPctNeto.toFixed(1)}pp</td>
+      <td class="${sgP.cssTxt}" style="padding:6px;text-align:right">${(difPctNeto>=0?'+':'')}${difPctNeto.toFixed(1)}pp</td>
     </tr>`;
   }
 
-  $('flujo-comp-table').innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse">
+  $('flujo-comp-table').innerHTML = `<table style="width:100%;font-size:13px;border-collapse:collapse">
     <thead>
-      <tr style="border-bottom:1px solid var(--border-2);color:var(--text-2)">
-        <th style="text-align:left;padding:6px"></th>
-        <th style="text-align:right;padding:6px">${lblA}</th>
-        <th style="text-align:right;padding:6px">${lblB}</th>
-        <th style="text-align:right;padding:6px">Diferencia</th>
+      <tr style="border-bottom:1.5px solid var(--border-2)">
+        <th style="text-align:left;padding:8px 6px;font-size:11px;color:var(--text-2);text-transform:uppercase;letter-spacing:.5px">Categoría</th>
+        <th style="text-align:right;padding:8px 6px;font-size:12px">${lblA}</th>
+        <th style="text-align:right;padding:8px 6px;font-size:12px;color:var(--text-2)">${lblB}</th>
+        <th style="text-align:right;padding:8px 6px;font-size:11px;color:var(--text-2);text-transform:uppercase;letter-spacing:.5px">Diferencia</th>
       </tr>
     </thead>
     <tbody>
-      ${row('Ingresos', A.ingresos, B.ingresos, difIng, false)}
-      ${row('Gastos', A.gastos, B.gastos, difGas, true)}
-      ${catsDif.map((c) => row(c.display, c.a, c.b, c.dif, true, true)).join('')}
-      ${rowNeto()}
+      ${rowTotal('Ingresos total', A.ingresos, B.ingresos, difIng, false)}
+      ${rowTotal('Gastos total', A.gastos, B.gastos, difGas, true)}
+      ${catsDif.map(rowCat).join('')}
+      ${rowNetoBloque()}
     </tbody>
   </table>`;
 
-  // ─── Análisis automático ─────────────
-  const lines = [];
-  // 1) Diferencia principal: ingresos o gastos?
-  if (Math.abs(difIng) > Math.abs(difGas) * 1.5 && Math.abs(difIng) > 1000) {
-    const direccion = difIng > 0 ? 'más' : 'menos';
-    lines.push(`⚠️ La diferencia principal es <strong>INGRESOS</strong> (${_eurSigned(difIng)} ${direccion} que ${lblB})`);
-  } else if (Math.abs(difGas) > Math.abs(difIng) * 1.5 && Math.abs(difGas) > 1000) {
-    const direccion = difGas > 0 ? 'más' : 'menos';
-    lines.push(`⚠️ La diferencia principal es <strong>GASTOS</strong> (${_eurSigned(difGas)} ${direccion} que ${lblB})`);
+  // ─── Análisis automático enriquecido ───────────
+  const lineas = [];
+  // (1) Causa principal del deterioro/mejora
+  const pctIng = B.ingresos > 0 ? (difIng / B.ingresos * 100) : 0;
+  const pctGas = B.gastos > 0 ? (difGas / B.gastos * 100) : 0;
+  if (Math.abs(difIng) >= Math.abs(difGas) * 1.3 && Math.abs(difIng) >= 1000) {
+    const verbo = difIng > 0 ? 'subieron' : 'bajaron';
+    const icoCausa = difIng > 0 ? '🟢' : '🔴';
+    const cls = difIng > 0 ? 'flujo-chip-bien' : 'flujo-chip-neg';
+    const sufijo = difIng > 0 ? '— motor del resultado' : '— causa principal del deterioro';
+    lineas.push(`<span class="flujo-chip ${cls}"></span><span><strong>Ingresos ${verbo} ${_eurSigned(difIng)}</strong> (${pctIng>=0?'+':''}${pctIng.toFixed(1)}%) ${sufijo}</span>`);
+  } else if (Math.abs(difGas) >= Math.abs(difIng) * 1.3 && Math.abs(difGas) >= 1000) {
+    const verbo = difGas > 0 ? 'subieron' : 'bajaron';
+    const icoCausa = difGas > 0 ? '🔴' : '🟢';
+    const cls = difGas > 0 ? 'flujo-chip-neg' : 'flujo-chip-bien';
+    const sufijo = difGas > 0 ? '— causa principal del deterioro' : '— mejora estructural';
+    lineas.push(`<span class="flujo-chip ${cls}"></span><span><strong>Gastos ${verbo} ${_eurSigned(difGas)}</strong> (${pctGas>=0?'+':''}${pctGas.toFixed(1)}%) ${sufijo}</span>`);
   } else {
-    lines.push(`ℹ️ La diferencia se reparte entre ingresos (${_eurSigned(difIng)}) y gastos (${_eurSigned(difGas)})`);
+    lineas.push(`<span class="flujo-chip flujo-chip-neu"></span><span>La diferencia se reparte entre ingresos (${_eurSigned(difIng)}) y gastos (${_eurSigned(difGas)})</span>`);
   }
-  // 2) Top 3 cats que más subieron entre A y B (dif > 0 = subió)
-  const top3Subieron = catsDif.filter((c) => c.dif > 0).slice(0, 3);
-  if (top3Subieron.length) {
-    const txt = top3Subieron.map((c) => `${c.display} ${_eurSigned(c.dif)}`).join(', ');
-    lines.push(`⚠️ En gastos: ${txt}`);
-  }
-  // 3) Neto estimado: si replicaras los ingresos del mes mejor con los gastos del mes actual.
-  const mesIngresosMejor = A.ingresos >= B.ingresos ? A : B;
-  const mesGastosActual = (mesIngresosMejor === A) ? B : A;
-  const netoEstimado = mesIngresosMejor.ingresos - mesGastosActual.gastos;
-  const pctEst = mesIngresosMejor.ingresos > 0 ? (netoEstimado / mesIngresosMejor.ingresos * 100) : 0;
-  const colEst = netoEstimado >= 0 ? '#16a34a' : '#dc2626';
-  const sgEst = netoEstimado >= 0 ? '✅' : '⚠️';
-  const lblMejor = _mesLabel(mesIngresosMejor.mes);
-  const lblActual = _mesLabel(mesGastosActual.mes);
-  lines.push(`${sgEst} Si replicaras los ingresos de <strong>${lblMejor}</strong> con los gastos de <strong>${lblActual}</strong>: neto estimado <span style="color:${colEst};font-weight:500">${_eurSigned(netoEstimado)}</span> (${pctEst >= 0 ? '+' : ''}${pctEst.toFixed(1)}%)`);
 
-  $('flujo-comp-analisis').innerHTML = lines.map((l) => `<div>${l}</div>`).join('');
+  // (2) Top 3 categorías de gasto que MÁS SUBIERON (dif > 0)
+  const subieron = catsDif.filter((c) => c.dif > 0).slice(0, 3);
+  for (const c of subieron) {
+    lineas.push(`<span class="flujo-chip flujo-chip-neg"></span><span><strong>${c.display}</strong> subió ${_eurSigned(c.dif)} <span style="color:var(--text-2);font-size:11px">(${eur(c.b)} → ${eur(c.a)})</span></span>`);
+  }
+  // (3) Top 2 categorías de gasto que BAJARON (dif < 0) — eso es positivo
+  const bajaron = catsDif.filter((c) => c.dif < 0).slice(0, 2);
+  for (const c of bajaron) {
+    lineas.push(`<span class="flujo-chip flujo-chip-bien"></span><span><strong>${c.display}</strong> bajó ${_eurSigned(c.dif)} <span style="color:var(--text-2);font-size:11px">(${eur(c.b)} → ${eur(c.a)})</span> — positivo</span>`);
+  }
+
+  // ─── Sugerencias para cerrar el gap del Neto ───────────
+  // Solo aplican si Mes A (típicamente el "actual") tiene neto peor que B.
+  let sugHtml = '';
+  if (difNeto < -500) {
+    const gap = -difNeto; // cuánto falta para igualar B
+    // Camino 1: solo ingresos. ¿Cuánto debería crecer la facturación
+    // de A para cerrar el gap?
+    const factPctNec = A.ingresos > 0 ? (gap / A.ingresos * 100) : 0;
+    // Camino 2: solo gastos. ¿Cuánto deberíamos recortar?
+    // Calculamos cuánto está disponible en cats VARIABLES (no fijas) y
+    // dejamos nota si necesita tocar fijas.
+    const gastosVariablesA = (A.categorias || [])
+      .filter((c) => !FLUJO_CATS_FIJAS.has(c.codigo))
+      .reduce((s, c) => s + c.total, 0);
+    const recorteSoloEnVariables = Math.min(gap, gastosVariablesA);
+    const necesitaTocarFijos = gap > gastosVariablesA;
+    // Camino 3: combinación 50/50 (ingresos + recorte de variables)
+    const mitad = gap / 2;
+    const factPctMitad = A.ingresos > 0 ? (mitad / A.ingresos * 100) : 0;
+    const recorteMitad = Math.min(mitad, gastosVariablesA);
+
+    const items = [];
+    items.push(`<li><strong>${_eurSigned(gap)} más de ingresos</strong> (facturación +${factPctNec.toFixed(1)}%)</li>`);
+    if (necesitaTocarFijos) {
+      items.push(`<li><strong>${_eurSigned(-gap)} menos de gastos</strong> — gastos variables disponibles ${eur(gastosVariablesA)} &lt; ${eur(gap)}, requiere tocar nóminas/alquiler/SS/etc.</li>`);
+    } else {
+      items.push(`<li><strong>${_eurSigned(-gap)} menos de gastos variables</strong> (proveedores, mantenimiento, publicidad, etc. — sin tocar fijos)</li>`);
+    }
+    items.push(`<li>Combinación: <strong>+${eur(mitad)} ingresos</strong> y <strong>-${eur(recorteMitad)} gastos variables</strong></li>`);
+
+    sugHtml = `<div class="flujo-sugerencias">
+      <div class="titulo">💡 Para que ${lblA} cerrara como ${lblB} necesitabas:</div>
+      <ul>${items.join('')}</ul>
+    </div>`;
+  } else if (difNeto > 500) {
+    // A está mejor que B — mostrar mensaje positivo en lugar de sugerencias.
+    sugHtml = `<div class="flujo-sugerencias" style="background:#F0FDF4;border-color:#86EFAC">
+      <div class="titulo" style="color:#15803d">✅ ${lblA} cerró mejor que ${lblB} por ${_eurSigned(difNeto)}</div>
+      <ul><li>Mantener el patrón de gastos actual y replicar el mix de ingresos.</li></ul>
+    </div>`;
+  }
+
+  $('flujo-comp-analisis').innerHTML = `<div class="flujo-analisis-titulo">📊 Análisis comparativo — ${lblA} vs ${lblB}</div>`
+    + lineas.map((l) => `<div class="flujo-analisis-linea">${l}</div>`).join('')
+    + sugHtml;
 }
 
 // ─── Evolución temporal por proveedor / categoría ─────────────────────

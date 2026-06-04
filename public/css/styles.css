@@ -96,20 +96,42 @@ input[type=number].real-inp{width:80px;text-align:right;font-size:12px;padding:3
    pueden ser sobreescritos por reglas globales de `.card` / theme.
    El chip cuadrado va al lado del emoji para garantizar visibilidad
    incluso si el sistema no soporta emojis de color. */
-.flujo-neto-pos{color:#16a34a !important;font-weight:600}
-.flujo-neto-neg{color:#dc2626 !important;font-weight:600}
-.flujo-pct-exc {color:#15803d !important;font-weight:600}
-.flujo-pct-bien{color:#16a34a !important;font-weight:500}
-.flujo-pct-ajus{color:#b45309 !important;font-weight:500}
-.flujo-pct-neg {color:#dc2626 !important;font-weight:500}
-.flujo-chip{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:middle;margin-right:6px;border:.5px solid rgba(0,0,0,.15)}
+/* Color + background tint sutil para que neto/% se vean SIEMPRE,
+   incluso si el theme oscuro/claro lava los #hex. Tinted bg + bold
+   + !important = robusto contra cualquier override. */
+.flujo-neto-pos{color:#15803d !important;background:rgba(34,197,94,.10);font-weight:700}
+.flujo-neto-neg{color:#dc2626 !important;background:rgba(220,38,38,.10);font-weight:700}
+.flujo-pct-exc {color:#15803d !important;background:rgba(34,197,94,.10);font-weight:700}
+.flujo-pct-bien{color:#16a34a !important;background:rgba(34,197,94,.06);font-weight:600}
+.flujo-pct-ajus{color:#b45309 !important;background:rgba(234,179,8,.10);font-weight:600}
+.flujo-pct-neg {color:#dc2626 !important;background:rgba(220,38,38,.10);font-weight:600}
+/* Chip cuadrado de color que acompaña al emoji. Más grande (16x16)
+   para que sea visible incluso si el emoji está en monocromo. */
+.flujo-chip{display:inline-block;width:16px;height:16px;border-radius:4px;vertical-align:middle;margin-right:7px;border:1px solid rgba(0,0,0,.25);box-shadow:inset 0 -1px 0 rgba(0,0,0,.10)}
 .flujo-chip-exc {background:#15803d}
 .flujo-chip-bien{background:#22c55e}
 .flujo-chip-ajus{background:#eab308}
 .flujo-chip-neg {background:#dc2626}
+.flujo-chip-neu {background:#94a3b8}
 /* Forzar fuente con emoji a color en la columna Estado para que
    🟢/🟡/🔴 se rendericen con su color y no en blanco/negro. */
-.flujo-estado{font-family:'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji','Twemoji Mozilla',sans-serif;text-align:center}
+.flujo-estado{font-family:'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji','Twemoji Mozilla',sans-serif;text-align:left;white-space:nowrap}
+/* Comparador — destacar las filas TOTAL para que se distingan de
+   las categorías indentadas. */
+.flujo-comp-total td{font-weight:700;background:var(--bg-secondary);border-top:1px solid var(--border-2)}
+.flujo-comp-total td:first-child{text-transform:uppercase;letter-spacing:.5px;font-size:11px}
+.flujo-comp-cat td{font-size:11.5px}
+.flujo-comp-cat td:first-child{color:var(--text-2);padding-left:28px !important}
+.flujo-comp-neto td{font-weight:700;font-size:13px;background:rgba(167,139,250,.08);border-top:2px solid #A78BFA}
+.flujo-comp-neto td:first-child{text-transform:uppercase;letter-spacing:.5px}
+/* Bloque de análisis: separar visualmente las sugerencias. */
+.flujo-analisis-titulo{font-size:13px;font-weight:600;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px;color:var(--text-2)}
+.flujo-analisis-linea{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:12px}
+.flujo-sugerencias{margin-top:.75rem;padding:.75rem 1rem;background:#FAF5FF;border:.5px solid #D8B4FE;border-radius:8px}
+.flujo-sugerencias .titulo{font-size:12px;font-weight:600;color:#7E22CE;margin-bottom:.5rem}
+.flujo-sugerencias ul{list-style:none;padding:0;margin:0}
+.flujo-sugerencias li{padding:3px 0;font-size:12px;line-height:1.5}
+.flujo-sugerencias li::before{content:'→ ';color:#A78BFA;font-weight:700;margin-right:4px}
 /* Sliders y celdas con cambios sin guardar (Bloque 2) */
 input[type=range].param-dirty{accent-color:#D97706}
 input[type=range].param-dirty::-webkit-slider-runnable-track{background:#FEF3C7}
