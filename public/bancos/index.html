@@ -87,6 +87,7 @@
   <button class="tab"    data-tab="gastos"    onclick="showTab('gastos',this)">Análisis de gastos</button>
   <button class="tab"    data-tab="proveedores" onclick="showTab('proveedores',this)">Proveedores</button>
   <button class="tab"    data-tab="cruce"     onclick="showTab('cruce',this)">Cruce TPV vs Banco</button>
+  <button class="tab"    data-tab="flujo"     onclick="showTab('flujo',this)">Flujo Anual</button>
 </div>
 
 <!-- RESUMEN -->
@@ -319,6 +320,55 @@
       </tr></thead>
       <tbody id="tb-cruce"></tbody>
     </table></div>
+  </div>
+</div>
+
+<!-- FLUJO ANUAL — tabla mensual + comparador (admin/socio/gerente) -->
+<div id="sect-flujo" class="sect">
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:.75rem">
+      <p style="font-size:13px;font-weight:500">Flujo mensual <span style="color:var(--text-2);font-weight:400">desde junio 2025</span></p>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Sociedad:</span>
+        <select id="flujo-sociedad" onchange="loadFlujoAnual()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"></select>
+      </div>
+      <span id="flujo-aviso-rol" style="display:none;font-size:10px;color:#7E22CE">El desglose de categorías sensibles está oculto para tu rol.</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:.5px solid var(--border-3);color:var(--text-2);text-align:right">
+            <th style="text-align:left;padding:8px 6px">Mes</th>
+            <th style="padding:8px 6px">Ingresos</th>
+            <th style="padding:8px 6px">Gastos</th>
+            <th style="padding:8px 6px">Neto</th>
+            <th style="padding:8px 6px">% Neto</th>
+            <th style="text-align:center;padding:8px 6px">Estado</th>
+          </tr>
+        </thead>
+        <tbody id="flujo-tbody">
+          <tr><td colspan="6" style="padding:18px;text-align:center;color:var(--text-2)">Cargando…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:10px;color:var(--text-2);margin-top:.5rem">Semáforo por % Neto / Ingresos: 🟢🟢 &gt; 20% · 🟢 10–20% · 🟡 0–10% · 🔴 &lt; 0%. Excluye transferencias INTRAGRUPO.</p>
+  </div>
+
+  <div class="card">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Comparativa de dos meses</p>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:1rem">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Mes A:</span>
+        <select id="flujo-mes-a" onchange="renderFlujoComparativa()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"></select>
+      </div>
+      <span style="font-size:13px;color:var(--text-2)">vs</span>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Mes B:</span>
+        <select id="flujo-mes-b" onchange="renderFlujoComparativa()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"></select>
+      </div>
+    </div>
+    <div id="flujo-comp-table" style="overflow-x:auto"></div>
+    <div id="flujo-comp-analisis" style="margin-top:1rem;padding:.75rem 1rem;background:var(--bg-secondary);border:.5px solid var(--border-3);border-radius:8px;font-size:12px;line-height:1.6"></div>
   </div>
 </div>
 

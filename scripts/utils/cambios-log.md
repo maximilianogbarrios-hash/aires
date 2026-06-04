@@ -2930,3 +2930,109 @@ desde junio 2025 (≈12-37 movs por mes).
 Importaciones nuevas: el parser categoriza ingresos intra-grupo
 directamente como INTRAGRUPO en el momento del parse (vía
 `categorizarIngreso` → `esIntraGrupo`). El bug no se reproduce.
+
+
+---
+
+## Bancos — Nueva tab "Flujo Anual" (tabla mensual + comparador de dos meses)
+
+**Fecha**: 2026-06-04
+
+### Pedido
+
+Tab nueva en Bancos visible para admin/socio/gerente con:
+1. Tabla mensual desde junio 2025 hasta el mes actual con ingresos, gastos,
+   neto, % neto y semáforo (🟢🟢/🟢/🟡/🔴 según % neto sobre ingresos).
+2. Comparativa lado a lado de dos meses elegidos por dropdown, con desglose
+   por categoría (cats con dif > €500) y análisis automático.
+3. Filtro de sociedad arriba, default "Todas las sociedades".
+
+Control de acceso refinado: gerente (Luciano) ve totales correctos pero
+SIN el desglose de cats sensibles (GASTOS_DIRECCION, NOMINAS_DIRECCION,
+PRESTAMOS). Los totales sí incluyen esos importes — sólo el breakdown
+está filtrado.
+
+### Cambios
+
+**lib/roles.js**
+
+- `SUB_TABS_BANCOS.flujo = ['admin','socio','gerente']`. La matriz ya se
+  emite en `/api/v1/auth/me` y en el bootstrap del módulo, así que el
+  frontend oculta el botón automáticamente para roles sin acceso.
+
+**routes/bancos.js — endpoint `GET /api/v1/bancos/flujo-mensual`**
+
+- Defense in depth: chequea que el rol de la sesión esté en
+  `SUB_TABS_BANCOS.flujo` (403 si no).
+- Filtros: `sociedad_id` opcional (reutiliza `buildSociedadClause` para
+  soportar valores virtuales `sin_elche` / `solo_elche`).
+- Query: `WHERE fecha >= '2025-06-01'` + sociedad opcional. Excluye
+  INTRAGRUPO en el bucle (ambos: `esIntraGrupo(concepto)` y
+  `categoria='INTRAGRUPO'`).
+- Pipeline: `matchRegla > histórico > heurística` (igual que /proveedores)
+  para que el desglose por cat refleje las reglas actuales.
+- Agregado por mes (`periodo`) en `porMes`: ingresos, gastos, neto, n_movs.
+- Desglose por cat (solo gastos, `importe<0`) en `desglosePorMes`.
+- Para no-admin: el desglose se filtra para excluir
+  `CATEGORIAS_DIRECCION_FUSE` (GASTOS_DIRECCION/NOMINAS_DIRECCION/PRESTAMOS).
+  Los totales NO se filtran — gerente ve los netos reales aunque sin
+  saber qué cats sensibles componen los gastos.
+- Response: `{ filtros, meses: [{mes, ingresos, gastos, neto, pct_neto,
+  n_movs, categorias: [{codigo, nombre_display, total}]}],
+  desglose_filtrado_por_rol }`.
+
+**public/bancos/index.html**
+
+- Nueva pestaña `<button data-tab="flujo">Flujo Anual</button>` en la
+  barra de tabs (junto a Cruce TPV).
+- Sección `<div id="sect-flujo">` con dos cards:
+  1. **Card mensual**: filtro de sociedad + tabla con columnas Mes,
+     Ingresos, Gastos, Neto (color rojo si <0, verde si ≥0), % Neto,
+     Estado (emoji semáforo). Footer con leyenda del semáforo. Aviso
+     en violeta cuando el desglose viene filtrado por rol.
+  2. **Card comparador**: dos `<select>` para Mes A y Mes B → tabla
+     side-by-side + `<div id="flujo-comp-analisis">` para el texto
+     automático.
+
+**public/js/bancos.js**
+
+- `showTab('flujo')` ahora dispara `initFlujoFiltros()` (popula el
+  dropdown de sociedad una sola vez) + `loadFlujoAnual()` si no se cargó.
+- `loadFlujoAnual()`: fetch al endpoint con `sociedad_id` opcional;
+  popula `state.flujo.meses`, dispara render + dropdowns.
+- `renderFlujoTabla()`: una fila por mes. Colores y semáforo según
+  helpers:
+  - `_semaforoFlujo(pct)` → `>20%` 🟢🟢 verde, `10-20%` 🟢 verde,
+    `0-10%` 🟡 ámbar, `<0%` 🔴 rojo.
+- `populateMesDropdowns()`: opciones desde meses cargados. Default
+  Mes A = último mes; Mes B = 12 meses atrás si hay historia
+  suficiente, sino primer mes.
+- `renderFlujoComparativa()`:
+  - Merge de categorías de A+B → filtra `|dif|>€500` → ordena por
+    `|dif|` desc.
+  - Tabla: Ingresos, Gastos, [Cats con dif >€500 indentadas con └],
+    Neto, % Neto. Cada dif con icono y color: para INGRESOS subir es
+    verde (🟢) / bajar es rojo (🔴); para GASTOS subir es rojo / bajar
+    es verde; |dif|<1 muestra `→` neutro.
+  - **Análisis automático**:
+    1. Si `|difIng| > |difGas| × 1.5` → "diferencia principal es
+       INGRESOS". Espejo para gastos. Sino reparto.
+    2. Top 3 cats de gasto que SUBIERON (dif>0 en A vs B).
+    3. Neto estimado: ingresos del mes mejor + gastos del mes actual.
+       Verde ✅ si positivo, ⚠️ si negativo.
+
+### Verificación contra DB
+
+  Smoke test contra prod (12 meses desde junio 2025):
+
+    rol=admin
+      2025-06 ing=373.690 gas=378.873 neto=-5.183 pct=-1,4% 🔴
+      2025-07 ing=389.252 gas=402.067 neto=-12.815 pct=-3,3% 🔴
+      2025-08 ing=460.199 gas=395.855 neto=+64.344 pct=14,0% 🟢
+      ...
+
+    rol=gerente — mismos totales, desglose sin cats sensibles.
+
+  Distribución semáforo: 1 mes 🟢 (agosto 2025), 3 meses 🟡, 8 meses 🔴.
+  Promedio anual: negativo (~-9k mensual) — los gastos puntuales
+  (impuestos, equipamientos, mantenimiento) caen pesado.

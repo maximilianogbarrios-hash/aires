@@ -2786,4 +2786,117 @@ router.delete('/categorias/:codigo', requirePerm('bancos_reglas_admin'), async (
   }
 });
 
+// ─── FLUJO MENSUAL (tab "Flujo Anual") ─────────────────────────────────
+// Devuelve la serie mensual de ingresos/gastos/neto desde 2025-06-01
+// (inicio histórico cargado) hasta el último período disponible,
+// agrupado por mes calendario. Filtros: sociedad_id opcional (todas
+// si no viene), excluye INTRAGRUPO.
+//
+// Para CADA mes incluye desglose por categoría (gastos por categoría
+// canónica tras pipeline). Para gerente: filtra las 3 cats sensibles
+// (GASTOS_DIRECCION/NOMINAS_DIRECCION/PRESTAMOS) del desglose pero
+// mantiene los totales de ingresos/gastos/neto correctos.
+router.get('/flujo-mensual', async (req, res) => {
+  try {
+    // Defense in depth: el frontend ya esconde la tab para roles sin
+    // permiso, pero por las dudas rechazamos si el rol no la tiene.
+    const role = req.session?.user?.role;
+    const { SUB_TABS_BANCOS } = require('../lib/roles');
+    if (!SUB_TABS_BANCOS.flujo.includes(role)) {
+      return res.status(403).json({ error: 'Forbidden: tab no permitida para tu rol' });
+    }
+
+    const sociedad_id = req.query.sociedad_id || null;
+    const where = []; const vals = [];
+    const socCl = buildSociedadClause(sociedad_id, vals.length + 1);
+    if (socCl) { where.push(socCl.sql); vals.push(...socCl.vals); }
+    where.push(`fecha >= '2025-06-01'`);
+    const W = 'WHERE ' + where.join(' AND ');
+
+    const rows = await many(
+      `SELECT concepto, categoria, importe::float8 AS importe,
+              fecha::text AS fecha, proveedor_normalizado, periodo
+         FROM ab_movimientos ${W}`,
+      vals
+    );
+    const reglasDb = await loadReglas();
+
+    // Agregado por mes — pipeline regla>histórico>heurística (igual que
+    // /proveedores) para que la cat usada en el desglose refleje las
+    // reglas actuales de Gestionar Reglas.
+    const porMes = new Map(); // 'YYYY-MM' → { ingresos, gastos, neto, n_movs }
+    const desglosePorMes = new Map(); // 'YYYY-MM' → Map<categoria, total_gasto>
+    for (const r of rows) {
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+      let categoria;
+      const rule = matchRegla(r.concepto, reglasDb);
+      if (rule) categoria = rule.categoria;
+      else if (r.proveedor_normalizado) categoria = r.categoria || 'SIN_CLASIFICAR';
+      else categoria = (normalizarProveedor(r.concepto, r.categoria).categoria || 'SIN_CLASIFICAR');
+      if (categoria === 'INTRAGRUPO') continue;
+      const mes = r.periodo; // 'YYYY-MM' (mismo formato que periodo persistido)
+      if (!porMes.has(mes)) porMes.set(mes, { ingresos: 0, gastos: 0, neto: 0, n_movs: 0 });
+      const m = porMes.get(mes);
+      m.n_movs++;
+      m.neto += r.importe;
+      if (r.importe > 0) m.ingresos += r.importe;
+      else m.gastos += Math.abs(r.importe);
+      // Desglose por categoría: SOLO para gastos (signo negativo).
+      // Para gerente los totales arriba ya incluyen las cats sensibles,
+      // pero el desglose se filtra abajo.
+      if (r.importe < 0) {
+        if (!desglosePorMes.has(mes)) desglosePorMes.set(mes, new Map());
+        const d = desglosePorMes.get(mes);
+        d.set(categoria, (d.get(categoria) || 0) + Math.abs(r.importe));
+      }
+    }
+
+    // Catálogo de cats para nombre_display.
+    let catDisplay = new Map();
+    try {
+      const catsExisting = await many(
+        `SELECT codigo, nombre_display FROM ab_categorias WHERE codigo <> 'INTRAGRUPO'`
+      );
+      catDisplay = new Map(catsExisting.map((c) => [c.codigo, c.nombre_display]));
+    } catch (e) { /* tolerante a migration 19 no aplicada */ }
+
+    // Para no-admin: ocultar las 3 cats sensibles del desglose.
+    const adminLike = esAdminLike(req);
+
+    // Ordenar meses ascendente y armar la respuesta.
+    const meses = [...porMes.keys()].sort();
+    const out = meses.map((mes) => {
+      const m = porMes.get(mes);
+      const pctNeto = m.ingresos > 0 ? (m.neto / m.ingresos) * 100 : 0;
+      // Desglose por cat (solo gastos), filtrado para no-admin.
+      const dRaw = desglosePorMes.get(mes) || new Map();
+      const cats = [];
+      for (const [codigo, total] of dRaw.entries()) {
+        if (!adminLike && CATEGORIAS_DIRECCION_FUSE.has(codigo)) continue;
+        cats.push({ codigo, nombre_display: catDisplay.get(codigo) || codigo, total });
+      }
+      cats.sort((a, b) => b.total - a.total);
+      return {
+        mes,
+        ingresos: Math.round(m.ingresos * 100) / 100,
+        gastos:   Math.round(m.gastos   * 100) / 100,
+        neto:     Math.round(m.neto     * 100) / 100,
+        pct_neto: Math.round(pctNeto * 10) / 10, // 1 decimal
+        n_movs: m.n_movs,
+        categorias: cats,
+      };
+    });
+
+    res.json({
+      filtros: { sociedad_id },
+      meses: out,
+      // Flag para que el frontend sepa si el desglose viene filtrado.
+      desglose_filtrado_por_rol: !adminLike,
+    });
+  } catch (e) {
+    console.error('[bancos.flujo-mensual]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
 module.exports = router;

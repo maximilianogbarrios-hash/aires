@@ -1110,6 +1110,208 @@ function showTab(name, btn) {
     if (!state.prov.loaded) loadProvRanking();
     if (!evState.cargados) initEvolucion();
   }
+  if (name === 'flujo') {
+    initFlujoFiltros();
+    if (!state.flujo?.loaded) loadFlujoAnual();
+  }
+}
+
+// ─── Flujo Anual: tabla mensual + comparador ─────────────────────────
+function initFlujoFiltros() {
+  const sel = $('flujo-sociedad');
+  if (!sel || sel.options.length > 0) return;
+  const optAll = document.createElement('option');
+  optAll.value = ''; optAll.textContent = '(todas las sociedades)';
+  sel.appendChild(optAll);
+  for (const s of state.sociedades) {
+    const o = document.createElement('option');
+    o.value = s.id; o.textContent = `${s.nombre} (${s.cif})`;
+    sel.appendChild(o);
+  }
+}
+
+async function loadFlujoAnual() {
+  state.flujo = state.flujo || {};
+  const sociedad = $('flujo-sociedad')?.value || '';
+  const params = new URLSearchParams();
+  if (sociedad) params.set('sociedad_id', sociedad);
+  try {
+    const j = await api('/api/v1/bancos/flujo-mensual?' + params.toString());
+    state.flujo.meses = j.meses || [];
+    state.flujo.desglose_filtrado_por_rol = !!j.desglose_filtrado_por_rol;
+    state.flujo.loaded = true;
+    $('flujo-aviso-rol').style.display = state.flujo.desglose_filtrado_por_rol ? '' : 'none';
+    renderFlujoTabla();
+    populateMesDropdowns();
+    renderFlujoComparativa();
+  } catch (e) {
+    $('flujo-tbody').innerHTML = `<tr><td colspan="6" style="padding:18px;text-align:center;color:#dc2626">Error: ${e.message}</td></tr>`;
+  }
+}
+
+const MESES_FLUJO_ES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+function _mesLabel(yyyymm) {
+  const [y, m] = (yyyymm || '').split('-').map(Number);
+  return `${MESES_FLUJO_ES[m-1]} ${y}`;
+}
+function _semaforoFlujo(pct) {
+  if (pct > 20) return { icon: '🟢🟢', color: '#16a34a' };
+  if (pct > 10) return { icon: '🟢', color: '#16a34a' };
+  if (pct > 0)  return { icon: '🟡', color: '#ca8a04' };
+  return { icon: '🔴', color: '#dc2626' };
+}
+function _eurSigned(n) {
+  const s = n >= 0 ? '+' : '−';
+  return s + eur(Math.abs(n));
+}
+
+function renderFlujoTabla() {
+  const meses = state.flujo?.meses || [];
+  if (!meses.length) {
+    $('flujo-tbody').innerHTML = '<tr><td colspan="6" style="padding:18px;text-align:center;color:var(--text-2)">Sin datos para este filtro.</td></tr>';
+    return;
+  }
+  $('flujo-tbody').innerHTML = meses.map((m) => {
+    const sem = _semaforoFlujo(m.pct_neto);
+    const netoColor = m.neto >= 0 ? '#16a34a' : '#dc2626';
+    return `<tr style="border-bottom:.5px solid var(--border-3)">
+      <td style="padding:8px 6px;font-weight:500">${_mesLabel(m.mes)}</td>
+      <td style="padding:8px 6px;text-align:right">${eur(m.ingresos)}</td>
+      <td style="padding:8px 6px;text-align:right">${eur(m.gastos)}</td>
+      <td style="padding:8px 6px;text-align:right;color:${netoColor};font-weight:500">${_eurSigned(m.neto)}</td>
+      <td style="padding:8px 6px;text-align:right;color:${sem.color}">${m.pct_neto.toFixed(1)}%</td>
+      <td style="padding:8px 6px;text-align:center">${sem.icon}</td>
+    </tr>`;
+  }).join('');
+}
+
+function populateMesDropdowns() {
+  const meses = state.flujo?.meses || [];
+  if (!meses.length) return;
+  const selA = $('flujo-mes-a'); const selB = $('flujo-mes-b');
+  if (!selA || !selB) return;
+  // Default: A = último, B = mismo mes año anterior si existe, sino primer mes
+  const lastIdx = meses.length - 1;
+  let defaultBIdx = 0;
+  if (meses.length >= 13) defaultBIdx = lastIdx - 12;
+  const opts = meses.map((m) => `<option value="${m.mes}">${_mesLabel(m.mes)}</option>`).join('');
+  selA.innerHTML = opts; selB.innerHTML = opts;
+  selA.value = meses[lastIdx].mes;
+  selB.value = meses[defaultBIdx].mes;
+}
+
+function renderFlujoComparativa() {
+  const meses = state.flujo?.meses || [];
+  if (!meses.length) { $('flujo-comp-table').innerHTML = ''; $('flujo-comp-analisis').innerHTML = ''; return; }
+  const codA = $('flujo-mes-a')?.value;
+  const codB = $('flujo-mes-b')?.value;
+  const A = meses.find((m) => m.mes === codA);
+  const B = meses.find((m) => m.mes === codB);
+  if (!A || !B) { $('flujo-comp-table').innerHTML = ''; return; }
+
+  // Construir comparativa por categoría — solo cats con dif > 500€ (en cualquier signo)
+  const catsMap = new Map(); // codigo → { display, a, b }
+  for (const c of A.categorias) catsMap.set(c.codigo, { display: c.nombre_display, a: c.total, b: 0 });
+  for (const c of B.categorias) {
+    const cur = catsMap.get(c.codigo) || { display: c.nombre_display, a: 0, b: 0 };
+    cur.b = c.total;
+    if (!catsMap.has(c.codigo)) catsMap.set(c.codigo, cur);
+  }
+  const catsDif = [...catsMap.entries()]
+    .map(([codigo, v]) => ({ codigo, display: v.display, a: v.a, b: v.b, dif: v.a - v.b }))
+    .filter((x) => Math.abs(x.dif) > 500)
+    .sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif));
+
+  const difIng = A.ingresos - B.ingresos;
+  const difGas = A.gastos - B.gastos;
+  const difNeto = A.neto - B.neto;
+  const difPctNeto = A.pct_neto - B.pct_neto;
+
+  // Para los DIFs: para INGRESOS, subir es bueno (verde). Para GASTOS, subir es malo (rojo).
+  function _signoIcono(dif, gastoes) {
+    if (Math.abs(dif) < 1) return { ico: '→', color: '#6B7280' };
+    const subio = dif > 0;
+    if (gastoes) return subio ? { ico: '🔴', color: '#dc2626' } : { ico: '🟢', color: '#16a34a' };
+    return subio ? { ico: '🟢', color: '#16a34a' } : { ico: '🔴', color: '#dc2626' };
+  }
+  const lblA = _mesLabel(A.mes); const lblB = _mesLabel(B.mes);
+
+  function row(label, valA, valB, dif, gastoes, indent=false) {
+    const sg = _signoIcono(dif, gastoes);
+    const colDif = sg.color;
+    const lblHtml = indent ? `<span style="color:var(--text-2)">└</span> ${label}` : `<strong>${label}</strong>`;
+    return `<tr style="border-bottom:.5px solid var(--border-3)">
+      <td style="padding:6px;${indent?'padding-left:24px':''}">${lblHtml}</td>
+      <td style="padding:6px;text-align:right">${eur(valA)}</td>
+      <td style="padding:6px;text-align:right;color:var(--text-2)">${eur(valB)}</td>
+      <td style="padding:6px;text-align:right;color:${colDif};font-weight:500">${_eurSigned(dif)} ${sg.ico}</td>
+    </tr>`;
+  }
+  function rowNeto() {
+    const colA = A.neto >= 0 ? '#16a34a' : '#dc2626';
+    const colB = B.neto >= 0 ? '#16a34a' : '#dc2626';
+    const sg = _signoIcono(difNeto, false);
+    return `<tr style="border-top:1px solid var(--border-2);background:var(--bg-secondary)">
+      <td style="padding:8px 6px"><strong>Neto</strong></td>
+      <td style="padding:8px 6px;text-align:right;color:${colA};font-weight:500">${_eurSigned(A.neto)}</td>
+      <td style="padding:8px 6px;text-align:right;color:${colB};font-weight:500">${_eurSigned(B.neto)}</td>
+      <td style="padding:8px 6px;text-align:right;color:${sg.color};font-weight:500">${_eurSigned(difNeto)} ${sg.ico}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px"><strong>% Neto</strong></td>
+      <td style="padding:6px;text-align:right">${A.pct_neto.toFixed(1)}%</td>
+      <td style="padding:6px;text-align:right;color:var(--text-2)">${B.pct_neto.toFixed(1)}%</td>
+      <td style="padding:6px;text-align:right;color:${sg.color}">${(difPctNeto>=0?'+':'')}${difPctNeto.toFixed(1)}pp</td>
+    </tr>`;
+  }
+
+  $('flujo-comp-table').innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border-2);color:var(--text-2)">
+        <th style="text-align:left;padding:6px"></th>
+        <th style="text-align:right;padding:6px">${lblA}</th>
+        <th style="text-align:right;padding:6px">${lblB}</th>
+        <th style="text-align:right;padding:6px">Diferencia</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${row('Ingresos', A.ingresos, B.ingresos, difIng, false)}
+      ${row('Gastos', A.gastos, B.gastos, difGas, true)}
+      ${catsDif.map((c) => row(c.display, c.a, c.b, c.dif, true, true)).join('')}
+      ${rowNeto()}
+    </tbody>
+  </table>`;
+
+  // ─── Análisis automático ─────────────
+  const lines = [];
+  // 1) Diferencia principal: ingresos o gastos?
+  if (Math.abs(difIng) > Math.abs(difGas) * 1.5 && Math.abs(difIng) > 1000) {
+    const direccion = difIng > 0 ? 'más' : 'menos';
+    lines.push(`⚠️ La diferencia principal es <strong>INGRESOS</strong> (${_eurSigned(difIng)} ${direccion} que ${lblB})`);
+  } else if (Math.abs(difGas) > Math.abs(difIng) * 1.5 && Math.abs(difGas) > 1000) {
+    const direccion = difGas > 0 ? 'más' : 'menos';
+    lines.push(`⚠️ La diferencia principal es <strong>GASTOS</strong> (${_eurSigned(difGas)} ${direccion} que ${lblB})`);
+  } else {
+    lines.push(`ℹ️ La diferencia se reparte entre ingresos (${_eurSigned(difIng)}) y gastos (${_eurSigned(difGas)})`);
+  }
+  // 2) Top 3 cats que más subieron entre A y B (dif > 0 = subió)
+  const top3Subieron = catsDif.filter((c) => c.dif > 0).slice(0, 3);
+  if (top3Subieron.length) {
+    const txt = top3Subieron.map((c) => `${c.display} ${_eurSigned(c.dif)}`).join(', ');
+    lines.push(`⚠️ En gastos: ${txt}`);
+  }
+  // 3) Neto estimado: si replicaras los ingresos del mes mejor con los gastos del mes actual.
+  const mesIngresosMejor = A.ingresos >= B.ingresos ? A : B;
+  const mesGastosActual = (mesIngresosMejor === A) ? B : A;
+  const netoEstimado = mesIngresosMejor.ingresos - mesGastosActual.gastos;
+  const pctEst = mesIngresosMejor.ingresos > 0 ? (netoEstimado / mesIngresosMejor.ingresos * 100) : 0;
+  const colEst = netoEstimado >= 0 ? '#16a34a' : '#dc2626';
+  const sgEst = netoEstimado >= 0 ? '✅' : '⚠️';
+  const lblMejor = _mesLabel(mesIngresosMejor.mes);
+  const lblActual = _mesLabel(mesGastosActual.mes);
+  lines.push(`${sgEst} Si replicaras los ingresos de <strong>${lblMejor}</strong> con los gastos de <strong>${lblActual}</strong>: neto estimado <span style="color:${colEst};font-weight:500">${_eurSigned(netoEstimado)}</span> (${pctEst >= 0 ? '+' : ''}${pctEst.toFixed(1)}%)`);
+
+  $('flujo-comp-analisis').innerHTML = lines.map((l) => `<div>${l}</div>`).join('');
 }
 
 // ─── Evolución temporal por proveedor / categoría ─────────────────────
@@ -2396,6 +2598,8 @@ Object.assign(window, {
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
   // Carga múltiple de extractos (Santander/Sabadell, XLS/PDF)
   upExtDragOver, upExtDragLeave, upExtDrop, upExtFilesChosen, upExtRetry,
+  // Flujo Anual (admin/socio/gerente)
+  loadFlujoAnual, renderFlujoComparativa,
   loadProvRanking, exportProveedoresCsv,
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
