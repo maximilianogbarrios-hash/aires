@@ -1117,25 +1117,22 @@ function showTab(name, btn) {
 }
 
 // ─── Flujo Anual: tabla mensual + comparador ─────────────────────────
-// Las opciones del dropdown se mantienen sincronizadas con el dropdown
-// principal de Bancos (#prov-sociedad en public/bancos/index.html). El
-// backend (/flujo-mensual) usa buildSociedadClause igual que el resto,
-// que ya maneja 'sin_elche' / 'solo_elche' / slug por sociedad. Antes
-// poblábamos iterando state.sociedades, lo que dejaba afuera 'sin_elche'
-// (no es una sociedad real sino un filtro compuesto) y mostraba labels
-// con CIF en vez de los nombres comerciales que usa el resto del módulo.
+// Fuente de verdad de las opciones de sociedad: el <select id="prov-sociedad">
+// en public/bancos/index.html. _cloneSociedadOptions clona ese listado a
+// cualquier otro <select> del módulo para evitar mantener 2 copias.
+// Agregar/quitar sociedades: editar SOLO el HTML del #prov-sociedad.
+function _cloneSociedadOptions(targetSel) {
+  if (!targetSel) return false;
+  const src = $('prov-sociedad');
+  if (!src || !src.options.length) return false;
+  targetSel.innerHTML = src.innerHTML;
+  return true;
+}
+
 function initFlujoFiltros() {
   const sel = $('flujo-sociedad');
   if (!sel || sel.options.length > 0) return;
-  sel.innerHTML = `
-    <option value="">Todas las sociedades</option>
-    <option value="sin_elche">Sin Elche (4 sociedades)</option>
-    <option value="solo_elche">Solo Elche (Grupo Hostelero)</option>
-    <option value="alicante">Aires Alicante SL</option>
-    <option value="smart">Smart Aires SL</option>
-    <option value="murcia">Aires Burger Bar Murcia SL</option>
-    <option value="benidorm">Aires Burger Bar Benidorm SL</option>
-  `;
+  _cloneSociedadOptions(sel);
 }
 
 async function loadFlujoAnual() {
