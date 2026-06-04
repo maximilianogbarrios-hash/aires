@@ -1134,12 +1134,13 @@ router.get('/proveedores', async (req, res) => {
     const adminLike = esAdminLike(req);
 
     // Total ingresos del MISMO filtro (sociedad + período), excluyendo
-    // INTRAGRUPO. Sólo se devuelve para admin/socio — el resto de roles
-    // ven null. El frontend renderiza la card "Total ingresos" y
-    // "Resultado neto" condicionalmente. Query separada (SQL agregado
-    // directo, sin pipeline) — es 1 round-trip extra de ~5ms.
+    // INTRAGRUPO. Visible para admin / socio / gerente (Luciano). El resto
+    // de roles ven null y el frontend esconde las cards "Total ingresos"
+    // y "Resultado neto". Query separada (SQL agregado directo, sin
+    // pipeline) — es 1 round-trip extra de ~5ms.
+    const puedeVerIngresos = adminLike || req.session?.user?.role === 'gerente';
     let totalIngresos = null;
-    if (adminLike) {
+    if (puedeVerIngresos) {
       const whereIng = where.map((c) => c === 'importe < 0' ? 'importe > 0' : c);
       whereIng.push(`categoria <> 'INTRAGRUPO'`);
       const ingRow = await one(
@@ -2810,7 +2811,12 @@ router.get('/flujo-mensual', async (req, res) => {
     const where = []; const vals = [];
     const socCl = buildSociedadClause(sociedad_id, vals.length + 1);
     if (socCl) { where.push(socCl.sql); vals.push(...socCl.vals); }
-    where.push(`fecha >= '2025-06-01'`);
+    // Suelo histórico por rol: admin/socio ven desde junio 2025 (carga
+    // histórica completa). Gerente y resto de roles con acceso a Flujo
+    // ven sólo desde enero 2026 (consistente con PERIODO_FLOOR_NO_ADMIN
+    // que ya aplica en /proveedores y /grupo-detalle).
+    const fechaMinima = esAdminLike(req) ? '2025-06-01' : '2026-01-01';
+    where.push(`fecha >= '${fechaMinima}'`);
     const W = 'WHERE ' + where.join(' AND ');
 
     const rows = await many(
@@ -2889,6 +2895,7 @@ router.get('/flujo-mensual', async (req, res) => {
 
     res.json({
       filtros: { sociedad_id },
+      fecha_minima: fechaMinima,
       meses: out,
       // Flag para que el frontend sepa si el desglose viene filtrado.
       desglose_filtrado_por_rol: !adminLike,
