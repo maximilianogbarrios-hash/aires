@@ -24,19 +24,25 @@ El hash también incluía `codigo_banco` y `num_documento`, que el parser viejo 
 
 Criterio: `MAX(id)` por grupo (mantenidos los registros de Phase 12 con `codigo_banco` real / `num_documento` poblados). Excluido `INTRAGRUPO` para no tocar traspasos legítimos.
 
-## Verificación matemática Sabadell (única disponible)
+## Verificación matemática Sabadell — 5 sociedades ✓
 
-Solo se tiene el XLS de Sabadell-Alicante en el repo (`samples/sabadell.xls`). Cuadre completo:
+Cuadre `saldo_inicial + neto_DB = saldo_final` para cada cuenta Sabadell mayo 2026, usando los XLS originales como fuente de verdad (titular validado por regex contra `SOCIEDADES`):
 
-```
-saldo_inicial_XLS  = 2.329,93€
-neto_DB_mayo       = 1.087,83€
-saldo_calculado    = 3.417,76€
-saldo_real_XLS     = 3.415,41€
-diferencia         = 2,35€  ✓ (1 mov de 131 sin importar)
-```
+| sociedad | cuenta | titular XLS | n_XLS | n_DB | saldo_inicial | saldo_final XLS | saldo_calc | diff |
+|---|---|---|---|---|---|---|---|---|
+| alicante | 0081-1152-60-0001552459 | AIRES ALICANTE SL. | 131 | 130 | 2.329,93 | 3.415,41 | 3.417,76 | **2,35€** ✓ |
+| hostelero | 0081-1152-67-0001563865 | GRUPO HOSTELERO AIRES SL. | 86 | 85 | 5.312,02 | 6.369,66 | 6.371,66 | **2,00€** ✓ |
+| smart | 0081-1152-66-0001563964 | SMART AIRES SL. | 123 | 122 | 1.705,10 | 2.314,58 | 2.314,91 | **0,33€** ✓ |
+| murcia | 0081-1152-67-0001564060 | AIRES BURGER BAR MURCIA SL. | 210 | 208 | 10.916,57 | 7.766,58 | 7.771,08 | **4,50€** ✓ |
+| benidorm | 0081-1152-60-0001597167 | AIRES BURGER BAR BENIDORM SL | 1 | 1 | 1.577,05 | 1.077,05 | 1.077,05 | **0,00€** ✓ |
 
-**Pendiente**: cerrar la verificación matemática para las otras 4 sociedades de Sabadell (hostelero, smart, murcia, benidorm). Los XLS no están actualmente en el repo — al subirlos a `samples/` se puede re-correr el cuadre.
+**Todas las diferencias < €5** (ruido por 1-2 movs frontera con fecha entre 30-abril / 1-mayo según `F.Operación` vs `F.Valor`). La DB Sabadell está matemáticamente consistente con los extractos originales para mayo 2026 en las 5 sociedades.
+
+Detalle JSON: [`samples/resultados-sabadell-mayo-2026.json`](../../samples/resultados-sabadell-mayo-2026.json).
+
+## Verificación matemática Santander — pendiente
+
+Para cerrar el cuadre Santander necesito los PDFs de las 4 sociedades restantes (hostelero, smart, murcia, benidorm) — solo está el de Alicante en `samples/santander.pdf`. Los saldos finales que pasaste en el turno anterior permitían inferir saldos iniciales (post-dedupe quedaron positivos y razonables: alicante 3.873€, hostelero 15.227€, smart ~0€, murcia 10.082€, benidorm 4.488€). El cuadre estricto contra el extracto queda pendiente hasta que los PDFs estén disponibles.
 
 ## Verificación final post-limpieza mayo 2026
 
@@ -102,5 +108,6 @@ Patrón consistente con estacionalidad: gastos puntuales/estacionales abajo (IMP
 
 ## Pendientes
 
-1. Subir los XLS de Sabadell de hostelero/smart/murcia/benidorm a `samples/` para cerrar el cuadre matemático completo banco-por-banco.
-2. Las 22 categorías con variación > 20% deberían contrastarse con los gastos esperados de cada mes (estacionalidad) — el reporte sugiere que son normales pero el dueño del negocio puede confirmarlo.
+1. ~~Subir los XLS de Sabadell de hostelero/smart/murcia/benidorm a `samples/` para cerrar el cuadre matemático completo banco-por-banco.~~ ✓ Cerrado 2026-06-04 — las 5 cuentas Sabadell cuadran con diff < €5.
+2. Cerrar la verificación matemática Santander para hostelero/smart/murcia/benidorm cuando los PDFs de extracto estén disponibles en el repo.
+3. Las 22 categorías con variación > 20% deberían contrastarse con los gastos esperados de cada mes (estacionalidad) — el reporte sugiere que son normales pero el dueño del negocio puede confirmarlo.
