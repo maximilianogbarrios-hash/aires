@@ -3036,3 +3036,97 @@ está filtrado.
   Distribución semáforo: 1 mes 🟢 (agosto 2025), 3 meses 🟡, 8 meses 🔴.
   Promedio anual: negativo (~-9k mensual) — los gastos puntuales
   (impuestos, equipamientos, mantenimiento) caen pesado.
+
+## Sidebar Bancos → Proveedores — drill-down de dos niveles
+
+### Problema
+
+El sidebar que se abre desde un slice del donut (`openCategoriaSidebar`)
+listaba TODOS los movimientos planos de la categoría con el proveedor
+como texto repetido en cada fila. Resultado:
+
+- Categorías con muchos proveedores (PROVEEDOR_BEBIDAS con 8+, EQUIPAMIENTO
+  con varios, etc.) se veían como un scroll largo y sin estructura.
+- Visualmente parecía que "había un solo proveedor" cuando todos los movs
+  cercanos eran del mismo, o "no había proveedores" cuando los movs
+  estaban mezclados sin agrupar.
+
+### Solución
+
+Refactor de `openCategoriaSidebar` en `public/js/bancos.js` a un drill-down
+de DOS niveles dentro del mismo sidebar (no abre uno nuevo). Aplica a
+TODAS las categorías del donut por igual.
+
+**Nivel 1 — Lista de proveedores agrupados (default al entrar):**
+
+```
+PROVEEDOR_BEBIDAS                              ×
+13.862€ · 8 proveedores · 65 mvs · 17,8% del gasto filtrado
+
+Coca-Cola Europacific Partners Iberia          8.964€   →
+  42 movimientos
+Don Hamgus SL                                  2.100€   →
+  8 movimientos
+...
+```
+
+Cada fila es clickeable y muestra: nombre del proveedor, total€ (sumado
+de los movs de esa cat para ese prov), # movs y flecha →.
+Hover cambia background, cursor pointer.
+
+**Nivel 2 — Movimientos individuales del proveedor:**
+
+```
+← Volver a PROVEEDOR_BEBIDAS
+
+Coca-Cola Europacific Partners Iberia          8.964€
+42 movimientos
+
+14/05/2026  Recibo Coca-Cola Europacific...   866,74€   AAL
+[✏️ Reclasificar]
+
+11/05/2026  Recibo Coca-Cola Europacific...   270,71€   SMA  regla
+[✏️ Reclasificar]
+...
+```
+
+Botón "← Volver" regresa a Nivel 1 SIN cerrar el sidebar (re-render
+del mismo `#prov-sb-body` con los datos ya cacheados — no refetch).
+Cada mov tiene un botón "✏️ Reclasificar" que abre `openProvSidebar(prov)`
+con el flujo completo de reclasificación (search bar + dropdown de cats
++ confirm).
+
+### State
+
+Nueva clave `state._cat` cachea los datos de la apertura actual:
+
+```js
+state._cat = {
+  codigo,            // 'PROVEEDOR_BEBIDAS'
+  nombreLegible,     // nombre_display si difiere del código, o null
+  movs,              // resultado crudo del fetch
+  totBackend,        // suma total reportada por el endpoint
+  proveedores,       // [{nombre, total, n}] orden total€ desc
+  vista,             // 'proveedores' (Nivel 1) | 'movimientos' (Nivel 2)
+  proveedor,         // nombre del prov en Nivel 2, null en Nivel 1
+}
+```
+
+Permite alternar entre niveles instantáneamente. El refetch sólo ocurre
+al reabrir el sidebar (cambio de cat o de filtros).
+
+### Funciones nuevas expuestas a window
+
+- `catSidebarVerProveedor(prov)` — entra a Nivel 2 con el prov dado.
+- `catSidebarVolver()` — vuelve a Nivel 1.
+
+`_renderCatNivel1` y `_renderCatNivel2` son privadas — no se exponen
+porque siempre se invocan vía openCategoriaSidebar / catSidebarVerProveedor
+/ catSidebarVolver que mantienen el state coherente.
+
+### Backend
+
+Sin cambios — el endpoint `/api/v1/bancos/categoria-movimientos` ya
+devuelve `movimientos[]` con `proveedor_resuelto` por mov. La agrupación
+por proveedor se hace en frontend (evita un round-trip extra; los datos
+de Nivel 2 son un filtro local sobre los mismos movs).

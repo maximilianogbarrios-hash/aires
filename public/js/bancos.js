@@ -1767,11 +1767,26 @@ function buildGrupoDetalleQuery() {
   return params;
 }
 
-// Sidebar de detalle de CATEGORÍA — primer nivel del drill desde el donut
-// nuevo (32 cats). Lista los proveedores de la categoría seleccionada
-// filtrando state.prov.rows. Click en cualquier proveedor abre el sidebar
-// de detalle de proveedor (openProvSidebar) que es el flujo histórico
-// con conceptos + reclasificación.
+// Sidebar de detalle de CATEGORÍA — drill-down de DOS niveles dentro del
+// mismo sidebar:
+//
+//   Nivel 1 (lista de proveedores): al abrir el sidebar desde un slice del
+//     donut. Cada proveedor de la categoría aparece como fila clickeable
+//     con su total€ y # de movs. Default — vista siempre que se entra.
+//
+//   Nivel 2 (movimientos de un proveedor): al click en una fila de Nivel 1.
+//     Lista los movs individuales de ese proveedor dentro de la categoría.
+//     Botón "← Volver" regresa a Nivel 1 SIN cerrar el sidebar.
+//
+// Reemplaza la vista anterior que mostraba todos los movs planos sin
+// agrupar — para categorías con muchos proveedores había que scrollear
+// mezclando todos los conceptos. La agrupación por proveedor + drill
+// inline corresponde 1:1 al modelo mental "categoría → proveedor → movs".
+//
+// Datos: el endpoint /categoria-movimientos devuelve movs[] con
+// proveedor_resuelto ya aplicado al pipeline (matchRegla → normalizar).
+// Agrupamos en frontend para evitar un round-trip extra y para reusar
+// la misma lista de movs en Nivel 2 sin refetch al hacer drill.
 //
 // Caso especial: codigo === '__GASTOS_DIRECCION_FUSE__' redirige a
 // openProvSidebar('Gastos Dirección') que ya maneja la fusión (lista
@@ -1779,21 +1794,14 @@ function buildGrupoDetalleQuery() {
 // 403 — no debería llegar acá porque la UI bloquea el click).
 async function openCategoriaSidebar(codigo) {
   if (!codigo) return;
-  // Fuente de verdad: el endpoint /categoria-movimientos devuelve los
-  // movs reales aplicando el mismo pipeline que el donut, respetando
-  // los filtros activos (sociedad + periodo). Antes filtrábamos
-  // state.prov.rows por p.categoria === codigo y eso fallaba en dos
-  // casos: (a) proveedores absorbidos por colapsarEnMenores (n<5 AND
-  // total<2000€) — caso real: Revel (1097€) caía en "Proveedores
-  // Menores" y desaparecía del sidebar GD; (b) proveedores con topCat
-  // distinta a la cat clickeada aunque sí tengan movs de esa cat.
   const cat = (state.prov.por_categoria || []).find((c) => c.codigo === codigo);
   if (!cat) return;
 
-  $('prov-sb-title').textContent = (cat.codigo || '').toUpperCase();
   const nombreLegible = cat.nombre_display && cat.nombre_display.toUpperCase() !== (cat.codigo || '').toUpperCase()
-    ? `${cat.nombre_display.toUpperCase()} · ` : '';
-  $('prov-sb-meta').textContent = `${nombreLegible}Cargando movimientos…`;
+    ? cat.nombre_display.toUpperCase() : null;
+
+  $('prov-sb-title').textContent = (cat.codigo || '').toUpperCase();
+  $('prov-sb-meta').textContent = `${nombreLegible ? nombreLegible + ' · ' : ''}Cargando movimientos…`;
   $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:var(--text-2);padding:8px">Cargando…</p>`;
   $('prov-sidebar-backdrop').style.display = '';
   $('prov-sidebar').style.display = '';
@@ -1804,49 +1812,116 @@ async function openCategoriaSidebar(codigo) {
     const j = await api('/api/v1/bancos/categoria-movimientos?' + params.toString());
     const movs = j.movimientos || [];
     const totBackend = j.total || 0;
-    const pct = state.prov.total > 0 ? (totBackend / state.prov.total * 100).toFixed(1) : '0';
-    // Agrupar por proveedor_resuelto para mostrar también el sub-total
-    // por proveedor sin perder el detalle de cada mov.
+
+    // Agrupar por proveedor_resuelto (Nivel 1). Orden por total€ desc.
+    // Fuente del bug histórico "muestra Sin proveedores / solo uno": la
+    // vista anterior listaba todos los movs y el proveedor solo aparecía
+    // como texto repetido por fila. Cuando todos los movs eran del mismo
+    // prov se "veía" como uno solo; cuando eran muchos se mezclaban sin
+    // estructura. El Nivel 1 agrupado lo deja explícito.
     const porProv = new Map();
     for (const m of movs) {
       const p = m.proveedor_resuelto || '—';
-      if (!porProv.has(p)) porProv.set(p, { total: 0, n: 0 });
+      if (!porProv.has(p)) porProv.set(p, { nombre: p, total: 0, n: 0 });
       const x = porProv.get(p);
       x.total += Math.abs(m.importe);
       x.n += 1;
     }
-    const nProvs = porProv.size;
-    $('prov-sb-meta').textContent = `${nombreLegible}${eur2(totBackend)} · ${nProvs} proveedor${nProvs === 1 ? '' : 'es'} · ${movs.length} mvs · ${pct}% del gasto filtrado`;
+    const proveedores = [...porProv.values()].sort((a, b) => b.total - a.total);
 
-    if (!movs.length) {
-      $('prov-sb-body').innerHTML = `
-        <div style="padding:30px 12px;text-align:center;color:var(--text-2);font-size:12px">
-          <p style="font-size:24px;margin-bottom:6px">📭</p>
-          <p>Sin movimientos en "<strong>${cat.codigo}</strong>" en este filtro.</p>
-        </div>`;
-      return;
-    }
-    $('prov-sb-body').innerHTML = `
-      <p style="font-size:11px;color:var(--text-2);margin-bottom:10px">${movs.length} movimientos en esta categoría (${eur2(totBackend)}). Click en el proveedor para ver todos sus conceptos / reclasificar.</p>
-      ${movs.map((m) => {
-        const conceptoEsc = (m.concepto || '').replace(/"/g, '&quot;');
-        const provEsc = (m.proveedor_resuelto || '').replace(/"/g, '&quot;');
-        const provJs = (m.proveedor_resuelto || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-        const sociedadLabel = m.sociedad_id || '';
-        const viaReglaBadge = m.via_regla ? `<span style="font-size:9px;color:var(--text-2);background:var(--bg-tertiary,#1a1a1a);padding:1px 5px;border-radius:8px" title="Asignado por regla #${m.regla_id}">regla</span>` : '';
-        return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;background:var(--bg-secondary)">
-          <div style="flex:1;min-width:0">
-            <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${conceptoEsc}">${m.concepto}</p>
-            <p style="font-size:10px;color:var(--text-2);margin-top:2px">${m.fecha} · <span onclick="openProvSidebar('${provJs}')" style="cursor:pointer;text-decoration:underline" title="${provEsc}">${m.proveedor_resuelto}</span> · ${sociedadLabel} ${viaReglaBadge}</p>
-          </div>
-          <span style="font-size:13px;font-weight:500;color:#dc2626">${eur(Math.abs(m.importe))}</span>
-        </div>`;
-      }).join('')}
-    `;
+    // Cache: catSidebarVerProveedor / catSidebarVolver alternan entre
+    // Nivel 1 y Nivel 2 sin refetch.
+    state._cat = { codigo, nombreLegible, movs, totBackend, proveedores, vista: 'proveedores', proveedor: null };
+    _renderCatNivel1();
   } catch (e) {
-    $('prov-sb-meta').textContent = `${nombreLegible}Error`;
+    $('prov-sb-meta').textContent = `${nombreLegible ? nombreLegible + ' · ' : ''}Error`;
     $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:#dc2626;padding:8px">Error cargando movimientos: ${e.message}</p>`;
   }
+}
+
+// Nivel 1 — lista de proveedores de la categoría, agrupados con totales.
+function _renderCatNivel1() {
+  const c = state._cat;
+  if (!c) return;
+  const pct = state.prov.total > 0 ? (c.totBackend / state.prov.total * 100).toFixed(1) : '0';
+  const nProvs = c.proveedores.length;
+  const nMovs = c.movs.length;
+  $('prov-sb-title').textContent = (c.codigo || '').toUpperCase();
+  $('prov-sb-meta').textContent = `${c.nombreLegible ? c.nombreLegible + ' · ' : ''}${eur2(c.totBackend)} · ${nProvs} proveedor${nProvs === 1 ? '' : 'es'} · ${nMovs} mvs · ${pct}% del gasto filtrado`;
+
+  if (!nProvs) {
+    $('prov-sb-body').innerHTML = `
+      <div style="padding:30px 12px;text-align:center;color:var(--text-2);font-size:12px">
+        <p style="font-size:24px;margin-bottom:6px">📭</p>
+        <p>Sin movimientos en "<strong>${c.codigo}</strong>" en este filtro.</p>
+      </div>`;
+    return;
+  }
+  $('prov-sb-body').innerHTML = `
+    <p style="font-size:11px;color:var(--text-2);margin-bottom:10px">Click en un proveedor para ver sus movimientos individuales.</p>
+    ${c.proveedores.map((p) => {
+      const provEsc = p.nombre.replace(/"/g, '&quot;');
+      const provJs = p.nombre.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return `<div onclick="catSidebarVerProveedor('${provJs}')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;background:var(--bg-secondary);cursor:pointer" onmouseover="this.style.background='var(--bg-tertiary,#1a1a1a)'" onmouseout="this.style.background='var(--bg-secondary)'">
+        <div style="flex:1;min-width:0">
+          <p style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${provEsc}">${p.nombre}</p>
+          <p style="font-size:10px;color:var(--text-2);margin-top:2px">${p.n} movimiento${p.n === 1 ? '' : 's'}</p>
+        </div>
+        <p style="font-size:13px;font-weight:500;color:#dc2626;text-align:right;white-space:nowrap;margin:0">${eur(p.total)}</p>
+        <span style="color:var(--text-2);font-size:14px" aria-hidden="true">→</span>
+      </div>`;
+    }).join('')}
+  `;
+}
+
+// Switch a Nivel 2 — movs individuales del proveedor seleccionado.
+function catSidebarVerProveedor(proveedor) {
+  const c = state._cat;
+  if (!c) return;
+  c.vista = 'movimientos';
+  c.proveedor = proveedor;
+  _renderCatNivel2();
+}
+
+function _renderCatNivel2() {
+  const c = state._cat;
+  if (!c || !c.proveedor) return;
+  const prov = c.proveedor;
+  const movsProv = c.movs.filter((m) => (m.proveedor_resuelto || '—') === prov);
+  const totProv = movsProv.reduce((s, m) => s + Math.abs(m.importe), 0);
+  const provJs = prov.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+  $('prov-sb-title').textContent = prov;
+  $('prov-sb-meta').textContent = `${eur2(totProv)} · ${movsProv.length} movimiento${movsProv.length === 1 ? '' : 's'}`;
+
+  $('prov-sb-body').innerHTML = `
+    <div style="margin-bottom:14px">
+      <button onclick="catSidebarVolver()" style="background:transparent;border:.5px solid var(--border-2);color:var(--text);padding:5px 10px;font-size:11px;border-radius:6px;cursor:pointer">← Volver a ${(c.codigo || '').toUpperCase()}</button>
+    </div>
+    ${movsProv.map((m) => {
+      const conceptoEsc = (m.concepto || '').replace(/"/g, '&quot;');
+      const sociedadLabel = m.sociedad_id || '';
+      const viaReglaBadge = m.via_regla ? `<span style="font-size:9px;color:var(--text-2);background:var(--bg-tertiary,#1a1a1a);padding:1px 5px;border-radius:8px" title="Asignado por regla #${m.regla_id}">regla</span>` : '';
+      return `<div style="padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;background:var(--bg-secondary)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <div style="flex:1;min-width:0">
+            <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${conceptoEsc}">${m.concepto}</p>
+            <p style="font-size:10px;color:var(--text-2);margin-top:2px">${m.fecha} · ${sociedadLabel} ${viaReglaBadge}</p>
+          </div>
+          <span style="font-size:13px;font-weight:500;color:#dc2626;white-space:nowrap">${eur(Math.abs(m.importe))}</span>
+        </div>
+        <button onclick="openProvSidebar('${provJs}')" style="background:transparent;border:.5px solid var(--border-3);color:var(--text-2);padding:3px 8px;font-size:10px;border-radius:5px;cursor:pointer">✏️ Reclasificar</button>
+      </div>`;
+    }).join('')}
+  `;
+}
+
+// Botón "← Volver" — regresa a Nivel 1 SIN cerrar el sidebar.
+function catSidebarVolver() {
+  if (!state._cat) return;
+  state._cat.vista = 'proveedores';
+  state._cat.proveedor = null;
+  _renderCatNivel1();
 }
 
 async function openProvSidebar(grupo) {
@@ -2608,9 +2683,10 @@ Object.assign(window, {
   // Sidebar de detalle / reclasificación
   openProvSidebar, closeProvSidebar, toggleReclasificar, confirmReclasificar, rcRefreshNombres,
   onProvFilterInput, clearProvFilter,
-  // Drill desde el donut por categoría (Phase 3): click en slice de cat
-  // → openCategoriaSidebar → lista proveedores → click en uno → openProvSidebar.
-  openCategoriaSidebar,
+  // Drill desde el donut por categoría: openCategoriaSidebar abre Nivel 1
+  // (lista de proveedores). catSidebarVerProveedor entra a Nivel 2 (movs
+  // del proveedor). catSidebarVolver vuelve a Nivel 1 sin cerrar el sidebar.
+  openCategoriaSidebar, catSidebarVerProveedor, catSidebarVolver,
   // Panel de gestión Gastos Dirección (admin/socio)
   openGdManage, gdSetOverride, gdRemoveOverride, gdAddProveedor,
   // Modal alta manual de proveedor en el donut
