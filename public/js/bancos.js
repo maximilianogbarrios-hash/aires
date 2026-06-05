@@ -1302,6 +1302,10 @@ async function loadCaja() {
     renderCajaTabla();
     renderCajaCategorias();
     renderCajaMensual();
+    // Panel reconciliación: fetch independiente porque NO depende de los
+    // filtros del tab (siempre compara TODA la historia vs el sistema
+    // externo). Si falla, no rompe el resto del tab.
+    loadReconciliacionCaja();
   } catch (e) {
     console.error('[caja] error:', e);
     $('caja-tabla-body').innerHTML = `<tr><td colspan="7" style="padding:18px;text-align:center;color:#dc2626">Error: ${e.message}</td></tr>`;
@@ -1400,6 +1404,111 @@ function renderCajaMensual() {
       <td class="flujo-estado" style="padding:6px"><span class="flujo-chip ${sem.cssChip}"></span>${sem.icon}</td>
     </tr>`;
   }).join('');
+}
+
+// ─── Reconciliación caja vs sistema externo ──────────────────────────
+// Panel discreto plegable (<details>) en el tab Efectivo. Compara saldo
+// calculado en Aires Solo contra el saldo_actual del CSV histórico del
+// sistema externo "Control de Cajas". Tolerancia 0,01 €. Llamado desde
+// loadCaja() en background — falla silenciosa para no romper el tab.
+async function loadReconciliacionCaja() {
+  try {
+    const j = await api('/api/v1/caja/reconciliacion');
+    if (!j || !Array.isArray(j.cajas)) return;
+    state.caja.reconciliacion = j;
+    renderReconciliacionCaja();
+  } catch (e) {
+    // No es crítico para el tab — solo loggear y dejar el panel en "—".
+    console.warn('[caja.reconciliacion]', e.message);
+    const body = $('caja-recon-body');
+    if (body) body.innerHTML = `<tr><td colspan="6" style="padding:14px;text-align:center;color:#dc2626;font-size:11px">Error cargando reconciliación: ${e.message}</td></tr>`;
+  }
+}
+
+function renderReconciliacionCaja() {
+  const j = state.caja?.reconciliacion;
+  if (!j) return;
+  const cajas = j.cajas || [];
+  const t = j.totals || {};
+
+  // Badge resumen en el summary: "✓ 25/25 cuadran" o "⚠ 3 descuadres".
+  const badge = $('caja-recon-badge');
+  if (badge) {
+    if (t.n_diferencia || t.n_solo_externo || t.n_solo_calculado) {
+      const probs = (t.n_diferencia || 0) + (t.n_solo_externo || 0) + (t.n_solo_calculado || 0);
+      badge.innerHTML = `<span style="color:#dc2626">⚠ ${probs} sin cuadrar</span> · ${t.n_ok}/${t.n_cajas} OK`;
+    } else {
+      badge.innerHTML = `<span style="color:#16a34a">✓ ${t.n_ok}/${t.n_cajas} cuadran</span>`;
+    }
+  }
+
+  // Footer pequeño con fuente del CSV y fecha de import.
+  const fuente = $('caja-recon-fuente');
+  if (fuente && j.fuente_externa) {
+    const fmtDate = j.importado_en
+      ? new Date(j.importado_en).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
+      : '';
+    fuente.textContent = `Fuente externa: ${j.fuente_externa}${fmtDate ? ' (importado ' + fmtDate + ')' : ''}.`;
+  }
+
+  const body = $('caja-recon-body');
+  if (!body) return;
+  if (!cajas.length) {
+    body.innerHTML = '<tr><td colspan="6" style="padding:14px;text-align:center;color:var(--text-2)">Sin datos de reconciliación.</td></tr>';
+    return;
+  }
+
+  // Orden: descuadres primero, luego solo_externo/solo_calculado, luego OK.
+  const orden = { DIFERENCIA: 0, solo_externo: 1, solo_calculado: 2, OK: 3 };
+  const sorted = [...cajas].sort((a, b) => {
+    const oa = orden[a.estado] ?? 9;
+    const ob = orden[b.estado] ?? 9;
+    if (oa !== ob) return oa - ob;
+    return (a.sucursal || '').localeCompare(b.sucursal || '');
+  });
+
+  body.innerHTML = sorted.map((c) => {
+    const esOk = c.estado === 'OK';
+    const soloUno = c.estado === 'solo_externo' || c.estado === 'solo_calculado';
+    const estadoCell = esOk
+      ? '<span style="color:#16a34a;font-weight:500">✓</span>'
+      : soloUno
+        ? `<span style="color:#BA7517;font-weight:500" title="${c.estado === 'solo_externo' ? 'En sistema externo, sin movs en Aires Solo' : 'Movs en Aires Solo, sin saldo en sistema externo'}">⚠</span>`
+        : '<span style="color:#dc2626;font-weight:500">✗</span>';
+    const rowBg = esOk ? '' : 'background:rgba(220,38,38,.04);';
+    const fmtS = (v) => v == null ? '—' : eur(v);
+    const fmtDiff = (v) => {
+      if (v == null) return '—';
+      if (Math.abs(v) < 0.005) return '0,00 €';
+      const sign = v > 0 ? '+' : '−';
+      return sign + eur(Math.abs(v));
+    };
+    const diffColor = c.diff == null
+      ? 'var(--text-2)'
+      : (Math.abs(c.diff) <= 0.01 ? 'var(--text-2)' : '#dc2626');
+    return `<tr style="border-bottom:.5px solid var(--border-3);${rowBg}">
+      <td style="padding:5px 6px;font-weight:500">${c.sucursal}</td>
+      <td style="padding:5px 6px;text-align:right">${fmtS(c.saldo_calculado)}</td>
+      <td style="padding:5px 6px;text-align:right">${fmtS(c.saldo_externo)}</td>
+      <td style="padding:5px 6px;text-align:right;color:${diffColor}">${fmtDiff(c.diff)}</td>
+      <td style="padding:5px 6px;text-align:right;color:var(--text-2);font-size:10px">${c.n_calc ?? '—'}${c.n_externo != null && c.n_externo !== c.n_calc ? ' / ' + c.n_externo : ''}</td>
+      <td style="padding:5px 6px;text-align:center">${estadoCell}</td>
+    </tr>`;
+  }).join('');
+
+  // Total row.
+  const foot = $('caja-recon-foot');
+  if (foot) {
+    const diffTot = (t.saldo_total_calculado || 0) - (t.saldo_total_externo || 0);
+    foot.innerHTML = `<tr style="border-top:1px solid var(--border-2);background:var(--bg-secondary);font-weight:500">
+      <td style="padding:6px;font-size:11px">TOTAL (${t.n_cajas} cajas)</td>
+      <td style="padding:6px;text-align:right">${eur(t.saldo_total_calculado || 0)}</td>
+      <td style="padding:6px;text-align:right">${eur(t.saldo_total_externo || 0)}</td>
+      <td style="padding:6px;text-align:right;color:${Math.abs(diffTot) <= 0.01 ? 'var(--text-2)' : '#dc2626'}">${Math.abs(diffTot) <= 0.01 ? '0,00 €' : (diffTot > 0 ? '+' : '−') + eur(Math.abs(diffTot))}</td>
+      <td></td>
+      <td style="padding:6px;text-align:center">${t.n_diferencia === 0 && t.n_solo_externo === 0 && t.n_solo_calculado === 0 ? '<span style="color:#16a34a">✓</span>' : '<span style="color:#dc2626">✗</span>'}</td>
+    </tr>`;
+  }
 }
 
 // ─── Flujo Total — banco + efectivo unidos ────────────────────────────

@@ -893,4 +893,96 @@ router.get('/donut-movimientos', async (req, res) => {
   }
 });
 
+// ─── Reconciliación contra sistema externo "Control de Cajas" ──────────
+// Compara saldo calculado en Aires Solo (Σ ingresos − Σ egresos por caja)
+// contra el saldo_actual reportado por el sistema externo (persistido en
+// ab_caja_saldos_externos al importar el CSV).
+//
+// Devuelve una fila por caja con FULL OUTER JOIN — incluye cajas que
+// existen solo en un lado (caso `solo_externo` / `solo_calculado`).
+// Tolerancia de cuadre: 0,01 €.
+//
+// Nota informativa: los saldos parten de 0 al 09/07/2025 (primer mov
+// del histórico); NO representan efectivo físico previo. Cuadrar entre
+// ambos sistemas significa que el histórico está completo y consistente.
+router.get('/reconciliacion', async (req, res) => {
+  try {
+    const rows = await many(`
+      WITH calc AS (
+        SELECT sucursal,
+               COALESCE(SUM(CASE WHEN tipo='Ingreso' THEN monto ELSE 0 END), 0)::float8 AS ing_calc,
+               COALESCE(SUM(CASE WHEN tipo='Egreso'  THEN monto ELSE 0 END), 0)::float8 AS egr_calc,
+               COUNT(*)::int AS n_calc
+        FROM ab_caja_movimientos
+        GROUP BY sucursal
+      )
+      SELECT COALESCE(calc.sucursal, ext.sucursal) AS sucursal,
+             calc.ing_calc, calc.egr_calc,
+             (calc.ing_calc - calc.egr_calc) AS saldo_calculado,
+             calc.n_calc,
+             ext.saldo_actual::float8 AS saldo_externo,
+             ext.total_ingresos::float8 AS ing_externo,
+             ext.total_egresos::float8 AS egr_externo,
+             ext.n_movimientos AS n_externo,
+             ext.primer_mov::text AS primer_mov,
+             ext.ultimo_mov::text AS ultimo_mov,
+             ext.fuente AS fuente_externa,
+             ext.imported_at AS importado_en
+      FROM calc
+      FULL OUTER JOIN ab_caja_saldos_externos ext USING (sucursal)
+      ORDER BY sucursal`);
+
+    const TOL = 0.01;
+    const cajas = rows.map((r) => {
+      const soloCalc = r.saldo_externo === null;
+      const soloExt = r.saldo_calculado === null;
+      const sc = r.saldo_calculado || 0;
+      const se = r.saldo_externo || 0;
+      const diff = sc - se;
+      let estado;
+      if (soloCalc) estado = 'solo_calculado';
+      else if (soloExt) estado = 'solo_externo';
+      else if (Math.abs(diff) <= TOL) estado = 'OK';
+      else estado = 'DIFERENCIA';
+      return {
+        sucursal: r.sucursal,
+        saldo_calculado: r.saldo_calculado,
+        saldo_externo: r.saldo_externo,
+        diff,
+        estado,
+        ing_calc: r.ing_calc,
+        egr_calc: r.egr_calc,
+        n_calc: r.n_calc,
+        ing_externo: r.ing_externo,
+        egr_externo: r.egr_externo,
+        n_externo: r.n_externo,
+        primer_mov: r.primer_mov,
+        ultimo_mov: r.ultimo_mov,
+      };
+    });
+
+    const totals = {
+      n_cajas: cajas.length,
+      n_ok: cajas.filter((c) => c.estado === 'OK').length,
+      n_diferencia: cajas.filter((c) => c.estado === 'DIFERENCIA').length,
+      n_solo_calculado: cajas.filter((c) => c.estado === 'solo_calculado').length,
+      n_solo_externo: cajas.filter((c) => c.estado === 'solo_externo').length,
+      saldo_total_calculado: cajas.reduce((s, c) => s + (c.saldo_calculado || 0), 0),
+      saldo_total_externo: cajas.reduce((s, c) => s + (c.saldo_externo || 0), 0),
+    };
+
+    res.json({
+      cajas,
+      totals,
+      tolerancia: TOL,
+      fuente_externa: rows[0]?.fuente_externa || null,
+      importado_en: rows[0]?.importado_en || null,
+      nota: 'Los saldos parten de 0 al 09/07/2025 (primer mov del histórico). NO representan efectivo físico previo a esa fecha; ambos sistemas deben cuadrar entre sí.',
+    });
+  } catch (e) {
+    console.error('[caja.reconciliacion]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 module.exports = router;

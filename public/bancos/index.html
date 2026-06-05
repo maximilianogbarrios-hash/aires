@@ -484,6 +484,39 @@
       </div>
     </div>
   </div>
+
+  <!-- Reconciliación contra sistema externo "Control de Cajas" (panel
+       discreto, colapsable, secundario al resto del tab Efectivo) -->
+  <details id="caja-recon-panel" class="card" style="margin-top:1rem;padding:.75rem 1rem">
+    <summary style="cursor:pointer;font-size:12px;font-weight:500;display:flex;align-items:center;gap:10px;list-style:none">
+      <span style="font-size:10px;color:var(--text-2)">▸</span>
+      <span>Resumen por caja vs sistema externo</span>
+      <span id="caja-recon-badge" style="font-size:10px;color:var(--text-2);font-weight:400;margin-left:auto">—</span>
+    </summary>
+    <div style="margin-top:.75rem">
+      <p style="font-size:10px;color:var(--text-2);margin-bottom:.5rem;line-height:1.4">
+        Saldos parten de €0 al 09/07/2025 (primer mov del histórico). No representan
+        efectivo físico previo a esa fecha — ambos sistemas deben cuadrar entre sí.
+        <span id="caja-recon-fuente" style="opacity:.7"></span>
+      </p>
+      <div style="overflow-x:auto">
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <thead>
+            <tr style="border-bottom:.5px solid var(--border-3);color:var(--text-2)">
+              <th style="text-align:left;padding:5px 6px">Caja</th>
+              <th style="text-align:right;padding:5px 6px">Saldo Aires Solo</th>
+              <th style="text-align:right;padding:5px 6px">Saldo Externo</th>
+              <th style="text-align:right;padding:5px 6px">Diferencia</th>
+              <th style="text-align:right;padding:5px 6px">N movs</th>
+              <th style="text-align:center;padding:5px 6px">Estado</th>
+            </tr>
+          </thead>
+          <tbody id="caja-recon-body"><tr><td colspan="6" style="padding:14px;text-align:center;color:var(--text-2)">—</td></tr></tbody>
+          <tfoot id="caja-recon-foot"></tfoot>
+        </table>
+      </div>
+    </div>
+  </details>
 </div>
 
 <!-- FLUJO TOTAL — banco + efectivo unidos (admin/socio/gerente) -->
