@@ -623,6 +623,77 @@
     </div>
     <p id="dc-hint" style="font-size:10px;color:var(--text-2);margin-top:.5rem">Click en una categoría → detalle con proveedores y movimientos (banco + efectivo unificados).</p>
   </div>
+
+  <!-- ─── EDITOR de mapeo subtipo caja → categoría banco (admin/socio) ─── -->
+  <div id="mc-section" class="card" style="margin-top:1.25rem;display:none">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:.75rem">
+      <p style="font-size:13px;font-weight:500">Mapeo subtipos caja → categoría banco</p>
+      <span id="mc-resumen" style="font-size:11px;color:var(--text-2)">—</span>
+      <div style="margin-left:auto;display:flex;gap:6px">
+        <button id="mc-btn-recargar" onclick="loadMapeosCaja()" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Recargar</button>
+        <button id="mc-btn-guardar" onclick="saveMapeosCaja()" style="padding:5px 12px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500" disabled>Guardar cambios (0)</button>
+      </div>
+    </div>
+
+    <p style="font-size:11px;color:var(--text-2);margin-bottom:.75rem">
+      Edita aquí los mapeos. Lo que cambies se refleja en el donut combinado sin redeploy. Las reglas <code>system</code> son las seedeadas — podés editarlas/desactivarlas igual.
+    </p>
+
+    <!-- Sub-bloque 1: subtipos pendientes (los que caen en SIN_CATEGORIA_CAJA) -->
+    <div style="border:.5px solid var(--border-2);border-radius:6px;margin-bottom:1rem">
+      <div style="padding:8px 12px;background:var(--bg-secondary);border-bottom:.5px solid var(--border-2);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <p style="font-size:12px;font-weight:500;margin:0">Subtipos pendientes (sin clasificar)</p>
+        <span id="mc-pend-resumen" style="font-size:11px;color:#dc2626">—</span>
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+          <span style="font-size:11px;color:var(--text-2)">Aplicar a seleccionados:</span>
+          <select id="mc-bulk-cat" style="padding:4px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);font-size:11px"></select>
+          <button onclick="applyBulkMapeo()" style="padding:4px 10px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px">Aplicar</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto;max-height:380px;overflow-y:auto">
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <thead style="position:sticky;top:0;background:var(--bg-primary);z-index:1">
+            <tr style="border-bottom:.5px solid var(--border-2);color:var(--text-2);font-size:10px;text-transform:uppercase;letter-spacing:.5px">
+              <th style="padding:6px;text-align:left;width:24px"><input type="checkbox" id="mc-pend-selall" onchange="mcPendSelAll(this.checked)"></th>
+              <th style="padding:6px;text-align:left">Subtipo (caja)</th>
+              <th style="padding:6px;text-align:right">€ total</th>
+              <th style="padding:6px;text-align:right">n</th>
+              <th style="padding:6px;text-align:left">Último uso</th>
+              <th style="padding:6px;text-align:left">Asignar a categoría</th>
+            </tr>
+          </thead>
+          <tbody id="mc-pend-body"><tr><td colspan="6" style="padding:18px;text-align:center;color:var(--text-2)">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Sub-bloque 2: reglas activas — edición fina -->
+    <div style="border:.5px solid var(--border-2);border-radius:6px">
+      <div style="padding:8px 12px;background:var(--bg-secondary);border-bottom:.5px solid var(--border-2);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <p style="font-size:12px;font-weight:500;margin:0">Reglas de mapeo</p>
+        <span id="mc-reglas-resumen" style="font-size:11px;color:var(--text-2)">—</span>
+        <input type="text" id="mc-filter" placeholder="Filtrar por patrón / categoría…" oninput="renderMapeosTable()" style="margin-left:auto;padding:4px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);font-size:11px;width:240px">
+        <button onclick="mcNuevaRegla()" style="padding:4px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">+ Nueva regla</button>
+      </div>
+      <div style="overflow-x:auto;max-height:420px;overflow-y:auto">
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <thead style="position:sticky;top:0;background:var(--bg-primary);z-index:1">
+            <tr style="border-bottom:.5px solid var(--border-2);color:var(--text-2);font-size:10px;text-transform:uppercase;letter-spacing:.5px">
+              <th style="padding:6px;text-align:left">Patrón</th>
+              <th style="padding:6px;text-align:left">Tipo</th>
+              <th style="padding:6px;text-align:right">Prior.</th>
+              <th style="padding:6px;text-align:left">Categoría destino</th>
+              <th style="padding:6px;text-align:left">Notas</th>
+              <th style="padding:6px;text-align:center">Activa</th>
+              <th style="padding:6px;text-align:left">Autor</th>
+              <th style="padding:6px;text-align:center">⌫</th>
+            </tr>
+          </thead>
+          <tbody id="mc-reglas-body"><tr><td colspan="8" style="padding:18px;text-align:center;color:var(--text-2)">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="save-pill" id="save-pill">OK</div>

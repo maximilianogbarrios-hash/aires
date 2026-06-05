@@ -1680,6 +1680,9 @@ function renderFlujoTotal() {
       </table>
     </div>`;
   }
+  // Editor de mapeos caja (admin/socio). Carga datos en paralelo al
+  // donut combinado; oculta la sección si el rol no aplica.
+  if (typeof loadMapeosCaja === 'function') loadMapeosCaja();
   // Tras renderFlujoTotal cargar también el donut combinado de la sección
   // nueva. Reutiliza los mismos filtros (sociedad + incluir_especiales +
   // período del selector global).
@@ -3634,6 +3637,291 @@ async function submitAddProv() {
   renderProvTabla();
 }
 
+// ─── Editor de mapeo subtipo caja → categoría banco (admin/socio) ──────
+// Lee/escribe ab_caja_mapeo_subtipos. El donut combinado consume esta
+// tabla con cache (60s TTL, invalidada por el endpoint PUT). Reutiliza
+// la estética del resto del módulo bancos — no toca "Gestionar reglas".
+const mc = { reglas: [], pendientes: [], cats: [], dirty: new Map(), nextTempId: -1 };
+
+// Llama después de loadFlujoTotal(). Si el usuario no es admin/socio,
+// oculta la sección y sale. Carga reglas + pendientes en paralelo.
+async function loadMapeosCaja() {
+  const sec = document.getElementById('mc-section');
+  if (!sec) return;
+  if (!rolEsAdmin()) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  try {
+    const [reglasResp, pendResp, catsResp] = await Promise.all([
+      fetch('/api/v1/caja/mapeos').then((r) => r.json()),
+      fetch('/api/v1/caja/mapeos/pendientes?solo_sin_clasificar=true').then((r) => r.json()),
+      fetch('/api/v1/caja/mapeos/categorias').then((r) => r.ok ? r.json() : { categorias: [] }).catch(() => ({ categorias: [] })),
+    ]);
+    mc.reglas = (reglasResp.reglas || []).map((r) => ({ ...r, _orig: { ...r } }));
+    mc.pendientes = pendResp.subtipos || [];
+    mc.cats = (catsResp.categorias || catsResp || []).map((c) => c.codigo || c).filter(Boolean).sort();
+    if (mc.cats.length === 0) {
+      mc.cats = [...new Set(mc.reglas.map((r) => r.categoria_destino))].sort();
+    }
+    if (!mc.cats.includes('SIN_CATEGORIA_CAJA')) mc.cats.push('SIN_CATEGORIA_CAJA');
+    if (!mc.cats.includes('SIN_CLASIFICAR')) mc.cats.push('SIN_CLASIFICAR');
+    mc.dirty = new Map();
+    populateBulkCatSelect();
+    renderMapeosPendientes(pendResp);
+    renderMapeosTable();
+    refreshDirtyCount();
+    document.getElementById('mc-resumen').textContent =
+      `${mc.reglas.length} reglas · ${mc.reglas.filter((r) => r.activa).length} activas`;
+  } catch (e) {
+    console.error('[mc] load', e);
+    document.getElementById('mc-resumen').textContent = 'Error al cargar.';
+  }
+}
+
+function populateBulkCatSelect() {
+  const sel = document.getElementById('mc-bulk-cat');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— Categoría destino —</option>' +
+    mc.cats.map((c) => `<option value="${c}">${c}</option>`).join('');
+}
+
+function renderMapeosPendientes(resp) {
+  const body = document.getElementById('mc-pend-body');
+  if (!body) return;
+  const list = mc.pendientes;
+  document.getElementById('mc-pend-resumen').textContent =
+    `${resp.n_sin_clasif || list.length} subtipos · €${(resp.total_sin_clasif || 0).toFixed(2)} sin asignar`;
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="6" style="padding:18px;text-align:center;color:var(--text-2)">✓ No hay subtipos sin clasificar.</td></tr>';
+    return;
+  }
+  const opts = mc.cats.map((c) => `<option value="${c}">${c}</option>`).join('');
+  body.innerHTML = list.map((p, i) => `
+    <tr data-pend-i="${i}" style="border-bottom:.5px solid var(--border-3)">
+      <td style="padding:6px"><input type="checkbox" class="mc-pend-chk" data-i="${i}"></td>
+      <td style="padding:6px;font-family:monospace;font-size:11px">${escapeHtml(p.subtipo)}</td>
+      <td style="padding:6px;text-align:right;color:#dc2626">€${p.total.toFixed(2)}</td>
+      <td style="padding:6px;text-align:right;color:var(--text-2)">${p.n}</td>
+      <td style="padding:6px;color:var(--text-2);font-size:10px">${p.ultimo_uso || '—'}</td>
+      <td style="padding:6px">
+        <select class="mc-pend-cat" data-i="${i}" style="padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px;width:100%">
+          <option value="">— sin cambio —</option>${opts}
+        </select>
+      </td>
+    </tr>`).join('');
+  // Listener: al elegir categoría en un pendiente, queda como regla
+  // nueva pendiente de guardar (exact match, prioridad alta).
+  body.querySelectorAll('.mc-pend-cat').forEach((sel) => {
+    sel.addEventListener('change', (ev) => {
+      const i = +ev.target.dataset.i;
+      const p = mc.pendientes[i];
+      const cat = ev.target.value;
+      if (!cat) { mc.dirty.delete('pend:' + i); refreshDirtyCount(); return; }
+      mc.dirty.set('pend:' + i, {
+        patron: p.subtipo,
+        tipo_match: 'exact',
+        prioridad: 950,
+        categoria_destino: cat,
+        notas: `Asignado desde panel (subtipo libre)`,
+        activa: true,
+      });
+      refreshDirtyCount();
+    });
+  });
+}
+
+function mcPendSelAll(checked) {
+  document.querySelectorAll('.mc-pend-chk').forEach((c) => { c.checked = checked; });
+}
+
+function applyBulkMapeo() {
+  const cat = document.getElementById('mc-bulk-cat')?.value;
+  if (!cat) { alert('Elegí una categoría destino primero.'); return; }
+  const checks = document.querySelectorAll('.mc-pend-chk:checked');
+  if (!checks.length) { alert('Marcá al menos un subtipo de la lista.'); return; }
+  let n = 0;
+  checks.forEach((chk) => {
+    const i = +chk.dataset.i;
+    const p = mc.pendientes[i];
+    // Setear el select de esa fila y disparar el evento change para
+    // reusar la lógica de dirty.
+    const sel = document.querySelector(`.mc-pend-cat[data-i="${i}"]`);
+    if (sel) { sel.value = cat; sel.dispatchEvent(new Event('change', { bubbles: true })); n++; }
+  });
+  if (n) showSavePill(`${n} asignados — falta Guardar.`);
+}
+
+function renderMapeosTable() {
+  const body = document.getElementById('mc-reglas-body');
+  if (!body) return;
+  const filtro = (document.getElementById('mc-filter')?.value || '').toLowerCase();
+  const list = mc.reglas.filter((r) =>
+    !filtro || (r.patron || '').toLowerCase().includes(filtro) ||
+    (r.categoria_destino || '').toLowerCase().includes(filtro) ||
+    (r.notas || '').toLowerCase().includes(filtro));
+  document.getElementById('mc-reglas-resumen').textContent =
+    `Mostrando ${list.length} / ${mc.reglas.length}`;
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="8" style="padding:18px;text-align:center;color:var(--text-2)">— sin resultados —</td></tr>';
+    return;
+  }
+  const opts = mc.cats.map((c) => `<option value="${c}">${c}</option>`).join('');
+  const tipos = ['regex', 'exact', 'prefix'];
+  body.innerHTML = list.map((r) => {
+    const idAttr = r.id != null ? r.id : ('tmp' + r._tempId);
+    const dirty = mc.dirty.has('rule:' + idAttr);
+    return `
+      <tr data-rid="${idAttr}" style="border-bottom:.5px solid var(--border-3);${dirty ? 'background:rgba(24,95,165,.06)' : ''}">
+        <td style="padding:5px">
+          <input type="text" class="mc-rule-fld" data-fld="patron" value="${escapeHtml(r.patron || '')}" style="width:100%;min-width:200px;padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px;font-family:monospace">
+        </td>
+        <td style="padding:5px">
+          <select class="mc-rule-fld" data-fld="tipo_match" style="padding:3px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px">
+            ${tipos.map((t) => `<option value="${t}" ${t === r.tipo_match ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </td>
+        <td style="padding:5px;text-align:right">
+          <input type="number" class="mc-rule-fld" data-fld="prioridad" value="${r.prioridad}" style="width:64px;padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px;text-align:right">
+        </td>
+        <td style="padding:5px">
+          <select class="mc-rule-fld" data-fld="categoria_destino" style="padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px">
+            ${opts.replace(`value="${r.categoria_destino}"`, `value="${r.categoria_destino}" selected`)}
+          </select>
+        </td>
+        <td style="padding:5px">
+          <input type="text" class="mc-rule-fld" data-fld="notas" value="${escapeHtml(r.notas || '')}" style="width:100%;min-width:120px;padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px">
+        </td>
+        <td style="padding:5px;text-align:center">
+          <input type="checkbox" class="mc-rule-fld" data-fld="activa" ${r.activa ? 'checked' : ''}>
+        </td>
+        <td style="padding:5px;color:var(--text-2);font-size:10px">${escapeHtml(r.autor || '—')}</td>
+        <td style="padding:5px;text-align:center">
+          <button onclick="mcDeleteRegla(${idAttr})" title="Eliminar regla" style="background:transparent;border:none;color:#dc2626;cursor:pointer;font-size:13px">⌫</button>
+        </td>
+      </tr>`;
+  }).join('');
+  // Bind change listeners
+  body.querySelectorAll('.mc-rule-fld').forEach((el) => {
+    el.addEventListener('change', onRuleFieldChange);
+    if (el.tagName === 'INPUT' && el.type === 'text') el.addEventListener('input', onRuleFieldChange);
+  });
+}
+
+function onRuleFieldChange(ev) {
+  const row = ev.target.closest('tr[data-rid]');
+  if (!row) return;
+  const rid = row.dataset.rid;
+  const rule = mc.reglas.find((r) =>
+    String(r.id) === rid || ('tmp' + r._tempId) === rid);
+  if (!rule) return;
+  const fld = ev.target.dataset.fld;
+  let val;
+  if (ev.target.type === 'checkbox') val = ev.target.checked;
+  else if (ev.target.type === 'number') val = +ev.target.value;
+  else val = ev.target.value;
+  rule[fld] = val;
+  // Marcar dirty si cambia respecto al _orig (o si es nueva).
+  const orig = rule._orig;
+  const isDirty = !orig || ['patron', 'tipo_match', 'prioridad', 'categoria_destino', 'notas', 'activa']
+    .some((k) => String(rule[k]) !== String(orig[k]));
+  const key = 'rule:' + (rule.id != null ? rule.id : 'tmp' + rule._tempId);
+  if (isDirty) mc.dirty.set(key, rule); else mc.dirty.delete(key);
+  row.style.background = isDirty ? 'rgba(24,95,165,.06)' : '';
+  refreshDirtyCount();
+}
+
+function mcNuevaRegla() {
+  const tmpId = mc.nextTempId--;
+  const nueva = {
+    id: null, _tempId: tmpId, patron: '', tipo_match: 'regex',
+    prioridad: 100, categoria_destino: mc.cats[0] || 'OTROS_GASTOS',
+    notas: '', autor: '(nueva)', activa: true, _orig: null,
+  };
+  mc.reglas.unshift(nueva);
+  mc.dirty.set('rule:tmp' + tmpId, nueva);
+  renderMapeosTable();
+  refreshDirtyCount();
+}
+
+window.mcDeleteRegla = function (rid) {
+  if (!confirm('¿Eliminar esta regla? El cambio aplica al Guardar.')) return;
+  const idx = mc.reglas.findIndex((r) =>
+    String(r.id) === String(rid) || ('tmp' + r._tempId) === String(rid));
+  if (idx < 0) return;
+  const r = mc.reglas[idx];
+  // Si tiene id real, marcar para delete; si es temp, simplemente quitar.
+  if (r.id != null) {
+    mc.dirty.set('del:' + r.id, { _delete: r.id });
+    mc.reglas.splice(idx, 1);
+  } else {
+    mc.dirty.delete('rule:tmp' + r._tempId);
+    mc.reglas.splice(idx, 1);
+  }
+  renderMapeosTable();
+  refreshDirtyCount();
+};
+
+function refreshDirtyCount() {
+  const n = mc.dirty.size;
+  const btn = document.getElementById('mc-btn-guardar');
+  if (btn) { btn.textContent = `Guardar cambios (${n})`; btn.disabled = n === 0; }
+}
+
+async function saveMapeosCaja() {
+  const upserts = [];
+  const deletes = [];
+  for (const [k, v] of mc.dirty.entries()) {
+    if (k.startsWith('del:')) { deletes.push(v._delete); continue; }
+    if (k.startsWith('pend:') || k.startsWith('rule:')) {
+      const payload = {
+        patron: v.patron,
+        tipo_match: v.tipo_match,
+        prioridad: v.prioridad,
+        categoria_destino: v.categoria_destino,
+        notas: v.notas || null,
+        activa: v.activa !== false,
+      };
+      if (v.id != null) payload.id = v.id;
+      upserts.push(payload);
+    }
+  }
+  const btn = document.getElementById('mc-btn-guardar');
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+  try {
+    const r = await fetch('/api/v1/caja/mapeos', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ upserts, deletes }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'save failed');
+    showSavePill(`✓ ${j.inserted} nuevas · ${j.updated} editadas · ${j.deleted} borradas${j.errors ? ` · ${j.errors} con error` : ''}`);
+    // Recargar mapeos + donut combinado (la cache del backend ya fue
+    // invalidada por el PUT) sin redeploy.
+    await loadMapeosCaja();
+    if (typeof loadDonutCombinado === 'function') await loadDonutCombinado();
+    if (typeof loadFlujoTotal === 'function') await loadFlujoTotal();
+  } catch (e) {
+    console.error('[mc] save', e);
+    alert('Error al guardar: ' + (e.message || e));
+    if (btn) btn.disabled = false;
+    refreshDirtyCount();
+  }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function showSavePill(msg) {
+  const p = document.getElementById('save-pill');
+  if (!p) return;
+  p.textContent = msg;
+  p.style.display = 'block';
+  clearTimeout(p._t);
+  p._t = setTimeout(() => { p.style.display = 'none'; }, 3500);
+}
+
 Object.assign(window, {
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
   // Selector global de período (Mes único / Rango)
@@ -3666,5 +3954,8 @@ Object.assign(window, {
   openAddProvModal, submitAddProv,
   // Evolución temporal
   loadEvolucion, evRenderSugerencias, evSeleccionar, evQuitar, evAplicarTopMatch,
+  // Editor de mapeo subtipos caja → categoría banco (admin/socio)
+  loadMapeosCaja, saveMapeosCaja, renderMapeosTable, mcPendSelAll,
+  applyBulkMapeo, mcNuevaRegla,
 });
 boot();

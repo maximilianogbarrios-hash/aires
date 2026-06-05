@@ -19,6 +19,14 @@ const { SUCURSAL_A_SOCIEDAD } = require('../lib/caja/sucursales');
 const {
   categoriaDeSubtipoCaja, origenIngresoCaja, origenIngresoBanco,
 } = require('../lib/caja/mapeo-categorias');
+// Helper DB-driven (preferido). categoriaDeSubtipoCajaSync se llama
+// dentro de loops sobre filas; antes hay que await loadMapeos() para
+// precargar la cache. Si la tabla está vacía/falla → fallback al
+// hardcoded `categoriaDeSubtipoCaja`.
+const {
+  loadMapeos, invalidateMapeosCache, categoriaDeSubtipoCajaSync,
+  categoriaDeSubtipoCajaAsync,
+} = require('../lib/caja/mapeo-db');
 const {
   proveedorDeCaja, esTraspasoInternoCaja, esTraspasoInternoBanco,
 } = require('../lib/caja/proveedor-caja');
@@ -358,6 +366,8 @@ router.get('/combinado', async (req, res) => {
 // todas. Floor por rol vía el helper.
 router.get('/flujo-total', async (req, res) => {
   try {
+    // Precarga el mapeo DB-driven (cache 60s) antes del loop sobre cajaRows.
+    await loadMapeos();
     // CAJA — aplicamos buildFilters() para reusar período/sociedad/etc.
     // Pero forzamos `tipo` y `incluir_*` por separado para no perder
     // ingresos/egresos en el query principal.
@@ -463,7 +473,7 @@ router.get('/flujo-total', async (req, res) => {
     const sin_categoria_efectivo = [];
     for (const r of cajaRows) {
       if ((r.tipo || '').toLowerCase() !== 'egreso') continue;
-      const cat = categoriaDeSubtipoCaja(r.subtipo);
+      const cat = categoriaDeSubtipoCajaSync(r.subtipo);
       if (cat === 'SIN_CATEGORIA_CAJA') {
         // Coleccionar para la lista de pendientes (top 50 por monto).
         sin_categoria_efectivo.push({
@@ -604,6 +614,10 @@ function periodoAnteriorCajaBanco(desde, hasta) {
 // Agregado por categoría combinando banco + caja. Devuelve Map<cat, {banco_egr, caja_egr, banco_ing, caja_ing, n_movs, n_provs:Set, traspaso_banco, traspaso_caja}>
 async function agregarPorCategoria(req, fuente) {
   const reglasDb = await loadReglas();
+  // Precarga el mapeo DB-driven una vez por request — las llamadas
+  // sincronas `categoriaDeSubtipoCajaSync` dentro del loop usarán la
+  // cache ya caliente. Si la tabla está vacía, recae en el hardcoded.
+  await loadMapeos();
   const catAgg = new Map();
   const proveedorSet = new Map(); // cat → Set de provs (string)
   function ensure(cat) {
@@ -648,7 +662,7 @@ async function agregarPorCategoria(req, fuente) {
     );
     for (const r of rows) {
       if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) { caja_traspaso += r.monto; continue; }
-      const cat = categoriaDeSubtipoCaja(r.subtipo);
+      const cat = categoriaDeSubtipoCajaSync(r.subtipo);
       if (cat === 'INTRAGRUPO') continue;
       const ent = ensure(cat);
       ent.n_movs++;
@@ -765,6 +779,7 @@ router.get('/donut-proveedores', async (req, res) => {
     const validFuente = ['todo', 'banco', 'efectivo'].includes(fuente) ? fuente : 'todo';
 
     const reglasDb = await loadReglas();
+    await loadMapeos();
     const map = new Map(); // proveedor → { banco_egr, caja_egr, n_movs }
     function ensure(prov) {
       if (!map.has(prov)) map.set(prov, { proveedor: prov, banco_egr: 0, caja_egr: 0, banco_ing: 0, caja_ing: 0, n_movs: 0 });
@@ -799,7 +814,7 @@ router.get('/donut-proveedores', async (req, res) => {
       );
       for (const r of rows) {
         if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
-        const c = categoriaDeSubtipoCaja(r.subtipo);
+        const c = categoriaDeSubtipoCajaSync(r.subtipo);
         if (c !== cat) continue;
         const prov = proveedorDeCaja(r.subtipo);
         const ent = ensure(prov);
@@ -835,6 +850,7 @@ router.get('/donut-movimientos', async (req, res) => {
     const validFuente = ['todo', 'banco', 'efectivo'].includes(fuente) ? fuente : 'todo';
 
     const reglasDb = await loadReglas();
+    await loadMapeos();
     const movs = [];
 
     if (validFuente === 'todo' || validFuente === 'banco') {
@@ -871,7 +887,7 @@ router.get('/donut-movimientos', async (req, res) => {
       );
       for (const r of rows) {
         if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
-        const c = categoriaDeSubtipoCaja(r.subtipo);
+        const c = categoriaDeSubtipoCajaSync(r.subtipo);
         if (c !== cat) continue;
         if (proveedorDeCaja(r.subtipo) !== prov) continue;
         const signo = (r.tipo || '').toLowerCase() === 'egreso' ? -1 : 1;
@@ -981,6 +997,173 @@ router.get('/reconciliacion', async (req, res) => {
     });
   } catch (e) {
     console.error('[caja.reconciliacion]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ─── Mapeo subtipo caja → categoría banco (CRUD) ─────────────────────────
+// Editor role-gated a admin/socio. El refactor del donut combinado lee
+// estas reglas con cache (60s TTL), invalidada en cada PUT.
+
+function soloAdmin(req, res, next) {
+  if (!esAdminLike(req)) return res.status(403).json({ error: 'forbidden' });
+  next();
+}
+
+// Lista todas las reglas (incluso inactivas), ordenadas como las evalúa
+// el matcher: prioridad desc, id asc. Útil para mostrar en el editor.
+router.get('/mapeos', soloAdmin, async (req, res) => {
+  try {
+    const rows = await many(
+      `SELECT id, patron, tipo_match, prioridad, categoria_destino,
+              notas, autor, activa, created_at, updated_at
+         FROM ab_caja_mapeo_subtipos
+        ORDER BY prioridad DESC, id ASC`,
+      []
+    );
+    res.json({ reglas: rows });
+  } catch (e) {
+    console.error('[caja.mapeos.list]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Bulk save: acepta { upserts: [{id?, patron, tipo_match, prioridad,
+// categoria_destino, notas, activa}], deletes: [id, ...] }. Devuelve
+// counts. Invalida cache en éxito.
+router.put('/mapeos', soloAdmin, express.json(), async (req, res) => {
+  try {
+    const upserts = Array.isArray(req.body?.upserts) ? req.body.upserts : [];
+    const deletes = Array.isArray(req.body?.deletes) ? req.body.deletes : [];
+    const autor = req.session?.user?.email || 'desconocido';
+    let nIns = 0, nUpd = 0, nDel = 0, nErr = 0;
+
+    // Validar categoría destino contra ab_categorias (anti-typo silencioso).
+    const cats = await many('SELECT codigo FROM ab_categorias', []);
+    const catsValid = new Set(cats.map((c) => c.codigo));
+    catsValid.add('SIN_CATEGORIA_CAJA'); // permitido como destino explícito
+    catsValid.add('SIN_CLASIFICAR');
+
+    for (const r of upserts) {
+      const patron = String(r.patron || '').trim();
+      const tipo_match = ['exact', 'prefix', 'regex'].includes(r.tipo_match) ? r.tipo_match : 'regex';
+      const prioridad = Number.isFinite(+r.prioridad) ? +r.prioridad : 100;
+      const cat = String(r.categoria_destino || '').trim();
+      const notas = r.notas ? String(r.notas) : null;
+      const activa = r.activa === false ? false : true;
+      if (!patron || !cat) { nErr++; continue; }
+      if (!catsValid.has(cat)) { nErr++; continue; }
+      // Si es regex, validar que compila — evita romper el matcher.
+      if (tipo_match === 'regex') {
+        try { new RegExp(patron, 'i'); } catch (e) { nErr++; continue; }
+      }
+
+      if (r.id) {
+        const upd = await one(
+          `UPDATE ab_caja_mapeo_subtipos
+             SET patron=$1, tipo_match=$2, prioridad=$3,
+                 categoria_destino=$4, notas=$5, activa=$6,
+                 autor=$7, updated_at=NOW()
+           WHERE id=$8
+           RETURNING id`,
+          [patron, tipo_match, prioridad, cat, notas, activa, autor, r.id]
+        );
+        if (upd) nUpd++; else nErr++;
+      } else {
+        // Insert con ON CONFLICT (patron, tipo_match) DO UPDATE.
+        const ins = await one(
+          `INSERT INTO ab_caja_mapeo_subtipos
+             (patron, tipo_match, prioridad, categoria_destino, notas, activa, autor)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (patron, tipo_match) DO UPDATE
+             SET prioridad=EXCLUDED.prioridad,
+                 categoria_destino=EXCLUDED.categoria_destino,
+                 notas=EXCLUDED.notas,
+                 activa=EXCLUDED.activa,
+                 autor=EXCLUDED.autor,
+                 updated_at=NOW()
+           RETURNING (xmax = 0) AS inserted, id`,
+          [patron, tipo_match, prioridad, cat, notas, activa, autor]
+        );
+        if (ins?.inserted) nIns++; else nUpd++;
+      }
+    }
+    for (const id of deletes) {
+      const del = await one(
+        `DELETE FROM ab_caja_mapeo_subtipos WHERE id=$1 RETURNING id`,
+        [id]
+      );
+      if (del) nDel++;
+    }
+    invalidateMapeosCache();
+    res.json({ ok: true, inserted: nIns, updated: nUpd, deleted: nDel, errors: nErr });
+  } catch (e) {
+    console.error('[caja.mapeos.save]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Lista las categorías canónicas para el dropdown del editor.
+// Role-gated igual que el resto del CRUD.
+router.get('/mapeos/categorias', soloAdmin, async (req, res) => {
+  try {
+    const rows = await many(
+      `SELECT codigo, nombre_display
+         FROM ab_categorias
+        ORDER BY orden ASC, codigo ASC`,
+      []
+    );
+    res.json({ categorias: rows });
+  } catch (e) {
+    console.error('[caja.mapeos.categorias]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Subtipos de caja con sus € y nº movs + cómo mapean ACTUALMENTE.
+// Filtros: ?solo_sin_clasificar=true para listar únicamente los que
+// caen en SIN_CATEGORIA_CAJA. Útil para alimentar el panel del editor.
+router.get('/mapeos/pendientes', soloAdmin, async (req, res) => {
+  try {
+    await loadMapeos();
+    const soloSin = req.query.solo_sin_clasificar === 'true' || req.query.solo_sin_clasificar === '1';
+    // Sólo gasto_directo egresos no especiales — el universo a
+    // categorizar. cierre_pos/prorrateo_automatico/ingreso_directo no
+    // van al donut de gastos.
+    const rows = await many(
+      `SELECT subtipo, COUNT(*)::int AS n,
+              SUM(monto)::float8 AS total,
+              MAX(fecha)::text AS ultimo_uso
+         FROM ab_caja_movimientos
+        WHERE categoria_caja='gasto_directo'
+          AND LOWER(tipo)='egreso'
+          AND es_especial=FALSE
+        GROUP BY subtipo
+        ORDER BY SUM(monto) DESC NULLS LAST`,
+      []
+    );
+    const out = rows.map((r) => {
+      const cat = categoriaDeSubtipoCajaSync(r.subtipo);
+      return {
+        subtipo: r.subtipo || '(vacío)',
+        n: r.n,
+        total: r.total,
+        ultimo_uso: r.ultimo_uso,
+        categoria_actual: cat,
+        sin_clasificar: cat === 'SIN_CATEGORIA_CAJA',
+      };
+    }).filter((r) => !soloSin || r.sin_clasificar);
+    const sumSinClasif = out
+      .filter((r) => r.sin_clasificar)
+      .reduce((s, r) => s + r.total, 0);
+    res.json({
+      subtipos: out,
+      n_total: out.length,
+      n_sin_clasif: out.filter((r) => r.sin_clasificar).length,
+      total_sin_clasif: sumSinClasif,
+    });
+  } catch (e) {
+    console.error('[caja.mapeos.pendientes]', e);
     res.status(500).json({ error: 'internal' });
   }
 });

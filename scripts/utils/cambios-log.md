@@ -3555,3 +3555,88 @@ Flujo Total que ya funciona. Solo AÑADIR.
   · INTRAGRUPO en caja: si el mapeo subtipo→categoría devuelve
     'INTRAGRUPO' (no aplica en ningún patrón actual, pero queda como
     salvaguarda) se excluye igual que en banco.
+
+
+────────────────────────────────────────────────────────────────────────
+2026-06-05 — Mapeo persistente subtipo caja → categoría banco + editor
+────────────────────────────────────────────────────────────────────────
+
+Reemplaza los patrones hardcoded de `lib/caja/mapeo-categorias.js` por
+una tabla editable `ab_caja_mapeo_subtipos`. Reduce el residuo
+SIN_CATEGORIA del donut combinado de €20.405 (180 movs) a €5.499
+(41 movs) sin redeploy posible vía editor admin-only.
+
+### Cambios
+
+  · lib/migrations.js — migration 27 `mapeo_subtipos_caja`:
+    crea tabla + siembra 38 reglas (las 25 hardcoded existentes + 13
+    nuevas para los SIN_CATEGORIA detectados: finiquitos/vacaciones,
+    sistemas (IT), pintor/gasista, parking, ads, camisetas,
+    multas/autoliquidaciones, viáticos, etc.).
+  · lib/caja/mapeo-db.js (NUEVO) — helper DB-driven con cache 60s,
+    fallback al hardcoded si la tabla queda vacía. Soporta tipo_match
+    'regex' | 'exact' | 'prefix'. Pre-compila los RegExp en cache.
+  · routes/caja.js — refactor: precarga `loadMapeos()` en cada endpoint
+    que loopea sobre cajaRows (`/flujo-total`, helper
+    `agregarPorCategoria`, `/donut-proveedores`, `/donut-movimientos`)
+    y usa `categoriaDeSubtipoCajaSync()` en vez del hardcoded.
+    Nuevos endpoints (admin/socio only):
+      GET /api/v1/caja/mapeos              → lista todas las reglas
+      PUT /api/v1/caja/mapeos              → bulk upsert + delete
+      GET /api/v1/caja/mapeos/categorias   → catálogo destino
+      GET /api/v1/caja/mapeos/pendientes   → subtipos sin clasificar
+  · public/bancos/index.html — sección `#mc-section` dentro de
+    "Flujo Total" (oculta para no-admin). Dos tablas: pendientes
+    (con multi-select y bulk-apply) y reglas editables.
+  · public/js/bancos.js — módulo `mc` con dirty tracking, bulk apply,
+    nueva regla, eliminar, guardar (PUT), recarga de donut sin reload.
+
+### Validación 3/3 PASS
+
+  TEST 1 — SIN_CATEGORIA_CAJA en gasto_directo:
+    ANTES (hardcoded): 180 movs · €20.405,71
+    DESPUÉS (tabla) :  41 movs · €5.499,98
+    Recuperado     : €14.905,73
+
+  TEST 2 — NOMINAS suma efectivo correctamente:
+    ANTES   : €823.844,00
+    DESPUÉS : €830.222,00 (+€6.378 de finiquitos/vacaciones/bonos
+              que antes caían a SIN_CATEGORIA)
+
+  TEST 3 — Edición live sin redeploy:
+    1) Estado inicial: CAMPANA SANTA POLA → SIN_CATEGORIA_CAJA
+    2) INSERT regla regex+PUBLICIDAD + invalidate cache:
+       CAMPANA SANTA POLA → PUBLICIDAD  ✓
+    3) UPDATE destino a IMPUESTOS:
+       CAMPANA SANTA POLA → IMPUESTOS  ✓
+    4) DELETE regla:
+       CAMPANA SANTA POLA → SIN_CATEGORIA_CAJA  ✓
+
+### Reasignaciones aplicadas por el seed
+
+  SIN_CATEGORIA → NOMINAS          · 19 movs · €6.378
+                  (finiquitos, vacaciones, bonos, viáticos)
+  SIN_CATEGORIA → SERVICIOS_PROF   · 55 movs · €2.483
+                  (SISTEMAS y sus variantes mensuales)
+  SIN_CATEGORIA → MANTENIMIENTO    ·  7 movs · €3.024
+                  (pintor, gasista Paco, Marius, Anton Carlos)
+  SIN_CATEGORIA → PUBLICIDAD       · 28 movs · €1.410
+                  (ADS sueltos, camisetas/merchandising)
+  SIN_CATEGORIA → IMPUESTOS        ·  4 movs · €941
+                  (autoliquidaciones, multas)
+  SIN_CATEGORIA → GASTOS_VEHICULOS · 26 movs · €669
+                  (parking, uber service)
+
+### Pendientes residuales (€5.500 / 41 movs)
+
+  Subtipos atípicos (CAMPANA SANTA POLA, marcas únicas, conceptos
+  específicos) que requieren juicio humano. Aparecen en el editor
+  como "Subtipos pendientes" para reclasificación manual con
+  multi-select.
+
+### Regresión cero
+
+  · /proveedores: intacto, no usa el helper de caja.
+  · Gestionar reglas de banco: intacto, otro módulo (ab_reglas_categorias).
+  · Donut combinado del commit fd69983: sigue funcionando, ahora con
+    mapeo persistente que reduce el "Sin categoría" mostrado.
