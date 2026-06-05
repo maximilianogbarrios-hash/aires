@@ -82,6 +82,20 @@ router.get('/resumen', async (req, res) => {
        FROM ab_caja_movimientos ${sql}`,
       vals
     );
+    // Rango total disponible (independiente de los filtros — sólo
+    // respeta el floor por rol). Lo consume la línea informativa
+    // "Datos disponibles: Jul 2025 → Jun 2026" debajo de los KPIs.
+    const wRange = []; const vRange = [];
+    if (!esAdminLike(req)) {
+      wRange.push(`fecha >= $${vRange.length + 1}`);
+      vRange.push(PERIODO_FLOOR_NO_ADMIN);
+    }
+    const rangeSqlWhere = wRange.length ? 'WHERE ' + wRange.join(' AND ') : '';
+    const rRange = await one(
+      `SELECT MIN(fecha)::text AS fecha_min, MAX(fecha)::text AS fecha_max
+         FROM ab_caja_movimientos ${rangeSqlWhere}`,
+      vRange
+    );
     res.json({
       n_movs: r.n_movs,
       ingresos: r.ingresos,
@@ -89,6 +103,7 @@ router.get('/resumen', async (req, res) => {
       neto: r.ingresos - r.egresos,
       fecha_min: r.fecha_min,
       fecha_max: r.fecha_max,
+      rango_total: { fecha_min: rRange.fecha_min, fecha_max: rRange.fecha_max },
     });
   } catch (e) {
     console.error('[caja.resumen]', e);

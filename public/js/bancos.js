@@ -299,9 +299,11 @@ async function reload() {
   const lblProv = $('prov-periodo-resumen');
   if (lblProv) lblProv.querySelector('strong').textContent = labelPeriodoActivo();
   await Promise.all([loadResumen(), loadCruces(), loadProveedores(), loadMovs()]);
-  // Si la tab Proveedores ya está cargada, refrescarla (lee el período
-  // global vía getPeriodoActivo en loadProvRanking).
-  if (state.prov?.loaded) loadProvRanking();
+  // Tabs que se cargan on-demand: si ya estaban abiertas, refrescarlas
+  // con el nuevo período. Todas leen `getPeriodoActivo()` internamente.
+  if (state.prov?.loaded)  loadProvRanking();
+  if (state.caja?.loaded)  loadCaja();
+  if (state.flujo?.loaded) loadFlujoAnual();
 }
 
 async function loadResumen() {
@@ -1310,6 +1312,21 @@ function renderCajaKpis() {
   elNeto.textContent = (r.neto >= 0 ? '+' : '') + eur2(r.neto);
   elNeto.style.color = r.neto >= 0 ? '#16a34a' : '#dc2626';
   $('caja-kpi-n').textContent = r.n_movs.toLocaleString('es-ES');
+  // Rango disponible: viene del response como `rango_total` (respeta el
+  // floor por rol, ignora filtros activos). Formato corto "Jul 2025 → Jun 2026".
+  const rt = r.rango_total;
+  const span = $('caja-rango-disponible')?.querySelector('span');
+  if (span) {
+    if (rt?.fecha_min && rt?.fecha_max) {
+      const fmt = (iso) => {
+        const [y, m] = iso.split('-').map(Number);
+        return _mesLabel(`${y}-${String(m).padStart(2,'0')}`);
+      };
+      span.textContent = `${fmt(rt.fecha_min)} → ${fmt(rt.fecha_max)}`;
+    } else {
+      span.textContent = '—';
+    }
+  }
 }
 
 function renderCajaTabla() {
