@@ -1571,6 +1571,259 @@ function renderFlujoTotal() {
       </table>
     </div>`;
   }
+  // Tras renderFlujoTotal cargar también el donut combinado de la sección
+  // nueva. Reutiliza los mismos filtros (sociedad + incluir_especiales +
+  // período del selector global).
+  loadDonutCombinado();
+}
+
+// ─── Donut combinado (sección nueva dentro de Flujo Total) ────────────
+const DC_COLORS = ['#185FA5','#7E22CE','#16a34a','#dc2626','#BA7517','#0891b2','#A78BFA','#facc15','#22c55e','#f87171','#06b6d4','#fb923c','#84cc16','#f43f5e','#8b5cf6','#10b981','#eab308','#ef4444','#3b82f6','#ec4899','#a3a3a3','#fbbf24','#34d399','#f472b6','#60a5fa','#c084fc','#fcd34d','#fda4af','#67e8f9','#bef264','#fdba74','#86efac','#fca5a5','#a5b4fc','#fde047','#5eead4','#94a3b8'];
+
+let chDcDonut = null;
+
+function setDcFuente(f) {
+  state.dc = state.dc || {};
+  state.dc.fuente = f;
+  for (const k of ['todo','banco','efectivo']) {
+    const b = $('dc-fuente-' + k);
+    if (b) { b.style.background = (k===f) ? '#185FA5' : 'transparent'; b.style.color = (k===f) ? '#fff' : 'var(--text)'; b.style.fontWeight = (k===f) ? '500' : 'normal'; }
+  }
+  loadDonutCombinado();
+}
+
+async function loadDonutCombinado() {
+  state.dc = state.dc || { fuente: 'todo' };
+  const sociedad = $('ft-sociedad')?.value || '';
+  const incE = $('ft-incluir-especiales')?.checked ? 'true' : 'false';
+  const p = typeof getPeriodoActivo === 'function' ? getPeriodoActivo() : { modo:'unico', periodo:null };
+  const params = new URLSearchParams();
+  if (sociedad) params.set('sociedad_id', sociedad);
+  params.set('incluir_especiales', incE);
+  params.set('fuente', state.dc.fuente || 'todo');
+  if (p.modo === 'rango') {
+    if (p.desde) params.set('desde', p.desde + '-01');
+    if (p.hasta) {
+      const [yy, mm] = p.hasta.split('-').map(Number);
+      params.set('hasta', p.hasta + '-' + String(new Date(yy, mm, 0).getDate()).padStart(2, '0'));
+    }
+  } else if (p.periodo) {
+    const [yy, mm] = p.periodo.split('-').map(Number);
+    params.set('desde', p.periodo + '-01');
+    params.set('hasta', p.periodo + '-' + String(new Date(yy, mm, 0).getDate()).padStart(2, '0'));
+  }
+  try {
+    const j = await api('/api/v1/caja/donut-categorias?' + params.toString());
+    state.dc.data = j;
+    renderDonutCombinado();
+  } catch (e) {
+    console.error('[dc] error:', e);
+    $('dc-legend').innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  }
+}
+
+function renderDonutCombinado() {
+  const d = state.dc?.data;
+  if (!d) return;
+  // KPIs
+  $('dc-kpi-gasto').textContent = eur2(d.kpis.gasto_total);
+  $('dc-kpi-ingreso').textContent = eur2(d.kpis.ingreso_total);
+  const elN = $('dc-kpi-neto');
+  elN.textContent = (d.kpis.neto >= 0 ? '+' : '') + eur2(d.kpis.neto);
+  elN.style.color = d.kpis.neto >= 0 ? '#16a34a' : '#dc2626';
+  $('dc-kpi-gasto-split').textContent = `banco ${eur(d.kpis.gasto_banco)} · efectivo ${eur(d.kpis.gasto_caja)}`;
+  $('dc-kpi-ingreso-split').textContent = `banco ${eur(d.kpis.ingreso_banco)} · efectivo ${eur(d.kpis.ingreso_caja)}`;
+  const tInt = (d.kpis.traspasos_internos_banco || 0) + (d.kpis.traspasos_internos_caja || 0);
+  $('dc-kpi-traspasos').textContent = tInt > 0 ? eur2(tInt) : '—';
+
+  // Items con umbral.
+  const umbralVal = $('dc-umbral')?.value || 'all';
+  const umbral = (umbralVal === 'all') ? null : parseFloat(umbralVal);
+  const cats = d.categorias || [];
+  const totG = d.kpis.gasto_total || 0;
+  let view = cats.slice();
+  if (umbral != null) {
+    const above = cats.filter((c) => totG > 0 && (c.total_egreso / totG) > umbral);
+    const below = cats.filter((c) => totG > 0 && (c.total_egreso / totG) <= umbral);
+    view = above.slice();
+    if (below.length) {
+      const tot = below.reduce((s, c) => s + c.total_egreso, 0);
+      view.push({
+        codigo: '__OTROS__', nombre_display: `Otros (${below.length})`,
+        total_egreso: tot, banco_egreso: below.reduce((s,c)=>s+c.banco_egreso,0),
+        efectivo_egreso: below.reduce((s,c)=>s+c.efectivo_egreso,0),
+        n_movs: below.reduce((s,c)=>s+c.n_movs,0), n_proveedores: 0,
+        pct_sobre_gasto: totG>0 ? Math.round(tot/totG*1000)/10 : 0,
+        pct_sobre_ingreso: d.kpis.ingreso_total>0 ? Math.round(tot/d.kpis.ingreso_total*1000)/10 : 0,
+        split_banco_pct: tot>0 ? Math.round(below.reduce((s,c)=>s+c.banco_egreso,0)/tot*1000)/10 : 0,
+        split_efectivo_pct: tot>0 ? Math.round(below.reduce((s,c)=>s+c.efectivo_egreso,0)/tot*1000)/10 : 0,
+        tiene_anterior: false,
+      });
+    }
+  }
+
+  // Donut
+  const labels = view.map((v) => v.nombre_display.toUpperCase());
+  const values = view.map((v) => v.total_egreso);
+  const colors = view.map((_, i) => DC_COLORS[i % DC_COLORS.length]);
+  const ctx = $('dc-donut');
+  if (ctx && !chDcDonut && window.Chart) {
+    chDcDonut = new Chart(ctx, {
+      type: 'doughnut',
+      data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderWidth: 2, borderColor: 'var(--bg-primary)' }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (c) => ` ${c.label}: ${eur2(c.raw)} (${(totG>0?c.raw/totG*100:0).toFixed(1)}%)` } },
+        },
+      },
+    });
+  }
+  if (chDcDonut) {
+    chDcDonut.data.labels = labels;
+    chDcDonut.data.datasets[0].data = values;
+    chDcDonut.data.datasets[0].backgroundColor = colors;
+    chDcDonut.update();
+  }
+
+  // Leyenda con tarjetas (mismo estilo que Proveedores + split + % ingreso)
+  $('dc-legend').innerHTML = view.map((c, i) => {
+    const color = colors[i];
+    const codigoEsc = (c.codigo || '').replace(/'/g, "\\'");
+    const isOtros = c.codigo === '__OTROS__';
+    const clickFn = isOtros ? '' : `onclick="openDcSidebar('${codigoEsc}')"`;
+    const cursor = isOtros ? 'default' : 'pointer';
+    // Deltas vs período anterior (sólo si tiene_anterior)
+    let varHtml = '';
+    if (c.tiene_anterior) {
+      const colImp = c.var_importe >= 0 ? '#dc2626' : '#16a34a'; // subir gasto = malo
+      const icoImp = Math.abs(c.var_importe) < 1 ? '→' : (c.var_importe > 0 ? '↑' : '↓');
+      const colPp = c.var_pp >= 0 ? '#dc2626' : '#16a34a';
+      const icoPp = Math.abs(c.var_pp) < 0.5 ? '→' : (c.var_pp > 0 ? '↑' : '↓');
+      varHtml = `<span style="color:${colImp};font-size:10px">${icoImp}${c.var_importe>=0?'+':'−'}${eur(Math.abs(c.var_importe))}</span> · <span style="color:${colPp};font-size:10px">${icoPp}${c.var_pp>=0?'+':'−'}${Math.abs(c.var_pp).toFixed(1)}pp</span>`;
+    }
+    return `<div ${clickFn} style="display:grid;grid-template-columns:auto 1fr auto auto auto;gap:6px;align-items:center;padding:5px 7px;border-radius:6px;cursor:${cursor};border:.5px solid var(--border-3)" ${isOtros?'':'onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"'}>
+      <span style="width:11px;height:11px;border-radius:2px;background:${color};flex-shrink:0"></span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.nombre_display.replace(/"/g,'&quot;')}">${c.nombre_display.toUpperCase()}</span>
+      <span style="font-weight:500;min-width:78px;text-align:right">${eur(c.total_egreso)}</span>
+      <span style="color:var(--text-2);font-size:10px;min-width:80px;text-align:right">B${c.split_banco_pct.toFixed(0)}% · E${c.split_efectivo_pct.toFixed(0)}%</span>
+      <span style="color:var(--text-2);min-width:90px;text-align:right">${c.pct_sobre_gasto.toFixed(1)}% / ${c.pct_sobre_ingreso.toFixed(1)}%i ${varHtml ? '<br>'+varHtml : ''}</span>
+    </div>`;
+  }).join('');
+}
+
+// ─── Sidebar drill-down del donut combinado ──────────────────────────
+async function openDcSidebar(codigo) {
+  if (!codigo) return;
+  const cat = (state.dc?.data?.categorias || []).find((c) => c.codigo === codigo);
+  if (!cat) return;
+  $('prov-sb-title').textContent = (cat.codigo || '').toUpperCase();
+  $('prov-sb-meta').textContent = `${eur2(cat.total_egreso)} · ${cat.n_movs} movs · banco ${eur(cat.banco_egreso)} · efectivo ${eur(cat.efectivo_egreso)}`;
+  $('prov-sb-body').innerHTML = '<p style="font-size:11px;color:var(--text-2);padding:8px">Cargando…</p>';
+  $('prov-sidebar-backdrop').style.display = '';
+  $('prov-sidebar').style.display = '';
+  try {
+    const params = new URLSearchParams();
+    params.set('categoria', codigo);
+    params.set('fuente', state.dc?.fuente || 'todo');
+    const soc = $('ft-sociedad')?.value || '';
+    if (soc) params.set('sociedad_id', soc);
+    params.set('incluir_especiales', $('ft-incluir-especiales')?.checked ? 'true' : 'false');
+    const p = getPeriodoActivo();
+    if (p.modo === 'rango') {
+      if (p.desde) params.set('desde', p.desde + '-01');
+      if (p.hasta) { const [y,m]=p.hasta.split('-').map(Number); params.set('hasta', p.hasta + '-' + String(new Date(y,m,0).getDate()).padStart(2,'0')); }
+    } else if (p.periodo) {
+      const [y,m]=p.periodo.split('-').map(Number);
+      params.set('desde', p.periodo + '-01');
+      params.set('hasta', p.periodo + '-' + String(new Date(y,m,0).getDate()).padStart(2,'0'));
+    }
+    const j = await api('/api/v1/caja/donut-proveedores?' + params.toString());
+    const provs = j.proveedores || [];
+    if (!provs.length) {
+      $('prov-sb-body').innerHTML = '<p style="font-size:12px;color:var(--text-2);padding:20px;text-align:center">Sin proveedores en este filtro.</p>';
+      return;
+    }
+    $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:var(--text-2);margin-bottom:10px">${provs.length} proveedores. Click → movimientos individuales.</p>` +
+      provs.map((p) => {
+        const provJs = (p.proveedor || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const badge = (p.banco_egreso > 0 && p.efectivo_egreso > 0)
+          ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px;margin-right:3px">B</span><span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">E</span>`
+          : (p.banco_egreso > 0
+              ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px">banco</span>`
+              : `<span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">efectivo</span>`);
+        return `<div onclick="openDcMovs('${(cat.codigo||'').replace(/'/g,"\\'")}','${provJs}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;cursor:pointer;background:var(--bg-secondary)" onmouseover="this.style.borderColor='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)'">
+          <div style="flex:1;min-width:0">
+            <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.proveedor} ${badge}</p>
+            <p style="font-size:10px;color:var(--text-2);margin-top:2px">${p.n_movs} tx${p.banco_egreso>0?' · banco '+eur(p.banco_egreso):''}${p.efectivo_egreso>0?' · efectivo '+eur(p.efectivo_egreso):''}</p>
+          </div>
+          <span style="font-size:13px;font-weight:500;color:#dc2626">${eur(p.total_egreso)}</span>
+        </div>`;
+      }).join('');
+  } catch (e) {
+    $('prov-sb-body').innerHTML = `<p style="color:#dc2626;font-size:11px;padding:8px">Error: ${e.message}</p>`;
+  }
+}
+
+async function openDcMovs(codigo, proveedor) {
+  $('prov-sb-title').textContent = `${codigo.toUpperCase()} · ${proveedor}`;
+  $('prov-sb-meta').textContent = 'Cargando movimientos…';
+  $('prov-sb-body').innerHTML = '<p style="padding:10px;color:var(--text-2);font-size:11px">Cargando…</p>';
+  try {
+    const params = new URLSearchParams();
+    params.set('categoria', codigo);
+    params.set('proveedor', proveedor);
+    params.set('fuente', state.dc?.fuente || 'todo');
+    const soc = $('ft-sociedad')?.value || '';
+    if (soc) params.set('sociedad_id', soc);
+    params.set('incluir_especiales', $('ft-incluir-especiales')?.checked ? 'true' : 'false');
+    const p = getPeriodoActivo();
+    if (p.modo === 'rango') {
+      if (p.desde) params.set('desde', p.desde + '-01');
+      if (p.hasta) { const [y,m]=p.hasta.split('-').map(Number); params.set('hasta', p.hasta + '-' + String(new Date(y,m,0).getDate()).padStart(2,'0')); }
+    } else if (p.periodo) {
+      const [y,m]=p.periodo.split('-').map(Number);
+      params.set('desde', p.periodo + '-01');
+      params.set('hasta', p.periodo + '-' + String(new Date(y,m,0).getDate()).padStart(2,'0'));
+    }
+    const j = await api('/api/v1/caja/donut-movimientos?' + params.toString());
+    const movs = j.movimientos || [];
+    $('prov-sb-meta').textContent = `${j.n} movs · banco/efectivo unificados`;
+    if (!movs.length) { $('prov-sb-body').innerHTML = '<p style="padding:20px;text-align:center;color:var(--text-2);font-size:12px">Sin movimientos.</p>'; return; }
+    $('prov-sb-body').innerHTML = movs.map((m) => {
+      const badge = m.origen === 'banco'
+        ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px">banco</span>`
+        : `<span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">efectivo</span>`;
+      const colImp = m.importe >= 0 ? '#16a34a' : '#dc2626';
+      const ubic = m.sucursal ? ' · ' + m.sucursal : '';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:4px;border:.5px solid var(--border-3);border-radius:6px;background:var(--bg-secondary)">
+        <div style="flex:1;min-width:0">
+          <p style="font-size:11px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(m.descripcion||'').replace(/"/g,'&quot;')}">${badge} ${m.descripcion}</p>
+          <p style="font-size:10px;color:var(--text-2);margin-top:2px">${m.fecha}${ubic} · ${m.sociedad_id || ''}</p>
+        </div>
+        <span style="font-size:12px;font-weight:500;color:${colImp}">${m.importe>=0?'+':''}${eur(m.importe)}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    $('prov-sb-body').innerHTML = `<p style="padding:10px;color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  }
+}
+
+function exportDonutCombinadoCsv() {
+  const d = state.dc?.data;
+  if (!d) return;
+  const f = d.filtros;
+  const rows = [['categoria','nombre','total_egreso','banco','efectivo','split_banco_pct','split_efectivo_pct','n_movs','n_proveedores','pct_sobre_gasto','pct_sobre_ingreso','var_importe','var_pp']];
+  for (const c of d.categorias) {
+    rows.push([c.codigo, '"' + c.nombre_display.replace(/"/g,'""') + '"', c.total_egreso, c.banco_egreso, c.efectivo_egreso, c.split_banco_pct, c.split_efectivo_pct, c.n_movs, c.n_proveedores, c.pct_sobre_gasto, c.pct_sobre_ingreso, c.var_importe || 0, c.var_pp || 0]);
+  }
+  const csv = '﻿' + rows.map((r) => r.join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `donut_combinado_${f.fuente}_${f.desde||'desde'}_${f.hasta||'hasta'}.csv`;
+  a.click();
 }
 
 // ─── Flujo Anual: tabla mensual + comparador ─────────────────────────
@@ -3284,6 +3537,8 @@ Object.assign(window, {
   loadCaja, setCajaVista,
   // Flujo Total — banco + efectivo unidos (admin/socio/gerente)
   loadFlujoTotal,
+  // Donut combinado (sección dentro de Flujo Total)
+  setDcFuente, renderDonutCombinado, openDcSidebar, openDcMovs, exportDonutCombinadoCsv, loadDonutCombinado,
   loadProvRanking, exportProveedoresCsv,
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,

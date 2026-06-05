@@ -19,6 +19,11 @@ const { SUCURSAL_A_SOCIEDAD } = require('../lib/caja/sucursales');
 const {
   categoriaDeSubtipoCaja, origenIngresoCaja, origenIngresoBanco,
 } = require('../lib/caja/mapeo-categorias');
+const {
+  proveedorDeCaja, esTraspasoInternoCaja, esTraspasoInternoBanco,
+} = require('../lib/caja/proveedor-caja');
+const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
+const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -522,6 +527,368 @@ router.get('/flujo-total', async (req, res) => {
     });
   } catch (e) {
     console.error('[caja.flujo-total]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ─── Helpers compartidos para los 3 endpoints del donut combinado ─────
+// Construye el WHERE de banco siguiendo el patrón de /proveedores:
+// sociedad, período, importe<0 (gastos). INTRAGRUPO se filtra en runtime.
+function buildWhereBanco(req) {
+  const where = ['importe < 0'];
+  const vals = [];
+  const sociedad = req.query.sociedad_id || null;
+  if (sociedad) {
+    if (sociedad === 'sin_elche')      { where.push(`sociedad_id <> $${vals.length+1}`); vals.push('hostelero'); }
+    else if (sociedad === 'solo_elche'){ where.push(`sociedad_id  = $${vals.length+1}`); vals.push('hostelero'); }
+    else                               { where.push(`sociedad_id  = $${vals.length+1}`); vals.push(sociedad); }
+  }
+  if (req.query.desde) { where.push(`fecha >= $${vals.length+1}`); vals.push(req.query.desde); }
+  if (req.query.hasta) { where.push(`fecha <= $${vals.length+1}`); vals.push(req.query.hasta); }
+  if (!esAdminLike(req)) { where.push(`fecha >= $${vals.length+1}`); vals.push(PERIODO_FLOOR_NO_ADMIN); }
+  return { where, vals };
+}
+
+// Construye el WHERE de caja con misma semántica que buildFilters() pero
+// forzando egresos (importe>0 en caja = ingreso, importe<0 = egreso por
+// convención de ab_caja_movimientos donde monto es siempre positivo y
+// el signo lo determina `tipo='Egreso'|'Ingreso'`).
+function buildWhereCaja(req, soloEgreso) {
+  const reqCaja = Object.assign({}, req, {
+    query: Object.assign({}, req.query, soloEgreso ? { tipo: 'egreso' } : {}),
+  });
+  return buildFilters(reqCaja);
+}
+
+// Pipeline regla>histórico>heurística para banco (igual que /proveedores)
+async function categorizarBancoRow(r, reglasDb) {
+  let proveedor, categoria;
+  const rule = matchRegla(r.concepto, reglasDb);
+  if (rule) { proveedor = rule.proveedor_normalizado; categoria = rule.categoria; }
+  else if (r.proveedor_normalizado) { proveedor = r.proveedor_normalizado; categoria = r.categoria || 'SIN_CLASIFICAR'; }
+  else { const n = normalizarProveedor(r.concepto, r.categoria); proveedor = n.proveedor || r.concepto; categoria = n.categoria || 'SIN_CLASIFICAR'; }
+  return { proveedor, categoria };
+}
+
+// Catálogo de display de categorías (cached por request).
+async function loadCatDisplay() {
+  try {
+    const cats = await many(`SELECT codigo, nombre_display FROM ab_categorias`);
+    return new Map(cats.map((c) => [c.codigo, c.nombre_display]));
+  } catch (e) {
+    return new Map();
+  }
+}
+
+// Período anterior del mismo tamaño que el filtro (espejo del helper de bancos.js).
+function _shiftMonth(yyyymmdd, deltaMeses) {
+  // yyyymmdd YYYY-MM-DD → desplaza meses, devuelve YYYY-MM-DD primer día del mes nuevo.
+  const [y, m] = yyyymmdd.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + deltaMeses, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
+}
+function _lastDayOfMonth(yyyymm01) {
+  const [y, m] = yyyymm01.split('-').map(Number);
+  return `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+}
+function periodoAnteriorCajaBanco(desde, hasta) {
+  if (!desde || !hasta) return null;
+  const [yd, md] = desde.split('-').map(Number);
+  const [yh, mh] = hasta.split('-').map(Number);
+  const nMeses = (yh - yd) * 12 + (mh - md) + 1;
+  const prevDesde = _shiftMonth(desde, -nMeses);
+  const prevHastaMes = _shiftMonth(hasta, -nMeses);
+  return { desde: prevDesde, hasta: _lastDayOfMonth(prevHastaMes) };
+}
+
+// Agregado por categoría combinando banco + caja. Devuelve Map<cat, {banco_egr, caja_egr, banco_ing, caja_ing, n_movs, n_provs:Set, traspaso_banco, traspaso_caja}>
+async function agregarPorCategoria(req, fuente) {
+  const reglasDb = await loadReglas();
+  const catAgg = new Map();
+  const proveedorSet = new Map(); // cat → Set de provs (string)
+  function ensure(cat) {
+    if (!catAgg.has(cat)) catAgg.set(cat, { banco_egr: 0, caja_egr: 0, banco_ing: 0, caja_ing: 0, n_movs: 0 });
+    if (!proveedorSet.has(cat)) proveedorSet.set(cat, new Set());
+    return catAgg.get(cat);
+  }
+  let banco_traspaso = 0, caja_traspaso = 0;
+
+  // BANCO
+  if (fuente === 'todo' || fuente === 'banco') {
+    const { where: wB, vals: vB } = buildWhereBanco(req);
+    // Necesitamos también los ingresos banco — quitar el filtro 'importe<0'.
+    const wAll = wB.filter((c) => c !== 'importe < 0');
+    const rows = await many(
+      `SELECT concepto, categoria, importe::float8 AS importe, proveedor_normalizado
+         FROM ab_movimientos WHERE ${wAll.join(' AND ')}`,
+      vB
+    );
+    for (const r of rows) {
+      if (esTraspasoInternoBanco(r.concepto)) { banco_traspaso += Math.abs(r.importe); continue; }
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+      const { proveedor, categoria } = await categorizarBancoRow(r, reglasDb);
+      if (categoria === 'INTRAGRUPO') continue;
+      const ent = ensure(categoria);
+      ent.n_movs++;
+      const abs = Math.abs(r.importe);
+      if (r.importe < 0) ent.banco_egr += abs;
+      else ent.banco_ing += r.importe;
+      proveedorSet.get(categoria).add(proveedor);
+    }
+  }
+
+  // CAJA
+  if (fuente === 'todo' || fuente === 'efectivo') {
+    const { sql: sqlC, vals: valsC } = buildWhereCaja(req, false);
+    const rows = await many(
+      `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
+              monto::float8 AS monto, observaciones
+         FROM ab_caja_movimientos ${sqlC}`,
+      valsC
+    );
+    for (const r of rows) {
+      if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) { caja_traspaso += r.monto; continue; }
+      const cat = categoriaDeSubtipoCaja(r.subtipo);
+      if (cat === 'INTRAGRUPO') continue;
+      const ent = ensure(cat);
+      ent.n_movs++;
+      const prov = proveedorDeCaja(r.subtipo);
+      proveedorSet.get(cat).add(prov);
+      if ((r.tipo || '').toLowerCase() === 'egreso') ent.caja_egr += r.monto;
+      else if ((r.tipo || '').toLowerCase() === 'ingreso') ent.caja_ing += r.monto;
+    }
+  }
+
+  // Materializar n_provs como número antes de devolver.
+  const result = new Map();
+  for (const [cat, v] of catAgg.entries()) {
+    result.set(cat, { ...v, n_proveedores: proveedorSet.get(cat).size });
+  }
+  return { catAgg: result, banco_traspaso, caja_traspaso };
+}
+
+// ─── Endpoint principal: donut combinado por categoría ────────────────
+router.get('/donut-categorias', async (req, res) => {
+  try {
+    const fuente = (req.query.fuente || 'todo').toLowerCase(); // todo|banco|efectivo
+    const validFuente = ['todo', 'banco', 'efectivo'].includes(fuente) ? fuente : 'todo';
+    const { catAgg, banco_traspaso, caja_traspaso } = await agregarPorCategoria(req, validFuente);
+
+    // Período anterior (mismo tamaño) — sólo si hay desde+hasta.
+    const prev = (req.query.desde && req.query.hasta)
+      ? periodoAnteriorCajaBanco(req.query.desde, req.query.hasta) : null;
+    let prevAgg = new Map();
+    let prevGastoTot = 0, prevIngresoTot = 0;
+    if (prev) {
+      const reqPrev = Object.assign({}, req, {
+        query: Object.assign({}, req.query, { desde: prev.desde, hasta: prev.hasta }),
+      });
+      const p = await agregarPorCategoria(reqPrev, validFuente);
+      prevAgg = p.catAgg;
+      for (const v of prevAgg.values()) {
+        prevGastoTot += v.banco_egr + v.caja_egr;
+        prevIngresoTot += v.banco_ing + v.caja_ing;
+      }
+    }
+
+    // KPIs combinados.
+    let gasto_banco = 0, gasto_caja = 0, ingreso_banco = 0, ingreso_caja = 0;
+    let n_movs_tot = 0;
+    const provGlobalSet = new Set();
+    for (const v of catAgg.values()) {
+      gasto_banco += v.banco_egr; gasto_caja += v.caja_egr;
+      ingreso_banco += v.banco_ing; ingreso_caja += v.caja_ing;
+      n_movs_tot += v.n_movs;
+    }
+    const gasto_total = gasto_banco + gasto_caja;
+    const ingreso_total = ingreso_banco + ingreso_caja;
+    const neto = ingreso_total - gasto_total;
+
+    const catDisplay = await loadCatDisplay();
+    const categorias = [...catAgg.entries()].map(([cat, v]) => {
+      const total_egreso = v.banco_egr + v.caja_egr;
+      const prevV = prevAgg.get(cat) || { banco_egr: 0, caja_egr: 0 };
+      const prev_egreso = prevV.banco_egr + prevV.caja_egr;
+      const pct_actual = gasto_total > 0 ? total_egreso / gasto_total : 0;
+      const pct_prev = prevGastoTot > 0 ? prev_egreso / prevGastoTot : 0;
+      const split_banco = total_egreso > 0 ? v.banco_egr / total_egreso : 0;
+      return {
+        codigo: cat,
+        nombre_display: catDisplay.get(cat) || cat,
+        total_egreso: Math.round(total_egreso * 100) / 100,
+        banco_egreso: Math.round(v.banco_egr * 100) / 100,
+        efectivo_egreso: Math.round(v.caja_egr * 100) / 100,
+        n_movs: v.n_movs,
+        n_proveedores: v.n_proveedores,
+        pct_sobre_gasto: Math.round(pct_actual * 1000) / 10,
+        pct_sobre_ingreso: ingreso_total > 0 ? Math.round(total_egreso / ingreso_total * 1000) / 10 : 0,
+        split_banco_pct: Math.round(split_banco * 1000) / 10,
+        split_efectivo_pct: Math.round((1 - split_banco) * 1000) / 10,
+        // Comparativa período anterior.
+        tiene_anterior: !!prev && prevGastoTot > 0,
+        importe_anterior: Math.round(prev_egreso * 100) / 100,
+        var_importe: Math.round((total_egreso - prev_egreso) * 100) / 100,
+        var_pp: Math.round((pct_actual - pct_prev) * 1000) / 10,
+      };
+    }).sort((a, b) => b.total_egreso - a.total_egreso);
+
+    res.json({
+      filtros: { sociedad_id: req.query.sociedad_id || null, desde: req.query.desde || null, hasta: req.query.hasta || null, fuente: validFuente },
+      kpis: {
+        gasto_total: Math.round(gasto_total * 100) / 100,
+        gasto_banco: Math.round(gasto_banco * 100) / 100,
+        gasto_caja:  Math.round(gasto_caja  * 100) / 100,
+        ingreso_total: Math.round(ingreso_total * 100) / 100,
+        ingreso_banco: Math.round(ingreso_banco * 100) / 100,
+        ingreso_caja:  Math.round(ingreso_caja  * 100) / 100,
+        neto: Math.round(neto * 100) / 100,
+        n_movs: n_movs_tot,
+        n_proveedores: categorias.reduce((s, c) => s + c.n_proveedores, 0), // aproximado (puede duplicar entre cats)
+        traspasos_internos_banco: Math.round(banco_traspaso * 100) / 100,
+        traspasos_internos_caja:  Math.round(caja_traspaso  * 100) / 100,
+      },
+      categorias,
+      comparativa_anterior: prev,
+    });
+  } catch (e) {
+    console.error('[caja.donut-categorias]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ─── Drill-down: proveedores de una categoría ─────────────────────────
+router.get('/donut-proveedores', async (req, res) => {
+  try {
+    const cat = String(req.query.categoria || '').trim();
+    if (!cat) return res.status(400).json({ error: 'categoria requerida' });
+    const fuente = (req.query.fuente || 'todo').toLowerCase();
+    const validFuente = ['todo', 'banco', 'efectivo'].includes(fuente) ? fuente : 'todo';
+
+    const reglasDb = await loadReglas();
+    const map = new Map(); // proveedor → { banco_egr, caja_egr, n_movs }
+    function ensure(prov) {
+      if (!map.has(prov)) map.set(prov, { proveedor: prov, banco_egr: 0, caja_egr: 0, banco_ing: 0, caja_ing: 0, n_movs: 0 });
+      return map.get(prov);
+    }
+
+    if (validFuente === 'todo' || validFuente === 'banco') {
+      const { where, vals } = buildWhereBanco(req);
+      const wAll = where.filter((c) => c !== 'importe < 0');
+      const rows = await many(
+        `SELECT concepto, categoria, importe::float8 AS importe, proveedor_normalizado
+           FROM ab_movimientos WHERE ${wAll.join(' AND ')}`,
+        vals
+      );
+      for (const r of rows) {
+        if (esTraspasoInternoBanco(r.concepto)) continue;
+        if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+        const { proveedor, categoria } = await categorizarBancoRow(r, reglasDb);
+        if (categoria !== cat) continue;
+        const ent = ensure(proveedor);
+        ent.n_movs++;
+        const abs = Math.abs(r.importe);
+        if (r.importe < 0) ent.banco_egr += abs; else ent.banco_ing += r.importe;
+      }
+    }
+    if (validFuente === 'todo' || validFuente === 'efectivo') {
+      const { sql: sqlC, vals: valsC } = buildWhereCaja(req, false);
+      const rows = await many(
+        `SELECT subtipo, tipo, monto::float8 AS monto, observaciones
+           FROM ab_caja_movimientos ${sqlC}`,
+        valsC
+      );
+      for (const r of rows) {
+        if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
+        const c = categoriaDeSubtipoCaja(r.subtipo);
+        if (c !== cat) continue;
+        const prov = proveedorDeCaja(r.subtipo);
+        const ent = ensure(prov);
+        ent.n_movs++;
+        if ((r.tipo || '').toLowerCase() === 'egreso') ent.caja_egr += r.monto;
+        else if ((r.tipo || '').toLowerCase() === 'ingreso') ent.caja_ing += r.monto;
+      }
+    }
+
+    const proveedores = [...map.values()].map((v) => ({
+      proveedor: v.proveedor,
+      total_egreso: Math.round((v.banco_egr + v.caja_egr) * 100) / 100,
+      banco_egreso: Math.round(v.banco_egr * 100) / 100,
+      efectivo_egreso: Math.round(v.caja_egr * 100) / 100,
+      total_ingreso: Math.round((v.banco_ing + v.caja_ing) * 100) / 100,
+      n_movs: v.n_movs,
+    })).sort((a, b) => (b.total_egreso + b.total_ingreso) - (a.total_egreso + a.total_ingreso));
+
+    res.json({ categoria: cat, fuente: validFuente, proveedores });
+  } catch (e) {
+    console.error('[caja.donut-proveedores]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ─── Drill-down nivel 2: movs individuales de un proveedor en una categoría ──
+router.get('/donut-movimientos', async (req, res) => {
+  try {
+    const cat = String(req.query.categoria || '').trim();
+    const prov = String(req.query.proveedor || '').trim();
+    if (!cat || !prov) return res.status(400).json({ error: 'categoria + proveedor requeridos' });
+    const fuente = (req.query.fuente || 'todo').toLowerCase();
+    const validFuente = ['todo', 'banco', 'efectivo'].includes(fuente) ? fuente : 'todo';
+
+    const reglasDb = await loadReglas();
+    const movs = [];
+
+    if (validFuente === 'todo' || validFuente === 'banco') {
+      const { where, vals } = buildWhereBanco(req);
+      const wAll = where.filter((c) => c !== 'importe < 0');
+      const rows = await many(
+        `SELECT id, fecha::text, concepto, categoria, importe::float8 AS importe,
+                sociedad_id, proveedor_normalizado
+           FROM ab_movimientos WHERE ${wAll.join(' AND ')}
+          ORDER BY fecha DESC, id DESC`,
+        vals
+      );
+      for (const r of rows) {
+        if (esTraspasoInternoBanco(r.concepto)) continue;
+        if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+        const { proveedor, categoria } = await categorizarBancoRow(r, reglasDb);
+        if (categoria !== cat || proveedor !== prov) continue;
+        movs.push({
+          origen: 'banco',
+          id: r.id, fecha: r.fecha, descripcion: r.concepto,
+          importe: Math.round(r.importe * 100) / 100,
+          sociedad_id: r.sociedad_id, sucursal: null, tipo: r.importe < 0 ? 'Egreso' : 'Ingreso',
+        });
+      }
+    }
+    if (validFuente === 'todo' || validFuente === 'efectivo') {
+      const { sql: sqlC, vals: valsC } = buildWhereCaja(req, false);
+      const rows = await many(
+        `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
+                monto::float8 AS monto, observaciones
+           FROM ab_caja_movimientos ${sqlC}
+          ORDER BY fecha DESC, id DESC`,
+        valsC
+      );
+      for (const r of rows) {
+        if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
+        const c = categoriaDeSubtipoCaja(r.subtipo);
+        if (c !== cat) continue;
+        if (proveedorDeCaja(r.subtipo) !== prov) continue;
+        const signo = (r.tipo || '').toLowerCase() === 'egreso' ? -1 : 1;
+        movs.push({
+          origen: 'efectivo',
+          id: r.id, fecha: r.fecha, descripcion: r.subtipo || '(sin)',
+          importe: Math.round(signo * r.monto * 100) / 100,
+          sociedad_id: r.sociedad_id, sucursal: r.sucursal, tipo: r.tipo,
+          observaciones: r.observaciones || null,
+        });
+      }
+    }
+    movs.sort((a, b) => (b.fecha + '').localeCompare(a.fecha + ''));
+
+    res.json({ categoria: cat, proveedor: prov, fuente: validFuente, n: movs.length, movimientos: movs.slice(0, 200) });
+  } catch (e) {
+    console.error('[caja.donut-movimientos]', e);
     res.status(500).json({ error: 'internal' });
   }
 });

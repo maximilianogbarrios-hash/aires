@@ -3426,3 +3426,132 @@ Response:
     Otros caja                            caja € 5.150
 
   Sin categoría caja: 9 movs · €1.930 (top 50 mostrados en la lista).
+
+
+---
+
+## Bancos / Flujo Total — Donut combinado banco + efectivo (drill-down)
+
+**Fecha**: 2026-06-05
+
+### Pedido
+
+Añadir DENTRO del tab "Flujo Total" un bloque nuevo: donut estilo
+"Proveedores" pero fusionando banco + efectivo en una sola foto real.
+Mismo comportamiento de drill-down (categoría → proveedores →
+movimientos), misma estética, pero con porcentajes reales sobre el
+total combinado y deltas vs período anterior.
+
+**Regla absoluta**: sin tocar `/proveedores` ni el resto del tab
+Flujo Total que ya funciona. Solo AÑADIR.
+
+### Cambios
+
+**lib/caja/proveedor-caja.js** (nuevo)
+
+  - `proveedorDeCaja(subtipo)` reconstruye el "proveedor canónico" desde
+    el subtipo libre. Colapsa variantes: SUELDOS MES 05 2026 / sueldos
+    mes 10/2025 / PAGO SUELDOS MES 03 2026 → "Sueldos"; HONORARIOS
+    FRAN 03 2026 → "Honorarios Fran"; PAGO MARIUS → "Marius"; CIERRE
+    → "Cierre caja diario"; Prorrateo desde X → "Prorrateo desde X";
+    fallback title-case. Vacío → "Efectivo (sin proveedor)".
+  - `esTraspasoInternoCaja(subtipo, observaciones)` detecta movs de
+    caja que son depósitos a banco (patrones TRASPASO A CUENTA / BANCO,
+    DEPÓSITO BANCO, CUENTA <num>). En la data actual: 0 movs.
+  - `esTraspasoInternoBanco(concepto)` detecta movs de banco que son
+    ingresos de efectivo desde caja (INGRESO EFECTIVO / VENTANILLA /
+    DEPÓSITO EFECTIVO). En la data actual: 0 movs.
+  - Tests: 10/10 pass (Sueldos en todas sus variantes).
+
+**routes/caja.js — 3 endpoints nuevos** bajo `/api/v1/caja/*`
+
+  - `GET /donut-categorias?desde&hasta&sociedad_id&fuente=todo|banco|efectivo&incluir_especiales`
+    Agrega por categoría combinando banco + caja. Devuelve:
+    - kpis: gasto_total, gasto_banco, gasto_caja, ingreso_total,
+      ingreso_banco, ingreso_caja, neto, n_movs, n_proveedores,
+      traspasos_internos_banco, traspasos_internos_caja
+    - categorias: [{ codigo, nombre_display, total_egreso,
+      banco_egreso, efectivo_egreso, n_movs, n_proveedores,
+      pct_sobre_gasto, pct_sobre_ingreso, split_banco_pct,
+      split_efectivo_pct, tiene_anterior, importe_anterior,
+      var_importe, var_pp }]
+    - Comparativa período anterior calculada del mismo tamaño que el
+      filtro (mes único → mes previo; rango N meses → N meses previos).
+  - `GET /donut-proveedores?categoria=X` drill-down: proveedores de
+    la categoría con split banco/efectivo y n_movs.
+  - `GET /donut-movimientos?categoria=X&proveedor=Y` drill-down nivel 2:
+    movs individuales unificados con badge origen (banco/efectivo).
+    Top 200 por fecha desc.
+
+  Pipeline (regla > histórico > heurística) para banco — idéntico a
+  /proveedores, sin compartir código (replicado para no tocar la
+  función existente). Caja: `categoriaDeSubtipoCaja()` ya existente
+  + `proveedorDeCaja()` nuevo.
+
+  **Exclusiones** (gasto/ingreso reales):
+  · INTRAGRUPO: `esIntraGrupo(concepto)` para banco, categoría
+    mapeada `'INTRAGRUPO'` para caja.
+  · Traspasos internos caja↔banco: detectados por el helper, no
+    suman en gasto ni ingreso, se muestran en KPI separado de
+    trazabilidad.
+
+  **Floor por rol** vía `PERIODO_FLOOR_NO_ADMIN` (gerente sólo ve
+  desde 2026-01).
+
+**public/bancos/index.html**
+
+  - Sección NUEVA dentro de `sect-flujototal`, después del bloque
+    "Sin categoría — pendientes" existente (no toca lo anterior).
+  - Header con toggle [Todo | Solo Banco | Solo Efectivo], selector
+    de umbral, botón Export CSV.
+  - 4 cards KPI: gasto total real, ingreso total real, resultado
+    neto real, traspasos internos (informativo).
+  - Donut Chart.js (`dc-donut`) + leyenda con tarjetas que muestran:
+    nombre, importe, split banco/efectivo, % gasto, % ingreso, delta
+    importe + delta pp con flechas.
+
+**public/js/bancos.js**
+
+  - `loadDonutCombinado()` se dispara desde `renderFlujoTotal()`
+    (al final, sin tocar el render existente del Flujo Total).
+  - `setDcFuente('todo'|'banco'|'efectivo')` toggle reactivo.
+  - `renderDonutCombinado()` lee state.dc.data, aplica umbral
+    (agrupa colas en "Otros"), pinta donut + leyenda.
+  - `openDcSidebar(codigo)` → drill-down proveedores en el sidebar
+    existente `prov-sidebar` (reutilizado). Cada proveedor con badge
+    B/E según origen.
+  - `openDcMovs(categoria, proveedor)` → drill-down nivel 2: movs
+    individuales con badge banco/efectivo, fecha, sucursal,
+    descripción, importe con signo.
+  - `exportDonutCombinadoCsv()` descarga CSV con columna origen.
+
+### Validación
+
+  TEST 1 — Gasto solo-banco mayo 2026: €292.430,79 — idéntico al
+           donut de Proveedores existente ✓ (regresión cero)
+
+  TEST 2 — Cuadre mayo 2026:
+    Gasto total combinado:  banco €292.431 + caja €99.844 = €392.275
+    Ingreso total combinado: banco €263.335 + caja €98.665 = €362.000
+    Neto real:                                                -€30.274
+    Traspasos internos:                                       €0,00
+    → coincide con el cuadre de Flujo Total que ya mostraba
+
+  TEST 3 — NOMINAS sube / ALQUILER baja al pasar a combinado:
+    NOMINAS  solo-banco: 10,5%
+    NOMINAS  combinado:  28,8%  ✓ sube  (mayoría se paga en cash)
+    ALQUILER solo-banco: 13,3%
+    ALQUILER combinado:   9,9%  ✓ baja  (100% banco, base crece)
+
+### Supuestos asumidos
+
+  · Proveedor en caja: el "subtipo" después de normalización
+    (`proveedorDeCaja`). Cuando subtipo está vacío → "Efectivo (sin
+    proveedor)".
+  · Traspasos internos caja→banco: detección por patrones de subtipo /
+    concepto. En la data actual son 0; la infraestructura queda armada
+    para el caso futuro de que aparezcan (ej. depósitos manuales en
+    ventanilla).
+  · INTRAGRUPO en caja: si el mapeo subtipo→categoría devuelve
+    'INTRAGRUPO' (no aplica en ningún patrón actual, pero queda como
+    salvaguarda) se excluye igual que en banco.
