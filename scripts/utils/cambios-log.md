@@ -3323,3 +3323,106 @@ expone como nueva tab "Efectivo" dentro de Bancos y como toggle
     Caja:     ing € 98.665 · gas € 99.843 · neto -€ 1.178
     Total:    ing €362.000 · gas €392.274 · neto -€30.274
     % Efectivo del total operativo: 26,3%
+
+
+---
+
+## Bancos — Nueva tab "Flujo Total" (banco + efectivo unidos)
+
+**Fecha**: 2026-06-05
+
+### Pedido
+
+Tab nueva en Bancos que muestra el flujo COMBINADO banco + efectivo
+desglosado por origen (ingresos) y por categoría (egresos), con lista
+de movimientos de efectivo sin categorizar para reclasificar.
+
+### Cambios
+
+**lib/caja/mapeo-categorias.js** (nuevo)
+
+Mapeo subtipo libre (caja) → categoría canónica banco. Permite unificar
+las dos taxonomías (banco usa categorías estructuradas de ab_categorias,
+caja usa subtipos libres como "SUELDOS MES 05 2026").
+
+  - PATRONES_EGRESO: ~25 patrones regex (sueldos→NOMINAS, prorrateo/
+    dani/maxi→GASTOS_DIRECCION, honorarios→SERVICIOS_PROF, etc.).
+    Orden importa: GASTOS_DIRECCION antes que NOMINAS para que
+    "DANI" no caiga en nóminas.
+  - PATRONES_INGRESO: cierre→Cierres caja, prorrateo→Prorrateos
+    entrantes, devolución→Devoluciones.
+  - PATRONES_INGRESO_BANCO: Liquidacion Efectuada→TPV Santander,
+    ABONO TPV→TPV Sabadell, Glovo, JustEat, UberEats, Bizum, Stripe.
+  - Fallback: SIN_CATEGORIA_CAJA (los movs no mapeados aparecen en la
+    sección "Sin categoría — pendientes" de la tab).
+  - 16/16 tests pasaron contra subtipos reales del CSV.
+
+**routes/caja.js — endpoint GET /api/v1/caja/flujo-total**
+
+Query: período (desde/hasta), sociedad_id (con sin_elche/solo_elche),
+incluir_especiales, incluir_prorrateo, etc. Floor por rol vía
+PERIODO_FLOOR_NO_ADMIN.
+
+Response:
+  - kpis: ingresos_total, egresos_total, neto, cobertura_efectivo (%),
+    + sub-totales banco/caja por separado.
+  - ingresos_por_origen: array { origen, banco, efectivo, total, pct,
+    subitems_efectivo[3] }.
+  - egresos_por_categoria: array { categoria, nombre_display, banco,
+    efectivo, total, pct, top_banco[3], top_caja[3] }.
+  - sin_categoria_efectivo: { total, n, movs[top 50] } — para listado
+    de pendientes.
+
+**lib/roles.js**
+
+  SUB_TABS_BANCOS.flujototal = ['admin','socio','gerente']
+
+**public/bancos/index.html**
+
+  - Botón <button data-tab="flujototal"> después de "Efectivo".
+  - Sección sect-flujototal:
+    - Header con filtro de sociedad + checkbox "Incluir especiales"
+      + nota "el período se controla con el selector global".
+    - 4 cards KPI (Ingresos / Egresos / Neto / Cobertura efectivo).
+    - Tabla Ingresos con columnas Origen / Banco / Efectivo / Total / %
+      y sub-rows por subtipo. Última fila TOTAL destacada.
+    - Tabla Egresos con misma estructura + sub-rows top 3 proveedores
+      banco y top 3 subtipos caja por categoría. Fila "Sin categoría
+      (efectivo) ← reclasificar" antes del total.
+    - Bloque "Sin categoría — pendientes" con resumen + tabla scrollable
+      (top 50 movs sin clasificar).
+
+**public/js/bancos.js**
+
+  - initFlujoTotalFiltros() (popula sociedad la primera vez).
+  - loadFlujoTotal() — lee getPeriodoActivo(), arma params (incluyendo
+    primer/último día del mes para modo único), pega a /flujo-total,
+    actualiza estado state.flujoTotal y dispara render.
+  - renderFlujoTotal() — popula KPIs, tablas Ingresos/Egresos con
+    sub-rows, lista de pendientes scrollable.
+  - showTab('flujototal') dispara init + load on-demand.
+  - reload() refresca también flujoTotal si está cargado.
+
+### Verificación contra prod — Mayo 2026 todas las sociedades
+
+  KPIs:
+    Ingresos: €362.000 (banco €263.335, caja €98.665)
+    Egresos:  €392.274 (banco €292.430, caja €99.843)
+    Neto:    -€30.274
+    Cobertura efectivo: 26,3%
+
+  Top 5 egresos por categoría:
+    NOMINAS               banco €30.838 + caja €82.145 = €112.983
+    PROVEEDOR_CARNES      banco €52.131                = €52.131
+    ALQUILER              banco €38.798                = €38.798
+    SS_LABORAL            banco €37.783                = €37.783
+    SUMINISTROS_ENERGIA   banco €15.479                = €15.479
+
+  Top ingresos por origen:
+    TPV Santander         banco €114.323
+    TPV Sabadell          banco €107.518
+    Cierres caja                          caja €93.515
+    Glovo                 banco € 38.387
+    Otros caja                            caja € 5.150
+
+  Sin categoría caja: 9 movs · €1.930 (top 50 mostrados en la lista).

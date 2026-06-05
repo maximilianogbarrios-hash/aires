@@ -102,6 +102,7 @@
   <button class="tab"    data-tab="cruce"     onclick="showTab('cruce',this)">Cruce TPV vs Banco</button>
   <button class="tab"    data-tab="flujo"     onclick="showTab('flujo',this)">Flujo Anual</button>
   <button class="tab"    data-tab="efectivo"  onclick="showTab('efectivo',this)">Efectivo</button>
+  <button class="tab"    data-tab="flujototal" onclick="showTab('flujototal',this)">Flujo Total</button>
 </div>
 
 <!-- RESUMEN -->
@@ -482,6 +483,74 @@
         </table>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- FLUJO TOTAL — banco + efectivo unidos (admin/socio/gerente) -->
+<div id="sect-flujototal" class="sect">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:.75rem">
+    <p style="font-size:13px;font-weight:500">Flujo Total <span id="ft-titulo-periodo" style="color:var(--text-2);font-weight:400">—</span></p>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="font-size:11px;color:var(--text-2)">Sociedad:</span>
+      <select id="ft-sociedad" onchange="loadFlujoTotal()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"></select>
+    </div>
+    <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2);cursor:pointer">
+      <input type="checkbox" id="ft-incluir-especiales" onchange="loadFlujoTotal()"> Incluir cuentas especiales
+    </label>
+    <span style="font-size:10px;color:var(--text-2);margin-left:auto">El período se controla con el selector global de arriba.</span>
+  </div>
+
+  <!-- KPIs -->
+  <div class="g4" style="margin-bottom:1rem">
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Ingresos totales</p><p style="font-size:19px;font-weight:500;color:#16a34a" id="ft-kpi-ing">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Egresos totales</p><p style="font-size:19px;font-weight:500;color:#dc2626" id="ft-kpi-egr">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Neto</p><p style="font-size:19px;font-weight:500" id="ft-kpi-neto">—</p></div>
+    <div class="surf"><p style="font-size:11px;color:var(--text-2)">Cobertura efectivo</p><p style="font-size:19px;font-weight:500" id="ft-kpi-cob">—</p></div>
+  </div>
+
+  <!-- Ingresos por origen -->
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:600;margin-bottom:.75rem;text-transform:uppercase;letter-spacing:.5px;color:#16a34a">━━━ Ingresos ━━━</p>
+    <div style="overflow-x:auto">
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1.5px solid var(--border-2);color:var(--text-2);font-size:11px;text-transform:uppercase;letter-spacing:.5px">
+            <th style="text-align:left;padding:6px">Origen</th>
+            <th style="text-align:right;padding:6px">Banco</th>
+            <th style="text-align:right;padding:6px">Efectivo</th>
+            <th style="text-align:right;padding:6px">Total</th>
+            <th style="text-align:right;padding:6px">%</th>
+          </tr>
+        </thead>
+        <tbody id="ft-ingresos-body"><tr><td colspan="5" style="padding:18px;text-align:center;color:var(--text-2)">Cargando…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Egresos por categoría -->
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:600;margin-bottom:.75rem;text-transform:uppercase;letter-spacing:.5px;color:#dc2626">━━━ Egresos ━━━</p>
+    <div style="overflow-x:auto">
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1.5px solid var(--border-2);color:var(--text-2);font-size:11px;text-transform:uppercase;letter-spacing:.5px">
+            <th style="text-align:left;padding:6px">Categoría</th>
+            <th style="text-align:right;padding:6px">Banco</th>
+            <th style="text-align:right;padding:6px">Efectivo</th>
+            <th style="text-align:right;padding:6px">Total</th>
+            <th style="text-align:right;padding:6px">%</th>
+          </tr>
+        </thead>
+        <tbody id="ft-egresos-body"><tr><td colspan="5" style="padding:18px;text-align:center;color:var(--text-2)">Cargando…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Sin categoría — pendientes -->
+  <div class="card">
+    <p style="font-size:13px;font-weight:600;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px;color:#7E22CE">━━━ Sin categoría — pendientes ━━━</p>
+    <p id="ft-sincat-resumen" style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">—</p>
+    <div id="ft-sincat-body"></div>
   </div>
 </div>
 

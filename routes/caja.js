@@ -16,6 +16,9 @@ const express = require('express');
 const { requireAuth, requirePerm } = require('../lib/auth');
 const { many, one } = require('../lib/db');
 const { SUCURSAL_A_SOCIEDAD } = require('../lib/caja/sucursales');
+const {
+  categoriaDeSubtipoCaja, origenIngresoCaja, origenIngresoBanco,
+} = require('../lib/caja/mapeo-categorias');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -331,6 +334,194 @@ router.get('/combinado', async (req, res) => {
     res.json({ meses: out });
   } catch (e) {
     console.error('[caja.combinado]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ─── Flujo Total — banco + caja unidos por origen/categoría ───────────
+// Devuelve para el filtro pedido:
+//   - kpis: ingresos/egresos/neto/cobertura_efectivo
+//   - ingresos_por_origen: una fila por canal (TPV Santander, Glovo,
+//     Cierres caja, etc.), con monto banco + monto efectivo + total
+//   - egresos_por_categoria: una fila por categoría canónica, con
+//     sub-rows top-N proveedores banco y top-N subtipos caja
+//   - sin_categoria_efectivo: lista de movs caja cuyo subtipo no
+//     matcheó ningún patrón — pendientes de reclasificar
+//
+// Reusa filtros de buildFilters() (desde/hasta/sociedad_id/etc.) para
+// caja; para banco aplica el mismo período + sociedad. Sin sociedad =
+// todas. Floor por rol vía el helper.
+router.get('/flujo-total', async (req, res) => {
+  try {
+    // CAJA — aplicamos buildFilters() para reusar período/sociedad/etc.
+    // Pero forzamos `tipo` y `incluir_*` por separado para no perder
+    // ingresos/egresos en el query principal.
+    const reqCaja = Object.assign({}, req, {
+      query: Object.assign({}, req.query, { tipo: 'ambos' }),
+    });
+    const { sql: sqlC, vals: valsC } = buildFilters(reqCaja);
+    const cajaRows = await many(
+      `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
+              monto::float8 AS monto, observaciones
+         FROM ab_caja_movimientos ${sqlC}`,
+      valsC
+    );
+
+    // BANCO — período + sociedad, excluye INTRAGRUPO. Floor por rol.
+    const sociedadParam = req.query.sociedad_id || null;
+    const desde = req.query.desde || null;
+    const hasta = req.query.hasta || null;
+    const whereB = [`categoria <> 'INTRAGRUPO'`];
+    const valsB = [];
+    if (sociedadParam) {
+      if (sociedadParam === 'sin_elche')      { whereB.push(`sociedad_id <> $${valsB.length+1}`); valsB.push('hostelero'); }
+      else if (sociedadParam === 'solo_elche'){ whereB.push(`sociedad_id  = $${valsB.length+1}`); valsB.push('hostelero'); }
+      else                                    { whereB.push(`sociedad_id  = $${valsB.length+1}`); valsB.push(sociedadParam); }
+    }
+    if (desde) { whereB.push(`fecha >= $${valsB.length+1}`); valsB.push(desde); }
+    if (hasta) { whereB.push(`fecha <= $${valsB.length+1}`); valsB.push(hasta); }
+    if (!esAdminLike(req)) { whereB.push(`fecha >= $${valsB.length+1}`); valsB.push(PERIODO_FLOOR_NO_ADMIN); }
+    const bancoRows = await many(
+      `SELECT id, fecha::text, sociedad_id, concepto, categoria, importe::float8 AS importe,
+              proveedor_normalizado
+         FROM ab_movimientos WHERE ${whereB.join(' AND ')}`,
+      valsB
+    );
+
+    // ─── KPIs agregados ─────
+    let ingB = 0, gasB = 0, ingC = 0, gasC = 0;
+    for (const r of bancoRows) {
+      if (r.importe > 0) ingB += r.importe;
+      else gasB += Math.abs(r.importe);
+    }
+    for (const r of cajaRows) {
+      if ((r.tipo || '').toLowerCase() === 'ingreso') ingC += r.monto;
+      else if ((r.tipo || '').toLowerCase() === 'egreso') gasC += r.monto;
+    }
+    const ingTot = ingB + ingC;
+    const gasTot = gasB + gasC;
+    const flujoBruto = ingTot + gasTot;
+    const cobertura_efectivo = flujoBruto > 0 ? (ingC + gasC) / flujoBruto * 100 : 0;
+
+    // ─── Ingresos por origen ─────
+    // banco: mapeado con origenIngresoBanco(concepto)
+    // caja:  mapeado con origenIngresoCaja(subtipo)
+    const ingresosMap = new Map(); // origen → { banco, efectivo, fuente, subitems_efectivo }
+    function ensureIng(origen, fuente) {
+      if (!ingresosMap.has(origen)) {
+        ingresosMap.set(origen, { origen, banco: 0, efectivo: 0, fuente, subitems_efectivo: new Map() });
+      }
+      return ingresosMap.get(origen);
+    }
+    for (const r of bancoRows) {
+      if (r.importe <= 0) continue;
+      const o = origenIngresoBanco(r.concepto);
+      ensureIng(o, 'banco').banco += r.importe;
+    }
+    for (const r of cajaRows) {
+      if ((r.tipo || '').toLowerCase() !== 'ingreso') continue;
+      const o = origenIngresoCaja(r.subtipo);
+      const ent = ensureIng(o, 'caja');
+      ent.efectivo += r.monto;
+      // Sub-items por subtipo (top 3 después).
+      const key = (r.subtipo || '(sin)').slice(0, 50);
+      ent.subitems_efectivo.set(key, (ent.subitems_efectivo.get(key) || 0) + r.monto);
+    }
+    const ingresos_por_origen = [...ingresosMap.values()].map((x) => ({
+      origen: x.origen,
+      banco: Math.round(x.banco * 100) / 100,
+      efectivo: Math.round(x.efectivo * 100) / 100,
+      total: Math.round((x.banco + x.efectivo) * 100) / 100,
+      pct: ingTot > 0 ? Math.round((x.banco + x.efectivo) / ingTot * 1000) / 10 : 0,
+      subitems_efectivo: [...x.subitems_efectivo.entries()]
+        .sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([k, v]) => ({ label: k, monto: Math.round(v * 100) / 100 })),
+    })).sort((a, b) => b.total - a.total);
+
+    // ─── Egresos por categoría (taxonomía banco) ─────
+    const egresosMap = new Map(); // cat → { banco, efectivo, top_banco: Map, top_caja: Map }
+    function ensureEgr(cat) {
+      if (!egresosMap.has(cat)) {
+        egresosMap.set(cat, { cat, banco: 0, efectivo: 0, top_banco: new Map(), top_caja: new Map() });
+      }
+      return egresosMap.get(cat);
+    }
+    for (const r of bancoRows) {
+      if (r.importe >= 0) continue;
+      const cat = r.categoria || 'OTROS';
+      const ent = ensureEgr(cat);
+      const abs = Math.abs(r.importe);
+      ent.banco += abs;
+      const prov = r.proveedor_normalizado || (r.concepto || '').slice(0, 40);
+      ent.top_banco.set(prov, (ent.top_banco.get(prov) || 0) + abs);
+    }
+    const sin_categoria_efectivo = [];
+    for (const r of cajaRows) {
+      if ((r.tipo || '').toLowerCase() !== 'egreso') continue;
+      const cat = categoriaDeSubtipoCaja(r.subtipo);
+      if (cat === 'SIN_CATEGORIA_CAJA') {
+        // Coleccionar para la lista de pendientes (top 50 por monto).
+        sin_categoria_efectivo.push({
+          id: r.id, fecha: r.fecha, sucursal: r.sucursal,
+          subtipo: r.subtipo, monto: r.monto, observaciones: r.observaciones,
+        });
+        continue;
+      }
+      const ent = ensureEgr(cat);
+      ent.efectivo += r.monto;
+      const key = (r.subtipo || '(sin)').slice(0, 50);
+      ent.top_caja.set(key, (ent.top_caja.get(key) || 0) + r.monto);
+    }
+    // Cat especial para los sin clasificar (suma agregada, se muestra
+    // separado en la UI).
+    const sinTot = sin_categoria_efectivo.reduce((s, x) => s + x.monto, 0);
+
+    // Catálogo de display names (best effort).
+    let catDisplay = new Map();
+    try {
+      const cats = await many(`SELECT codigo, nombre_display FROM ab_categorias`);
+      catDisplay = new Map(cats.map((c) => [c.codigo, c.nombre_display]));
+    } catch (e) { /* tolerante */ }
+
+    const egresos_por_categoria = [...egresosMap.values()].map((x) => ({
+      categoria: x.cat,
+      nombre_display: catDisplay.get(x.cat) || x.cat,
+      banco: Math.round(x.banco * 100) / 100,
+      efectivo: Math.round(x.efectivo * 100) / 100,
+      total: Math.round((x.banco + x.efectivo) * 100) / 100,
+      pct: gasTot > 0 ? Math.round((x.banco + x.efectivo) / gasTot * 1000) / 10 : 0,
+      top_banco: [...x.top_banco.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([k, v]) => ({ label: k, monto: Math.round(v * 100) / 100 })),
+      top_caja:  [...x.top_caja.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([k, v]) => ({ label: k, monto: Math.round(v * 100) / 100 })),
+    })).sort((a, b) => b.total - a.total);
+
+    sin_categoria_efectivo.sort((a, b) => b.monto - a.monto);
+
+    res.json({
+      filtros: { sociedad_id: sociedadParam, desde, hasta,
+                 incluir_especiales: req.query.incluir_especiales === 'true',
+                 incluir_prorrateo: req.query.incluir_prorrateo !== 'false' },
+      kpis: {
+        ingresos_total: Math.round(ingTot * 100) / 100,
+        egresos_total:  Math.round(gasTot * 100) / 100,
+        neto:           Math.round((ingTot - gasTot) * 100) / 100,
+        cobertura_efectivo: Math.round(cobertura_efectivo * 10) / 10,
+        banco_ingresos: Math.round(ingB * 100) / 100,
+        banco_egresos:  Math.round(gasB * 100) / 100,
+        caja_ingresos:  Math.round(ingC * 100) / 100,
+        caja_egresos:   Math.round(gasC * 100) / 100,
+      },
+      ingresos_por_origen,
+      egresos_por_categoria,
+      sin_categoria_efectivo: {
+        total: Math.round(sinTot * 100) / 100,
+        n: sin_categoria_efectivo.length,
+        movs: sin_categoria_efectivo.slice(0, 50),
+      },
+    });
+  } catch (e) {
+    console.error('[caja.flujo-total]', e);
     res.status(500).json({ error: 'internal' });
   }
 });

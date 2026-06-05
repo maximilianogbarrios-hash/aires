@@ -301,9 +301,10 @@ async function reload() {
   await Promise.all([loadResumen(), loadCruces(), loadProveedores(), loadMovs()]);
   // Tabs que se cargan on-demand: si ya estaban abiertas, refrescarlas
   // con el nuevo período. Todas leen `getPeriodoActivo()` internamente.
-  if (state.prov?.loaded)  loadProvRanking();
-  if (state.caja?.loaded)  loadCaja();
-  if (state.flujo?.loaded) loadFlujoAnual();
+  if (state.prov?.loaded)      loadProvRanking();
+  if (state.caja?.loaded)      loadCaja();
+  if (state.flujo?.loaded)     loadFlujoAnual();
+  if (state.flujoTotal?.loaded) loadFlujoTotal();
 }
 
 async function loadResumen() {
@@ -1199,6 +1200,10 @@ function showTab(name, btn) {
     initCajaFiltros();
     if (!state.caja?.loaded) loadCaja();
   }
+  if (name === 'flujototal') {
+    initFlujoTotalFiltros();
+    if (!state.flujoTotal?.loaded) loadFlujoTotal();
+  }
 }
 
 // ─── Caja / Efectivo ──────────────────────────────────────────────────
@@ -1395,6 +1400,177 @@ function renderCajaMensual() {
       <td class="flujo-estado" style="padding:6px"><span class="flujo-chip ${sem.cssChip}"></span>${sem.icon}</td>
     </tr>`;
   }).join('');
+}
+
+// ─── Flujo Total — banco + efectivo unidos ────────────────────────────
+function initFlujoTotalFiltros() {
+  if (state.flujoTotal?._init) return;
+  state.flujoTotal = state.flujoTotal || {};
+  state.flujoTotal._init = true;
+  const sSoc = $('ft-sociedad');
+  if (sSoc && sSoc.options.length === 0) {
+    if (typeof _cloneSociedadOptions === 'function') _cloneSociedadOptions(sSoc);
+    else {
+      sSoc.innerHTML = '<option value="">Todas las sociedades</option>';
+      for (const s of state.sociedades || []) {
+        const o = document.createElement('option'); o.value = s.id; o.textContent = s.nombre;
+        sSoc.appendChild(o);
+      }
+    }
+  }
+}
+
+async function loadFlujoTotal() {
+  state.flujoTotal = state.flujoTotal || {};
+  const sociedad = $('ft-sociedad')?.value || '';
+  const incE = $('ft-incluir-especiales')?.checked ? 'true' : 'false';
+  const p = typeof getPeriodoActivo === 'function' ? getPeriodoActivo() : { modo:'unico', periodo:null };
+  const params = new URLSearchParams();
+  if (sociedad) params.set('sociedad_id', sociedad);
+  params.set('incluir_especiales', incE);
+  if (p.modo === 'rango') {
+    if (p.desde) params.set('desde', p.desde + '-01');
+    if (p.hasta) {
+      const [yy, mm] = p.hasta.split('-').map(Number);
+      params.set('hasta', p.hasta + '-' + String(new Date(yy, mm, 0).getDate()).padStart(2, '0'));
+    }
+  } else if (p.periodo) {
+    const [yy, mm] = p.periodo.split('-').map(Number);
+    params.set('desde', p.periodo + '-01');
+    params.set('hasta', p.periodo + '-' + String(new Date(yy, mm, 0).getDate()).padStart(2, '0'));
+  }
+  // Título "— Mayo 2026 — Todas las sociedades"
+  const titulo = $('ft-titulo-periodo');
+  const lblP = (typeof labelPeriodoActivo === 'function') ? labelPeriodoActivo() : '';
+  const SOC_NOMBRES = Object.fromEntries((state.sociedades || []).map((s) => [s.id, s.nombre]));
+  const lblSoc = sociedad ? (SOC_NOMBRES[sociedad] || sociedad) : 'Todas las sociedades';
+  if (titulo) titulo.textContent = '— ' + lblP + ' — ' + lblSoc;
+  try {
+    const j = await api('/api/v1/caja/flujo-total?' + params.toString());
+    state.flujoTotal.data = j;
+    state.flujoTotal.loaded = true;
+    renderFlujoTotal();
+  } catch (e) {
+    console.error('[flujototal] error:', e);
+    $('ft-ingresos-body').innerHTML = `<tr><td colspan="5" style="padding:18px;text-align:center;color:#dc2626">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderFlujoTotal() {
+  const d = state.flujoTotal?.data;
+  if (!d) return;
+  // KPIs
+  $('ft-kpi-ing').textContent = eur2(d.kpis.ingresos_total);
+  $('ft-kpi-egr').textContent = eur2(d.kpis.egresos_total);
+  const elN = $('ft-kpi-neto');
+  elN.textContent = (d.kpis.neto >= 0 ? '+' : '') + eur2(d.kpis.neto);
+  elN.style.color = d.kpis.neto >= 0 ? '#16a34a' : '#dc2626';
+  $('ft-kpi-cob').textContent = d.kpis.cobertura_efectivo.toFixed(1) + '%';
+
+  // Ingresos
+  if (!d.ingresos_por_origen.length) {
+    $('ft-ingresos-body').innerHTML = '<tr><td colspan="5" style="padding:18px;text-align:center;color:var(--text-2)">Sin ingresos en este filtro.</td></tr>';
+  } else {
+    const total = d.kpis.ingresos_total;
+    const rows = d.ingresos_por_origen.map((r) => {
+      const main = `<tr style="border-bottom:.5px solid var(--border-3)">
+        <td style="padding:7px 6px;font-weight:500">${r.origen}</td>
+        <td style="padding:7px 6px;text-align:right">${r.banco > 0 ? eur(r.banco) : '<span style="color:var(--text-2)">—</span>'}</td>
+        <td style="padding:7px 6px;text-align:right">${r.efectivo > 0 ? eur(r.efectivo) : '<span style="color:var(--text-2)">—</span>'}</td>
+        <td style="padding:7px 6px;text-align:right;font-weight:500;color:#16a34a">${eur(r.total)}</td>
+        <td style="padding:7px 6px;text-align:right;color:var(--text-2)">${r.pct.toFixed(1)}%</td>
+      </tr>`;
+      const subs = (r.subitems_efectivo || []).map((s) => `<tr class="flujo-comp-cat">
+        <td style="padding:4px 6px;padding-left:24px;color:var(--text-2);font-size:11px">└ ${s.label}</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text-2)">—</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text-2)">${eur(s.monto)}</td>
+        <td colspan="2"></td>
+      </tr>`).join('');
+      return main + subs;
+    }).join('');
+    $('ft-ingresos-body').innerHTML = rows + `<tr style="border-top:2px solid var(--border-2);background:var(--bg-secondary)">
+      <td style="padding:9px 6px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;font-size:11px">Total ingresos</td>
+      <td style="padding:9px 6px;text-align:right;font-weight:600">${eur(d.kpis.banco_ingresos)}</td>
+      <td style="padding:9px 6px;text-align:right;font-weight:600">${eur(d.kpis.caja_ingresos)}</td>
+      <td style="padding:9px 6px;text-align:right;font-weight:700;color:#16a34a">${eur(total)}</td>
+      <td style="padding:9px 6px;text-align:right">100%</td>
+    </tr>`;
+  }
+
+  // Egresos
+  if (!d.egresos_por_categoria.length) {
+    $('ft-egresos-body').innerHTML = '<tr><td colspan="5" style="padding:18px;text-align:center;color:var(--text-2)">Sin egresos en este filtro.</td></tr>';
+  } else {
+    const total = d.kpis.egresos_total;
+    const rows = d.egresos_por_categoria.map((r) => {
+      const main = `<tr style="border-bottom:.5px solid var(--border-3)">
+        <td style="padding:7px 6px;font-weight:500">${r.nombre_display}</td>
+        <td style="padding:7px 6px;text-align:right">${r.banco > 0 ? eur(r.banco) : '<span style="color:var(--text-2)">—</span>'}</td>
+        <td style="padding:7px 6px;text-align:right">${r.efectivo > 0 ? eur(r.efectivo) : '<span style="color:var(--text-2)">—</span>'}</td>
+        <td style="padding:7px 6px;text-align:right;font-weight:500">${eur(r.total)}</td>
+        <td style="padding:7px 6px;text-align:right;color:var(--text-2)">${r.pct.toFixed(1)}%</td>
+      </tr>`;
+      const subsBanco = (r.top_banco || []).map((s) => `<tr class="flujo-comp-cat">
+        <td style="padding:4px 6px;padding-left:24px;color:var(--text-2);font-size:11px" title="${s.label.replace(/"/g,'&quot;')}">└ ${s.label.slice(0,50)}</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text-2);font-size:11px">${eur(s.monto)}</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text-2)">—</td>
+        <td colspan="2"></td>
+      </tr>`).join('');
+      const subsCaja = (r.top_caja || []).map((s) => `<tr class="flujo-comp-cat">
+        <td style="padding:4px 6px;padding-left:24px;color:var(--text-2);font-size:11px" title="${s.label.replace(/"/g,'&quot;')}">└ ${s.label.slice(0,50)} <span style="color:#A78BFA">(cash)</span></td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text-2)">—</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text-2);font-size:11px">${eur(s.monto)}</td>
+        <td colspan="2"></td>
+      </tr>`).join('');
+      return main + subsBanco + subsCaja;
+    }).join('');
+    // Línea "Sin categoría (efectivo)" como última fila antes del total.
+    const sinCat = d.sin_categoria_efectivo || { total: 0, n: 0 };
+    const filaSinCat = sinCat.total > 0
+      ? `<tr style="border-bottom:.5px solid var(--border-3);background:rgba(167,139,250,.06)">
+          <td style="padding:7px 6px;font-style:italic;color:#7E22CE">Sin categoría (efectivo) <span style="font-size:10px;color:var(--text-2)">← reclasificar</span></td>
+          <td style="padding:7px 6px;text-align:right;color:var(--text-2)">—</td>
+          <td style="padding:7px 6px;text-align:right;font-weight:500">${eur(sinCat.total)}</td>
+          <td style="padding:7px 6px;text-align:right;font-weight:500">${eur(sinCat.total)}</td>
+          <td style="padding:7px 6px;text-align:right;color:var(--text-2)">${(total>0?(sinCat.total/total*100):0).toFixed(1)}%</td>
+        </tr>`
+      : '';
+    $('ft-egresos-body').innerHTML = rows + filaSinCat + `<tr style="border-top:2px solid var(--border-2);background:var(--bg-secondary)">
+      <td style="padding:9px 6px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;font-size:11px">Total egresos</td>
+      <td style="padding:9px 6px;text-align:right;font-weight:600">${eur(d.kpis.banco_egresos)}</td>
+      <td style="padding:9px 6px;text-align:right;font-weight:600">${eur(d.kpis.caja_egresos)}</td>
+      <td style="padding:9px 6px;text-align:right;font-weight:700;color:#dc2626">${eur(total)}</td>
+      <td style="padding:9px 6px;text-align:right">100%</td>
+    </tr>`;
+  }
+
+  // Sin categoría — pendientes (lista)
+  const s = d.sin_categoria_efectivo || { total: 0, n: 0, movs: [] };
+  $('ft-sincat-resumen').textContent = s.n === 0
+    ? 'Todo el efectivo está categorizado ✓'
+    : s.n + ' movimientos · €' + s.total.toFixed(2) + ' (top ' + Math.min(50, s.n) + ' mostrados).';
+  if (!s.movs?.length) {
+    $('ft-sincat-body').innerHTML = '';
+  } else {
+    $('ft-sincat-body').innerHTML = `<div style="max-height:320px;overflow-y:auto;border:.5px solid var(--border-3);border-radius:6px">
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead><tr style="background:var(--bg-secondary);color:var(--text-2);position:sticky;top:0">
+          <th style="text-align:left;padding:5px 8px">Fecha</th>
+          <th style="text-align:left;padding:5px 8px">Sucursal</th>
+          <th style="text-align:left;padding:5px 8px">Subtipo</th>
+          <th style="text-align:right;padding:5px 8px">Monto</th>
+        </tr></thead>
+        <tbody>
+          ${s.movs.map((m) => `<tr style="border-top:.5px solid var(--border-4)">
+            <td style="padding:4px 8px">${m.fecha}</td>
+            <td style="padding:4px 8px">${m.sucursal}</td>
+            <td style="padding:4px 8px;color:var(--text-2)" title="${(m.subtipo||'').replace(/"/g,'&quot;')}">${(m.subtipo||'(sin)').slice(0,80)}</td>
+            <td style="padding:4px 8px;text-align:right;color:#dc2626;font-weight:500">${eur(m.monto)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  }
 }
 
 // ─── Flujo Anual: tabla mensual + comparador ─────────────────────────
@@ -3106,6 +3282,8 @@ Object.assign(window, {
   loadFlujoAnual, renderFlujoComparativa, setFlujoVista,
   // Caja / Efectivo (admin/socio/gerente)
   loadCaja, setCajaVista,
+  // Flujo Total — banco + efectivo unidos (admin/socio/gerente)
+  loadFlujoTotal,
   loadProvRanking, exportProveedoresCsv,
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
