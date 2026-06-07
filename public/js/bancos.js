@@ -1612,8 +1612,12 @@ function renderFlujoTotal() {
   } else {
     const total = d.kpis.egresos_total;
     const rows = d.egresos_por_categoria.map((r) => {
+      // Candado junto a la cat si es GASTOS_DIRECCION/NOMINAS_DIRECCION
+      // (🔒 no-admin, 🔓 admin/socio). El sanitizer ya vació top_banco/
+      // top_caja para no-admin → no se renderiza sub-ítems debajo.
+      const labelHtml = lockedLabel(r.nombre_display, r.categoria || r.codigo);
       const main = `<tr style="border-bottom:.5px solid var(--border-3)">
-        <td style="padding:7px 6px;font-weight:500">${r.nombre_display}</td>
+        <td style="padding:7px 6px;font-weight:500">${labelHtml}</td>
         <td style="padding:7px 6px;text-align:right">${r.banco > 0 ? eur(r.banco) : '<span style="color:var(--text-2)">—</span>'}</td>
         <td style="padding:7px 6px;text-align:right">${r.efectivo > 0 ? eur(r.efectivo) : '<span style="color:var(--text-2)">—</span>'}</td>
         <td style="padding:7px 6px;text-align:right;font-weight:500">${eur(r.total)}</td>
@@ -1816,9 +1820,12 @@ function renderDonutCombinado() {
       const icoPp = Math.abs(c.var_pp) < 0.5 ? '→' : (c.var_pp > 0 ? '↑' : '↓');
       varHtml = `<span style="color:${colImp};font-size:10px">${icoImp}${c.var_importe>=0?'+':'−'}${eur(Math.abs(c.var_importe))}</span> · <span style="color:${colPp};font-size:10px">${icoPp}${c.var_pp>=0?'+':'−'}${Math.abs(c.var_pp).toFixed(1)}pp</span>`;
     }
+    // Candado para cats sensibles (GD/ND) — visible para todos los roles
+    // como confirmación visual de protección. 🔒 no-admin, 🔓 admin/socio.
+    const labelHtml = lockedLabel(c.nombre_display.toUpperCase(), c.codigo);
     return `<div ${clickFn} style="display:grid;grid-template-columns:auto 1fr auto auto auto;gap:6px;align-items:center;padding:5px 7px;border-radius:6px;cursor:${cursor};border:.5px solid var(--border-3)" ${isOtros?'':'onmouseover="this.style.background=\'var(--bg-secondary)\'" onmouseout="this.style.background=\'transparent\'"'}>
       <span style="width:11px;height:11px;border-radius:2px;background:${color};flex-shrink:0"></span>
-      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.nombre_display.replace(/"/g,'&quot;')}">${c.nombre_display.toUpperCase()}</span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.nombre_display.replace(/"/g,'&quot;')}">${labelHtml}</span>
       <span style="font-weight:500;min-width:78px;text-align:right">${eur(c.total_egreso)}</span>
       <span style="color:var(--text-2);font-size:10px;min-width:80px;text-align:right">B${c.split_banco_pct.toFixed(0)}% · E${c.split_efectivo_pct.toFixed(0)}%</span>
       <span style="color:var(--text-2);min-width:90px;text-align:right">${c.pct_sobre_gasto.toFixed(1)}% / ${c.pct_sobre_ingreso.toFixed(1)}%i ${varHtml ? '<br>'+varHtml : ''}</span>
@@ -1831,11 +1838,23 @@ async function openDcSidebar(codigo) {
   if (!codigo) return;
   const cat = (state.dc?.data?.categorias || []).find((c) => c.codigo === codigo);
   if (!cat) return;
-  $('prov-sb-title').textContent = (cat.codigo || '').toUpperCase();
+  const tituloLegible = cat.nombre_display || cat.codigo || '';
+
+  // Header con candado visible (🔓 admin, 🔒 no-admin) en cualquier
+  // categoría sensible.
+  $('prov-sb-title').innerHTML = lockedLabel((cat.codigo || '').toUpperCase(), cat.codigo);
   $('prov-sb-meta').textContent = `${eur2(cat.total_egreso)} · ${cat.n_movs} movs · banco ${eur(cat.banco_egreso)} · efectivo ${eur(cat.efectivo_egreso)}`;
   $('prov-sb-body').innerHTML = '<p style="font-size:11px;color:var(--text-2);padding:8px">Cargando…</p>';
   $('prov-sidebar-backdrop').style.display = '';
   $('prov-sidebar').style.display = '';
+
+  // Candado cerrado: cat sensible + no-admin → panel limpio sin fetch.
+  if (esCatSensibleFront(cat.codigo) && !esAdminLikeFront()) {
+    $('prov-sb-meta').textContent = '';
+    $('prov-sb-body').innerHTML = renderAccesoRestringidoHTML(tituloLegible);
+    return;
+  }
+
   try {
     const params = new URLSearchParams();
     params.set('categoria', codigo);
@@ -1880,6 +1899,13 @@ async function openDcSidebar(codigo) {
         </div>`;
       }).join('');
   } catch (e) {
+    // 403 → mismo panel limpio en vez de "Error: Forbidden..." crudo.
+    const msg = String(e?.message || '');
+    if (/forbidden|restringid/i.test(msg) || e?.code === 403) {
+      $('prov-sb-meta').textContent = '';
+      $('prov-sb-body').innerHTML = renderAccesoRestringidoHTML(tituloLegible);
+      return;
+    }
     $('prov-sb-body').innerHTML = `<p style="color:#dc2626;font-size:11px;padding:8px">Error: ${e.message}</p>`;
   }
 }
@@ -2760,6 +2786,63 @@ function buildGrupoDetalleQuery() {
 // openProvSidebar('Gastos Dirección') que ya maneja la fusión (lista
 // conceptos detallados con admin/socio puede_drilldown; el resto recibe
 // 403 — no debería llegar acá porque la UI bloquea el click).
+// ─── Helpers de candado reutilizables ────────────────────────────────
+// Un solo lugar de verdad para el ícono y el panel "Acceso restringido".
+// Se llaman desde donut/leyenda/tablas/sidebar — cualquier superficie
+// que liste GASTOS_DIRECCION o NOMINAS_DIRECCION.
+
+// Códigos canónicos de las cats sensibles a nivel display. El backend
+// expone `es_sensible: true` en agregados sensibles tras sanitize, pero
+// el frontend también caza por código (defense in depth — si una cat
+// sensible se pinta SIN pasar por el sanitizer, el ícono sigue saliendo).
+const CATS_SENSIBLES_FRONT = new Set(['GASTOS_DIRECCION', 'NOMINAS_DIRECCION']);
+
+// ¿El usuario actual es admin/socio? Lee state.user (poblado en boot).
+function esAdminLikeFront() {
+  const r = state?.user?.role;
+  return r === 'admin' || r === 'socio';
+}
+
+// ¿La cat es sensible? Acepta el código o un objeto cat con .codigo.
+function esCatSensibleFront(catOrCodigo) {
+  const codigo = typeof catOrCodigo === 'string' ? catOrCodigo : (catOrCodigo?.codigo || catOrCodigo?.categoria);
+  if (!codigo) return false;
+  return CATS_SENSIBLES_FRONT.has(codigo);
+}
+
+// Ícono de candado a renderizar junto a la cat. Vacío si no es sensible.
+//   🔒 — no-admin (cerrado)
+//   🔓 — admin/socio (abierto, confirma visualmente que la protección está activa)
+function lockIconForCat(catOrCodigo) {
+  if (!esCatSensibleFront(catOrCodigo)) return '';
+  return esAdminLikeFront() ? ' 🔓' : ' 🔒';
+}
+
+// HTML de label + candado, listo para inyectar.
+function lockedLabel(label, catOrCodigo) {
+  const icon = lockIconForCat(catOrCodigo);
+  if (!icon) return label;
+  const title = esAdminLikeFront()
+    ? 'Detalle sensible — accesible a tu rol'
+    : 'Detalle restringido — solo admin/socio';
+  return `${label}<span title="${title}" style="margin-left:4px;font-size:0.9em;opacity:0.85" aria-label="${esAdminLikeFront() ? 'abierto' : 'cerrado'}">${icon.trim()}</span>`;
+}
+
+// Panel "Acceso restringido" (mismo HTML reutilizable). Lo usan
+// openCategoriaSidebar y cualquier otra superficie que abra un detalle
+// bloqueado. Recibe el título legible (ej. "Gastos Dirección").
+function renderAccesoRestringidoHTML(titulo) {
+  return `
+    <div style="padding:40px 20px;text-align:center">
+      <p style="font-size:42px;margin-bottom:10px;line-height:1">🔒</p>
+      <p style="font-size:14px;font-weight:600;margin-bottom:6px">Acceso restringido</p>
+      <p style="font-size:12px;color:var(--text-2);line-height:1.5;max-width:360px;margin:0 auto">
+        El detalle de <strong>${titulo}</strong> solo está disponible para administradores.
+        El total y el % se siguen mostrando en el donut.
+      </p>
+    </div>`;
+}
+
 async function openCategoriaSidebar(codigo) {
   if (!codigo) return;
   const cat = (state.prov.por_categoria || []).find((c) => c.codigo === codigo);
@@ -2767,29 +2850,24 @@ async function openCategoriaSidebar(codigo) {
 
   const nombreLegible = cat.nombre_display && cat.nombre_display.toUpperCase() !== (cat.codigo || '').toUpperCase()
     ? cat.nombre_display.toUpperCase() : null;
+  const tituloLegible = cat.nombre_display || cat.codigo || '';
 
-  $('prov-sb-title').textContent = (cat.codigo || '').toUpperCase();
+  $('prov-sb-title').innerHTML = lockedLabel((cat.codigo || '').toUpperCase(), cat);
   $('prov-sb-meta').textContent = `${nombreLegible ? nombreLegible + ' · ' : ''}Cargando movimientos…`;
   $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:var(--text-2);padding:8px">Cargando…</p>`;
   $('prov-sidebar-backdrop').style.display = '';
   $('prov-sidebar').style.display = '';
 
-  // Candado cerrado: para no-admin con cat sensible (puede_drilldown=false)
-  // NO hacemos fetch ni mostramos "sin proveedores en este filtro" — se
-  // renderiza directamente el bloqueo. El backend igual devolvería 403,
-  // pero abrir el panel y mostrar mensaje vacío era confuso.
-  if (cat.puede_drilldown === false) {
-    const titulo = nombreLegible || (cat.codigo || '').toUpperCase();
+  // Candado cerrado: NO fetch para cat sensible cuando el rol no es
+  // admin. Detección por dos vías (defense in depth):
+  //   1) cat.puede_drilldown === false  (lo setea el sanitizer)
+  //   2) cat sensible + no esAdminLike  (fallback para casos donde el
+  //      sanitizer no se aplicó, ej. donut pintado desde caché)
+  const debeBloquearse = cat.puede_drilldown === false
+                       || (esCatSensibleFront(cat) && !esAdminLikeFront());
+  if (debeBloquearse) {
     $('prov-sb-meta').textContent = nombreLegible ? `${nombreLegible}` : '';
-    $('prov-sb-body').innerHTML = `
-      <div style="padding:40px 20px;text-align:center">
-        <p style="font-size:42px;margin-bottom:10px;line-height:1">🔒</p>
-        <p style="font-size:14px;font-weight:600;margin-bottom:6px">Acceso restringido</p>
-        <p style="font-size:12px;color:var(--text-2);line-height:1.5;max-width:340px;margin:0 auto">
-          El detalle de <strong>${titulo}</strong> está disponible solo para administradores.
-          El total agregado y el % se siguen mostrando en el donut para que los porcentajes cuadren.
-        </p>
-      </div>`;
+    $('prov-sb-body').innerHTML = renderAccesoRestringidoHTML(tituloLegible);
     return;
   }
 
@@ -2821,6 +2899,16 @@ async function openCategoriaSidebar(codigo) {
     state._cat = { codigo, nombreLegible, movs, totBackend, proveedores, vista: 'proveedores', proveedor: null };
     _renderCatNivel1();
   } catch (e) {
+    // Si el backend devolvió 403 (cat sensible bloqueada por rol),
+    // mostrar el mismo panel "Acceso restringido" en vez del error
+    // crudo "Error: Forbidden...". Cubre el caso donde el flag
+    // puede_drilldown no llegó al frontend pero el backend sí filtró.
+    const msg = String(e?.message || '');
+    if (/forbidden|restringid/i.test(msg) || e?.code === 403) {
+      $('prov-sb-meta').textContent = nombreLegible ? nombreLegible : '';
+      $('prov-sb-body').innerHTML = renderAccesoRestringidoHTML(tituloLegible);
+      return;
+    }
     $('prov-sb-meta').textContent = `${nombreLegible ? nombreLegible + ' · ' : ''}Error`;
     $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:#dc2626;padding:8px">Error cargando movimientos: ${e.message}</p>`;
   }
