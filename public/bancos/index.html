@@ -541,6 +541,45 @@
     <div class="surf"><p style="font-size:11px;color:var(--text-2)">Cobertura efectivo</p><p style="font-size:19px;font-weight:500" id="ft-kpi-cob">—</p></div>
   </div>
 
+  <!-- DONUT COMBINADO banco + efectivo (movido a la parte superior, justo
+       debajo de los KPIs; antes estaba al final del tab). -->
+  <div class="card" style="margin-bottom:1rem">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:.75rem">
+      <p style="font-size:13px;font-weight:500">Distribución combinada — banco + efectivo</p>
+      <div role="tablist" style="display:flex;border:.5px solid var(--border-2);border-radius:6px;overflow:hidden">
+        <button type="button" id="dc-fuente-todo"     onclick="setDcFuente('todo')"     style="padding:5px 10px;border:none;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Todo</button>
+        <button type="button" id="dc-fuente-banco"    onclick="setDcFuente('banco')"    style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Solo Banco</button>
+        <button type="button" id="dc-fuente-efectivo" onclick="setDcFuente('efectivo')" style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Solo Efectivo</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Umbral:</span>
+        <select id="dc-umbral" onchange="renderDonutCombinado()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
+          <option value="all" selected>Ver todos</option>
+          <option value="0.005">&gt; 0,5%</option>
+          <option value="0.01">&gt; 1%</option>
+          <option value="0.02">&gt; 2%</option>
+          <option value="0.05">&gt; 5%</option>
+        </select>
+      </div>
+      <button onclick="exportDonutCombinadoCsv()" style="margin-left:auto;padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Export CSV</button>
+    </div>
+
+    <!-- Sub-KPIs combinados del donut -->
+    <div class="g4" style="margin-bottom:.75rem">
+      <div class="surf"><p style="font-size:11px;color:var(--text-2)">Gasto total real</p><p style="font-size:17px;font-weight:500;color:#dc2626" id="dc-kpi-gasto">—</p><p id="dc-kpi-gasto-split" style="font-size:10px;color:var(--text-2)">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2)">Ingreso total real</p><p style="font-size:17px;font-weight:500;color:#16a34a" id="dc-kpi-ingreso">—</p><p id="dc-kpi-ingreso-split" style="font-size:10px;color:var(--text-2)">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2)">Resultado neto real</p><p style="font-size:17px;font-weight:500" id="dc-kpi-neto">—</p></div>
+      <div class="surf"><p style="font-size:11px;color:var(--text-2)">Traspasos internos (info)</p><p style="font-size:17px;font-weight:500;color:var(--text-2)" id="dc-kpi-traspasos">—</p></div>
+    </div>
+
+    <!-- Donut + leyenda -->
+    <div style="display:grid;grid-template-columns:340px 1fr;gap:18px;align-items:start">
+      <div style="position:relative;height:340px"><canvas id="dc-donut"></canvas></div>
+      <div id="dc-legend" style="display:grid;grid-template-columns:1fr;gap:3px;max-height:340px;overflow-y:auto;font-size:11px"></div>
+    </div>
+    <p id="dc-hint" style="font-size:10px;color:var(--text-2);margin-top:.5rem">Click en una categoría → detalle con proveedores y movimientos (banco + efectivo unificados).</p>
+  </div>
+
   <!-- Ingresos por origen -->
   <div class="card" style="margin-bottom:1rem">
     <p style="font-size:13px;font-weight:600;margin-bottom:.75rem;text-transform:uppercase;letter-spacing:.5px;color:#16a34a">━━━ Ingresos ━━━</p>
@@ -584,44 +623,6 @@
     <p style="font-size:13px;font-weight:600;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px;color:#7E22CE">━━━ Sin categoría — pendientes ━━━</p>
     <p id="ft-sincat-resumen" style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">—</p>
     <div id="ft-sincat-body"></div>
-  </div>
-
-  <!-- DONUT COMBINADO banco + efectivo (sección nueva, no modifica las anteriores) -->
-  <div class="card" style="margin-top:1.25rem">
-    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:.75rem">
-      <p style="font-size:13px;font-weight:500">Distribución combinada — banco + efectivo</p>
-      <div role="tablist" style="display:flex;border:.5px solid var(--border-2);border-radius:6px;overflow:hidden">
-        <button type="button" id="dc-fuente-todo"     onclick="setDcFuente('todo')"     style="padding:5px 10px;border:none;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Todo</button>
-        <button type="button" id="dc-fuente-banco"    onclick="setDcFuente('banco')"    style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Solo Banco</button>
-        <button type="button" id="dc-fuente-efectivo" onclick="setDcFuente('efectivo')" style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Solo Efectivo</button>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px">
-        <span style="font-size:11px;color:var(--text-2)">Umbral:</span>
-        <select id="dc-umbral" onchange="renderDonutCombinado()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
-          <option value="all" selected>Ver todos</option>
-          <option value="0.005">&gt; 0,5%</option>
-          <option value="0.01">&gt; 1%</option>
-          <option value="0.02">&gt; 2%</option>
-          <option value="0.05">&gt; 5%</option>
-        </select>
-      </div>
-      <button onclick="exportDonutCombinadoCsv()" style="margin-left:auto;padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Export CSV</button>
-    </div>
-
-    <!-- KPIs combinados de esta sección -->
-    <div class="g4" style="margin-bottom:.75rem">
-      <div class="surf"><p style="font-size:11px;color:var(--text-2)">Gasto total real</p><p style="font-size:17px;font-weight:500;color:#dc2626" id="dc-kpi-gasto">—</p><p id="dc-kpi-gasto-split" style="font-size:10px;color:var(--text-2)">—</p></div>
-      <div class="surf"><p style="font-size:11px;color:var(--text-2)">Ingreso total real</p><p style="font-size:17px;font-weight:500;color:#16a34a" id="dc-kpi-ingreso">—</p><p id="dc-kpi-ingreso-split" style="font-size:10px;color:var(--text-2)">—</p></div>
-      <div class="surf"><p style="font-size:11px;color:var(--text-2)">Resultado neto real</p><p style="font-size:17px;font-weight:500" id="dc-kpi-neto">—</p></div>
-      <div class="surf"><p style="font-size:11px;color:var(--text-2)">Traspasos internos (info)</p><p style="font-size:17px;font-weight:500;color:var(--text-2)" id="dc-kpi-traspasos">—</p></div>
-    </div>
-
-    <!-- Donut + leyenda lado a lado -->
-    <div style="display:grid;grid-template-columns:340px 1fr;gap:18px;align-items:start">
-      <div style="position:relative;height:340px"><canvas id="dc-donut"></canvas></div>
-      <div id="dc-legend" style="display:grid;grid-template-columns:1fr;gap:3px;max-height:340px;overflow-y:auto;font-size:11px"></div>
-    </div>
-    <p id="dc-hint" style="font-size:10px;color:var(--text-2);margin-top:.5rem">Click en una categoría → detalle con proveedores y movimientos (banco + efectivo unificados).</p>
   </div>
 
   <!-- ─── EDITOR de mapeo caja → SOCIEDAD (admin/socio) ─── -->

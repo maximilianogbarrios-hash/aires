@@ -3924,3 +3924,66 @@ a fluir intacto en agregado Y detalle para no-admin.
   · 403 por permiso de módulo intacto.
   · Fail-closed del middleware intacto.
   · routes/caja.js intacto (guardrail anti-doble-conteo conservado).
+
+
+────────────────────────────────────────────────────────────────────────
+2026-06-07 (e) — Flujo Total: reorden + botón "Mover proveedor"
+────────────────────────────────────────────────────────────────────────
+
+PARTE 1 — Reorden del tab Flujo Total
+  Orden nuevo:
+    1. Header + sociedad + "Incluir cuentas especiales"
+    2. KPIs (Ingresos / Egresos / Neto / Cobertura)
+    3. ★ DONUT combinado banco + efectivo (movido acá, antes era al final)
+    4. Tabla Ingresos por origen
+    5. Tabla Egresos por categoría
+    6. Sin categoría — pendientes
+  Cambio puramente HTML: el bloque del donut con todos sus controles
+  (Todo/Solo Banco/Solo Efectivo, Umbral, Export, sub-KPIs, leyenda)
+  pasó arriba sin tocar su lógica.
+
+PARTE 2 — Botón "Mover proveedor a categoría" en el drill-down del donut
+  Nuevo endpoint admin-only:
+    POST /api/v1/caja/mover-proveedor
+    Body: { proveedor, categoria_origen, categoria_destino,
+            modo: 'preview' | 'confirmar' }
+
+  REUTILIZA los motores existentes — no crea sistema paralelo:
+    · BANCO    → ab_reglas_normalizacion (motor de Gestionar reglas).
+                 Upsert idéntico al de /reglas-prov/asignar; UPDATE
+                 ab_movimientos + recalc resumen para combos tocados.
+    · EFECTIVO → ab_caja_mapeo_subtipos (motor del editor de mapeo).
+                 Una regla `exact` por subtipo distinto que pertenezca
+                 al proveedor, con prioridad 1500 (gana sobre las
+                 reglas seedeadas de prioridad 1100).
+    · Si el proveedor tiene ambos orígenes, escribe en los dos motores.
+
+  Permisos: soloAdmin (esAdminLike = admin/socio = Maxi + Dani).
+    · Botón solo renderiza si rolEsAdmin() en frontend.
+    · Endpoint responde 403 a gerente/administrativo/personal/pedidos.
+
+  UI:
+    · Botón "⇄ Mover" en cada fila de proveedor del sidebar drill-down.
+    · Modal con selector de cat destino (solo cats existentes en
+      ab_categorias, vía /api/v1/caja/mapeos/categorias).
+    · Preview LIVE al cambiar destino: "esto reclasificará N movs
+      (X banco + Y efectivo) de [proveedor] a [destino]" con desglose
+      por subtipo.
+    · Confirmación explícita, no auto-save.
+    · Tras confirmar: cierra sidebar + recarga donut + flujo-total.
+
+  Validación 6/6 PASS:
+    1. 403 para 4 roles no-admin ✓
+    2. Preview con Amazon (138 movs banco) → cálculos correctos ✓
+    3. Confirmar → 139 movs movidos a OTROS_GASTOS ✓
+    4. Persistencia en DB verificada ✓
+    5. Reversibilidad: mover de vuelta → 139 movs en EQUIPAMIENTO ✓
+    6. Categoría destino inválida → 400 ✓
+
+### No tocado
+
+  · ab_reglas_normalizacion / Gestionar reglas → motor reusado tal cual.
+  · ab_caja_mapeo_subtipos / editor de mapeo → motor reusado.
+  · Control de acceso (GD/NOMINAS_DIRECCION bajo candado, Raba mask).
+  · Reconciliación por caja (no usa categoria).
+  · Lógica de Flujo Total / donut combinado / drill-down.
