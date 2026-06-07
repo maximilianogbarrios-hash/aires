@@ -412,15 +412,40 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
       valsB
     );
 
-    // ─── KPIs agregados ─────
+    // ─── KPIs agregados (UNA sola base con el donut combinado) ────────
+    // Reconciliado 2026-06-07: los KPIs de ARRIBA aplican EXACTAMENTE
+    // los mismos filtros que el donut, para que ambos bloques cuadren
+    // al céntimo en cualquier período (mes único y rango). Antes el
+    // bloque de arriba sumaba bruto, lo que dejaba dentro:
+    //   · esIntraGrupo(concepto) en banco — aportaciones/préstamos
+    //     entre sociedades del grupo y Raba Buildings (no son flujo
+    //     real, son neteo intragrupo).
+    //   · esTraspasoInternoBanco(concepto) — depósitos efectivo→banco.
+    //   · esTraspasoInternoCaja(subtipo) — depósitos caja→banco.
+    // Misma base = misma definición de "real" en toda la tab.
+    //
+    // PRESTAMOS / FINANCIERO regulares (cuotas hipoteca, comisiones
+    // bancarias, etc.) siguen contando como gasto/ingreso real. Solo
+    // se descartan los movs heurísticamente intragrupo o traspasos.
     let ingB = 0, gasB = 0, ingC = 0, gasC = 0;
+    let banco_traspaso_kpi = 0, caja_traspaso_kpi = 0;
     for (const r of bancoRows) {
+      if (esTraspasoInternoBanco(r.concepto)) {
+        banco_traspaso_kpi += Math.abs(r.importe);
+        continue;
+      }
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
       if (r.importe > 0) ingB += r.importe;
       else gasB += Math.abs(r.importe);
     }
     for (const r of cajaRows) {
-      if ((r.tipo || '').toLowerCase() === 'ingreso') ingC += r.monto;
-      else if ((r.tipo || '').toLowerCase() === 'egreso') gasC += r.monto;
+      const t = (r.tipo || '').toLowerCase();
+      if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) {
+        caja_traspaso_kpi += r.monto;
+        continue;
+      }
+      if (t === 'ingreso') ingC += r.monto;
+      else if (t === 'egreso') gasC += r.monto;
     }
     const ingTot = ingB + ingC;
     const gasTot = gasB + gasC;
@@ -439,11 +464,15 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
     }
     for (const r of bancoRows) {
       if (r.importe <= 0) continue;
+      // Misma base que los KPIs: descartar intragrupo + traspasos.
+      if (esTraspasoInternoBanco(r.concepto)) continue;
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
       const o = origenIngresoBanco(r.concepto);
       ensureIng(o, 'banco').banco += r.importe;
     }
     for (const r of cajaRows) {
       if ((r.tipo || '').toLowerCase() !== 'ingreso') continue;
+      if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
       const o = origenIngresoCaja(r.subtipo);
       const ent = ensureIng(o, 'caja');
       ent.efectivo += r.monto;
@@ -472,6 +501,9 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
     }
     for (const r of bancoRows) {
       if (r.importe >= 0) continue;
+      // Misma base que los KPIs: descartar intragrupo + traspasos.
+      if (esTraspasoInternoBanco(r.concepto)) continue;
+      if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
       const cat = r.categoria || 'OTROS';
       const ent = ensureEgr(cat);
       const abs = Math.abs(r.importe);
@@ -482,6 +514,7 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
     const sin_categoria_efectivo = [];
     for (const r of cajaRows) {
       if ((r.tipo || '').toLowerCase() !== 'egreso') continue;
+      if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
       const cat = categoriaDeSubtipoCajaSync(r.subtipo);
       if (cat === 'SIN_CATEGORIA_CAJA') {
         // Coleccionar para la lista de pendientes (top 50 por monto).
@@ -535,6 +568,11 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
         banco_egresos:  Math.round(gasB * 100) / 100,
         caja_ingresos:  Math.round(ingC * 100) / 100,
         caja_egresos:   Math.round(gasC * 100) / 100,
+        // Traspasos internos / intragrupo neutralizados — informativos
+        // para que el frontend pueda mostrar "ignorados: €X" si quisiera.
+        // Misma definición que el donut combinado.
+        traspasos_internos_banco: Math.round(banco_traspaso_kpi * 100) / 100,
+        traspasos_internos_caja:  Math.round(caja_traspaso_kpi * 100) / 100,
       },
       ingresos_por_origen,
       egresos_por_categoria,

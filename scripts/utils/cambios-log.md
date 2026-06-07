@@ -3987,3 +3987,69 @@ PARTE 2 — Botón "Mover proveedor a categoría" en el drill-down del donut
   · Control de acceso (GD/NOMINAS_DIRECCION bajo candado, Raba mask).
   · Reconciliación por caja (no usa categoria).
   · Lógica de Flujo Total / donut combinado / drill-down.
+
+
+────────────────────────────────────────────────────────────────────────
+2026-06-07 (f) — Reconciliar KPIs de Flujo Total con donut combinado
+────────────────────────────────────────────────────────────────────────
+
+Los KPIs de ARRIBA del tab Flujo Total y los del donut combinado de
+ABAJO devolvían diferentes números en rango (cuadraban con mes único).
+
+### Causa raíz (auditoría exacta al céntimo)
+
+  Diferencia INGRESOS €26.000,00:
+    1 mov banco intragrupo no marcado con categoria='INTRAGRUPO':
+      2025-06-02 €26.000,00
+      "Transferencia De Grupo Hostelero Aires Sl, Concepto Prestamo
+       A Raba Buildings Sl"
+
+  Diferencia EGRESOS €46.051,00:
+    8 movs banco intragrupo (aportaciones a Raba Buildings):
+      €3.500 + €500 + €3.000 + €26.000 + €3.000 + €6.200 + €1.051 +
+      €2.800 = €46.051,00 — todos en 2025-08-12 + 2025-11-25 + 2026-04-20
+    + 1 mov traspaso interno caja €1.000
+
+  Diferencia NETO: −€26.957 − (−€6.906) = −€20.051 = ingresos
+  intragrupo €26.000 − egresos intragrupo €46.051. Cuadra al céntimo.
+
+  ARRIBA solo excluía `categoria='INTRAGRUPO'` por SQL, NO aplicaba
+  `esIntraGrupo(concepto)` ni `esTraspasoInternoBanco/Caja`. ABAJO sí.
+
+### Decisión
+
+  El donut ya define "real" = excluir intragrupo y traspasos internos.
+  ARRIBA pasa a usar EXACTAMENTE la misma definición. PRESTAMOS /
+  FINANCIERO regulares (cuotas hipoteca, comisiones bancarias)
+  SIGUEN dentro como gasto/ingreso real — solo se descartan los movs
+  marcados heurísticamente como intragrupo o traspasos internos.
+
+### Cambio
+
+  routes/caja.js — /flujo-total ahora aplica en sus 3 loops
+  (KPIs, ingresos_por_origen, egresos_por_categoria):
+    · Banco:  if esTraspasoInternoBanco → skip
+              if esIntraGrupo OR categoria='INTRAGRUPO' → skip
+    · Caja:   if esTraspasoInternoCaja → skip
+  Expone también traspasos_internos_banco/caja en kpis para
+  transparencia, igual que el donut.
+
+### Validación 5/5 PASS
+
+  Período               ΔIngresos  ΔEgresos  ΔNeto
+  ─────────────────────  ─────────  ────────  ──────
+  Jun 2025 → May 2026   €0,00      €0,00     €0,00 ✓
+  May 2026              €0,00      €0,00     €0,00 ✓
+  Q4 2025 (Oct-Dic)     €0,00      €0,00     €0,00 ✓
+  alicante 2026         €0,00      €0,00     €0,00 ✓
+  Histórico completo    €0,00      €0,00     €0,00 ✓
+
+  Los dos bloques cuadran al céntimo en cualquier período.
+
+### Regresión cero
+
+  · Donut combinado intacto (era la base, no cambia).
+  · Reconciliación por caja intacta (no usa esos filtros).
+  · Access control intacto (sigue sin tocar sanitize.js).
+  · Los nuevos KPIs `traspasos_internos_banco/caja` se exponen
+    informativos; el frontend puede ignorarlos si no los usa.
