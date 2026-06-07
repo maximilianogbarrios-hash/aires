@@ -1918,13 +1918,17 @@ function _renderDcProvsList() {
   const view = q
     ? all.filter((p) => normalizeForSearch(p.proveedor).includes(q))
     : all;
-  // Contador "X de N" cuando hay filtro activo; al ras cuando no.
+  // Contador "X de N" + subtotal de los proveedores visibles. Las cifras
+  // de p.total_egreso ya vienen en valor absoluto (egreso positivo) →
+  // formateamos con signo negativo para reflejar que son gastos.
   const counter = $('dc-provs-counter');
   if (counter) {
+    const sumaVisible = view.reduce((s, p) => s + (p.total_egreso || 0), 0);
+    const subt = view.length ? ` · total −${eur(sumaVisible)}` : '';
     if (q) {
-      counter.textContent = `${view.length} de ${all.length} proveedores · filtro "${ctx.q}"`;
+      counter.textContent = `${view.length} de ${all.length} proveedores${subt} · filtro "${ctx.q}"`;
     } else {
-      counter.textContent = `${all.length} proveedores. Click → movimientos individuales.${rolEsAdmin() ? ' Botón "Mover" reasigna el proveedor a otra categoría.' : ''}`;
+      counter.textContent = `${all.length} proveedores${subt}.${rolEsAdmin() ? ' Click → movimientos. Botón "Mover" reasigna a otra categoría.' : ' Click → movimientos.'}`;
     }
   }
   if (!view.length) {
@@ -2013,11 +2017,21 @@ function _renderDcMovsList() {
         return hay.includes(q);
       })
     : all;
+  // Subtotal vivo: suma los importes VISIBLES respetando signo
+  // (egresos negativos, ingresos positivos → muestra el neto). Se
+  // recalcula en cada keystroke. Sin filtro = total de los N originales.
   const counter = $('dc-movs-counter');
   if (counter) {
-    counter.textContent = q
-      ? `${view.length} de ${all.length} movimientos · filtro "${ctx.q}"`
-      : `${all.length} movimientos.`;
+    const sumaNeta = view.reduce((s, m) => s + (m.importe || 0), 0);
+    let subt = '';
+    if (view.length) {
+      const sign = sumaNeta >= 0 ? '+' : '−';
+      const color = sumaNeta >= 0 ? '#16a34a' : '#dc2626';
+      subt = ` · <span style="font-weight:500;color:${color}">${sign}${eur(Math.abs(sumaNeta))}</span>`;
+    }
+    counter.innerHTML = q
+      ? `${view.length} de ${all.length} movimientos${subt} · filtro "${ctx.q}"`
+      : `${all.length} movimientos${subt}.`;
   }
   if (!view.length) {
     list.innerHTML = '<p style="font-size:11px;color:var(--text-2);padding:14px;text-align:center">Sin coincidencias para tu búsqueda.</p>';
