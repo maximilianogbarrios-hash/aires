@@ -1873,31 +1873,20 @@ async function openDcSidebar(codigo) {
     }
     const j = await api('/api/v1/caja/donut-proveedores?' + params.toString());
     const provs = j.proveedores || [];
+    // Cache: el buscador (client-side) re-filtra esta lista sin refetch.
+    state._dcProvs = { cat, provs, q: '' };
     if (!provs.length) {
       $('prov-sb-body').innerHTML = '<p style="font-size:12px;color:var(--text-2);padding:20px;text-align:center">Sin proveedores en este filtro.</p>';
       return;
     }
-    const puedeMover = rolEsAdmin();
-    $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:var(--text-2);margin-bottom:10px">${provs.length} proveedores. Click → movimientos individuales.${puedeMover ? ' Botón "Mover" reasigna el proveedor a otra categoría.' : ''}</p>` +
-      provs.map((p) => {
-        const provJs = (p.proveedor || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-        const catJs = (cat.codigo || '').replace(/'/g, "\\'");
-        const badge = (p.banco_egreso > 0 && p.efectivo_egreso > 0)
-          ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px;margin-right:3px">B</span><span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">E</span>`
-          : (p.banco_egreso > 0
-              ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px">banco</span>`
-              : `<span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">efectivo</span>`);
-        const btnMover = puedeMover
-          ? `<button onclick="event.stopPropagation();openMoverProveedor('${provJs}','${catJs}')" title="Mover a otra categoría" style="background:transparent;border:.5px solid var(--border-3);color:var(--text-2);padding:3px 8px;font-size:10px;border-radius:5px;cursor:pointer;margin-right:6px" onmouseover="this.style.borderColor='#185FA5';this.style.color='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)';this.style.color='var(--text-2)'">⇄ Mover</button>`
-          : '';
-        return `<div onclick="openDcMovs('${catJs}','${provJs}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;cursor:pointer;background:var(--bg-secondary)" onmouseover="this.style.borderColor='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)'">
-          <div style="flex:1;min-width:0">
-            <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.proveedor} ${badge}</p>
-            <p style="font-size:10px;color:var(--text-2);margin-top:2px">${p.n_movs} tx${p.banco_egreso>0?' · banco '+eur(p.banco_egreso):''}${p.efectivo_egreso>0?' · efectivo '+eur(p.efectivo_egreso):''}</p>
-          </div>
-          ${btnMover}<span style="font-size:13px;font-weight:500;color:#dc2626">${eur(p.total_egreso)}</span>
-        </div>`;
-      }).join('');
+    // Render: search box arriba + contador + lista. La lista vive en
+    // #dc-provs-list para re-renderizar solo eso al tipear (preserva
+    // foco/cursor del input).
+    $('prov-sb-body').innerHTML = `
+      ${renderSearchBox({ id: 'dc-provs-search', placeholder: 'Buscar proveedor…', oninput: 'onDcProvsFilter' })}
+      <p id="dc-provs-counter" style="font-size:11px;color:var(--text-2);margin-bottom:10px">${provs.length} proveedores. Click → movimientos individuales.${rolEsAdmin() ? ' Botón "Mover" reasigna el proveedor a otra categoría.' : ''}</p>
+      <div id="dc-provs-list"></div>`;
+    _renderDcProvsList();
   } catch (e) {
     // 403 → mismo panel limpio en vez de "Error: Forbidden..." crudo.
     const msg = String(e?.message || '');
@@ -1908,6 +1897,60 @@ async function openDcSidebar(codigo) {
     }
     $('prov-sb-body').innerHTML = `<p style="color:#dc2626;font-size:11px;padding:8px">Error: ${e.message}</p>`;
   }
+}
+
+// Handler del input de búsqueda nivel proveedores. Actualiza el query
+// en state y re-renderiza SOLO #dc-provs-list (preserva foco/cursor).
+function onDcProvsFilter(val) {
+  if (!state._dcProvs) return;
+  state._dcProvs.q = val || '';
+  _renderDcProvsList();
+}
+
+// Render del listado filtrado. Llamado al cargar y en cada keystroke.
+function _renderDcProvsList() {
+  const ctx = state._dcProvs;
+  if (!ctx) return;
+  const list = $('dc-provs-list');
+  if (!list) return;
+  const q = normalizeForSearch(ctx.q);
+  const all = ctx.provs;
+  const view = q
+    ? all.filter((p) => normalizeForSearch(p.proveedor).includes(q))
+    : all;
+  // Contador "X de N" cuando hay filtro activo; al ras cuando no.
+  const counter = $('dc-provs-counter');
+  if (counter) {
+    if (q) {
+      counter.textContent = `${view.length} de ${all.length} proveedores · filtro "${ctx.q}"`;
+    } else {
+      counter.textContent = `${all.length} proveedores. Click → movimientos individuales.${rolEsAdmin() ? ' Botón "Mover" reasigna el proveedor a otra categoría.' : ''}`;
+    }
+  }
+  if (!view.length) {
+    list.innerHTML = '<p style="font-size:11px;color:var(--text-2);padding:14px;text-align:center">Sin coincidencias para tu búsqueda.</p>';
+    return;
+  }
+  const puedeMover = rolEsAdmin();
+  const catJs = (ctx.cat?.codigo || '').replace(/'/g, "\\'");
+  list.innerHTML = view.map((p) => {
+    const provJs = (p.proveedor || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const badge = (p.banco_egreso > 0 && p.efectivo_egreso > 0)
+      ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px;margin-right:3px">B</span><span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">E</span>`
+      : (p.banco_egreso > 0
+          ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px">banco</span>`
+          : `<span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">efectivo</span>`);
+    const btnMover = puedeMover
+      ? `<button onclick="event.stopPropagation();openMoverProveedor('${provJs}','${catJs}')" title="Mover a otra categoría" style="background:transparent;border:.5px solid var(--border-3);color:var(--text-2);padding:3px 8px;font-size:10px;border-radius:5px;cursor:pointer;margin-right:6px" onmouseover="this.style.borderColor='#185FA5';this.style.color='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)';this.style.color='var(--text-2)'">⇄ Mover</button>`
+      : '';
+    return `<div onclick="openDcMovs('${catJs}','${provJs}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;cursor:pointer;background:var(--bg-secondary)" onmouseover="this.style.borderColor='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)'">
+      <div style="flex:1;min-width:0">
+        <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.proveedor} ${badge}</p>
+        <p style="font-size:10px;color:var(--text-2);margin-top:2px">${p.n_movs} tx${p.banco_egreso>0?' · banco '+eur(p.banco_egreso):''}${p.efectivo_egreso>0?' · efectivo '+eur(p.efectivo_egreso):''}</p>
+      </div>
+      ${btnMover}<span style="font-size:13px;font-weight:500;color:#dc2626">${eur(p.total_egreso)}</span>
+    </div>`;
+  }).join('');
 }
 
 async function openDcMovs(codigo, proveedor) {
@@ -1934,24 +1977,66 @@ async function openDcMovs(codigo, proveedor) {
     const j = await api('/api/v1/caja/donut-movimientos?' + params.toString());
     const movs = j.movimientos || [];
     $('prov-sb-meta').textContent = `${j.n} movs · banco/efectivo unificados`;
+    state._dcMovs = { cat: codigo, prov: proveedor, movs, q: '' };
     if (!movs.length) { $('prov-sb-body').innerHTML = '<p style="padding:20px;text-align:center;color:var(--text-2);font-size:12px">Sin movimientos.</p>'; return; }
-    $('prov-sb-body').innerHTML = movs.map((m) => {
-      const badge = m.origen === 'banco'
-        ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px">banco</span>`
-        : `<span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">efectivo</span>`;
-      const colImp = m.importe >= 0 ? '#16a34a' : '#dc2626';
-      const ubic = m.sucursal ? ' · ' + m.sucursal : '';
-      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:4px;border:.5px solid var(--border-3);border-radius:6px;background:var(--bg-secondary)">
-        <div style="flex:1;min-width:0">
-          <p style="font-size:11px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(m.descripcion||'').replace(/"/g,'&quot;')}">${badge} ${m.descripcion}</p>
-          <p style="font-size:10px;color:var(--text-2);margin-top:2px">${m.fecha}${ubic} · ${m.sociedad_id || ''}</p>
-        </div>
-        <span style="font-size:12px;font-weight:500;color:${colImp}">${m.importe>=0?'+':''}${eur(m.importe)}</span>
-      </div>`;
-    }).join('');
+    $('prov-sb-body').innerHTML = `
+      ${renderSearchBox({ id: 'dc-movs-search', placeholder: 'Buscar…', oninput: 'onDcMovsFilter' })}
+      <p id="dc-movs-counter" style="font-size:11px;color:var(--text-2);margin-bottom:8px">${movs.length} movimientos.</p>
+      <div id="dc-movs-list"></div>`;
+    _renderDcMovsList();
   } catch (e) {
     $('prov-sb-body').innerHTML = `<p style="padding:10px;color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
   }
+}
+
+function onDcMovsFilter(val) {
+  if (!state._dcMovs) return;
+  state._dcMovs.q = val || '';
+  _renderDcMovsList();
+}
+
+function _renderDcMovsList() {
+  const ctx = state._dcMovs;
+  if (!ctx) return;
+  const list = $('dc-movs-list');
+  if (!list) return;
+  const q = normalizeForSearch(ctx.q);
+  const all = ctx.movs;
+  // Filtra por descripcion / sucursal / sociedad_id / proveedor (cualquiera
+  // que matchee el texto buscado).
+  const view = q
+    ? all.filter((m) => {
+        const hay = normalizeForSearch(m.descripcion) + ' ' +
+                    normalizeForSearch(m.sucursal) + ' ' +
+                    normalizeForSearch(m.sociedad_id) + ' ' +
+                    normalizeForSearch(ctx.prov);
+        return hay.includes(q);
+      })
+    : all;
+  const counter = $('dc-movs-counter');
+  if (counter) {
+    counter.textContent = q
+      ? `${view.length} de ${all.length} movimientos · filtro "${ctx.q}"`
+      : `${all.length} movimientos.`;
+  }
+  if (!view.length) {
+    list.innerHTML = '<p style="font-size:11px;color:var(--text-2);padding:14px;text-align:center">Sin coincidencias para tu búsqueda.</p>';
+    return;
+  }
+  list.innerHTML = view.map((m) => {
+    const badge = m.origen === 'banco'
+      ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px">banco</span>`
+      : `<span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">efectivo</span>`;
+    const colImp = m.importe >= 0 ? '#16a34a' : '#dc2626';
+    const ubic = m.sucursal ? ' · ' + m.sucursal : '';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:4px;border:.5px solid var(--border-3);border-radius:6px;background:var(--bg-secondary)">
+      <div style="flex:1;min-width:0">
+        <p style="font-size:11px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(m.descripcion||'').replace(/"/g,'&quot;')}">${badge} ${m.descripcion}</p>
+        <p style="font-size:10px;color:var(--text-2);margin-top:2px">${m.fecha}${ubic} · ${m.sociedad_id || ''}</p>
+      </div>
+      <span style="font-size:12px;font-weight:500;color:${colImp}">${m.importe>=0?'+':''}${eur(m.importe)}</span>
+    </div>`;
+  }).join('');
 }
 
 function exportDonutCombinadoCsv() {
@@ -2843,6 +2928,32 @@ function renderAccesoRestringidoHTML(titulo) {
     </div>`;
 }
 
+// ─── Buscador reutilizable (drill-down sidebar) ──────────────────────
+// Mismo patrón que renderProvSearchBar (con icono lupa + clear button)
+// pero genérico — recibe id, placeholder y handler. Usado por openDcSidebar
+// (nivel proveedores) y openDcMovs (nivel movimientos) para filtrar
+// la lista client-side a medida que se tipea.
+function renderSearchBox({ id, placeholder, oninput }) {
+  return `
+    <div style="position:relative;margin-bottom:10px">
+      <span aria-hidden="true" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text-2);font-size:13px;pointer-events:none">🔍</span>
+      <input type="text" id="${id}" placeholder="${placeholder}"
+        autocomplete="off" spellcheck="false"
+        oninput="${oninput}(this.value)"
+        style="width:100%;padding:6px 32px 6px 30px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
+    </div>`;
+}
+
+// Normalización para búsqueda: lowercase + sin diacríticos (NFD + strip
+// combining marks). Hace que "Núñez" matchee "nunez", "Sueldos" matchee
+// "sueldo", etc.
+function normalizeForSearch(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+}
+
 async function openCategoriaSidebar(codigo) {
   if (!codigo) return;
   const cat = (state.prov.por_categoria || []).find((c) => c.codigo === codigo);
@@ -3036,6 +3147,10 @@ async function openProvSidebar(grupo) {
 function closeProvSidebar() {
   $('prov-sidebar').style.display = 'none';
   $('prov-sidebar-backdrop').style.display = 'none';
+  // Limpiar cache + query de los buscadores del drill-down (DC sidebar).
+  // Evita que al reabrir con otra categoría persista el filtro anterior.
+  state._dcProvs = null;
+  state._dcMovs = null;
 }
 
 // Color de fondo / texto del badge 🏢 por sociedad. Tonos pastel suaves
@@ -4412,6 +4527,8 @@ Object.assign(window, {
   loadFlujoTotal,
   // Donut combinado (sección dentro de Flujo Total)
   setDcFuente, renderDonutCombinado, openDcSidebar, openDcMovs, exportDonutCombinadoCsv, loadDonutCombinado,
+  // Buscadores del drill-down DC (nivel proveedores + nivel movimientos)
+  onDcProvsFilter, onDcMovsFilter,
   loadProvRanking, exportProveedoresCsv,
   // Pestaña Proveedores
   sortProvTabla, filterByCategoria, resetProvTablaFiltros, renderProvTabla,
