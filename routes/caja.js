@@ -32,10 +32,15 @@ const {
 } = require('../lib/caja/proveedor-caja');
 const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
 const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
+const { jsonSanitizerMiddleware } = require('../lib/access/sanitize');
 
 const router = express.Router();
 router.use(requireAuth);
 router.use(requirePerm('caja_view'));
+// Red de seguridad: ver lib/access/sanitize.js. Para no-admin elimina
+// GASTOS_DIRECCION/NOMINAS_DIRECCION/PRESTAMOS de cualquier array y
+// enmascara strings que matcheen el patrón Raba con RABA_MASK.
+router.use(jsonSanitizerMiddleware);
 
 const PERIODO_FLOOR_NO_ADMIN = '2026-01-01';
 const ROLES_ADMIN = new Set(['admin', 'socio']);

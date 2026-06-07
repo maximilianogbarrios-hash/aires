@@ -18,6 +18,11 @@ const {
 const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
 const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
 const bankDb = require('../lib/bank/db');
+const {
+  jsonSanitizerMiddleware,
+  matchesRaba,
+  RABA_MASK,
+} = require('../lib/access/sanitize');
 
 // Selector ampliado de sociedad (Mejora B): traduce valores virtuales
 // 'sin_elche' (excluye hostelero=Grupo Hostelero Aires SL) y 'solo_elche'
@@ -162,6 +167,13 @@ const router = express.Router();
 // /api/v1/bancos/* aunque el frontend les escondiera la pestaña.
 router.use(requireAuth);
 router.use(requirePerm('bancos'));
+// Red de seguridad transversal: para CUALQUIER respuesta JSON, si el
+// usuario no es esAdminLike, eliminamos entradas de categorías sensibles
+// (GASTOS_DIRECCION/NOMINAS_DIRECCION/PRESTAMOS) y enmascaramos strings
+// que matcheen el patrón Raba. Se aplica DESPUÉS de cualquier filtrado
+// por-endpoint — defense in depth para no leakear si algún handler nuevo
+// se olvida del filtro.
+router.use(jsonSanitizerMiddleware);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -631,7 +643,7 @@ router.get('/gastos-por-proveedor', async (req, res) => {
       // sensibles (Raba) y proveedores en cats sensibles → no aparecen
       // como filas en la tabla. Ya sumaron al catAgg arriba.
       const esCatSensible = CATEGORIAS_DIRECCION_FUSE.has(categoria);
-      const esProveedorSensible = RABA_NOMBRES.has(proveedor);
+      const esProveedorSensible = matchesRaba(proveedor);
       if (!esAdminLike(req) && (esCatSensible || esProveedorSensible)) continue;
 
       const k = `${proveedor}|${categoria}`;
@@ -756,7 +768,7 @@ router.get('/categoria-movimientos', async (req, res) => {
       if (categoria !== codigo) continue;
       // Defense in depth: si el rol no-admin pidiera una cat no sensible
       // pero el pipeline resolviera Raba para un mov, lo ocultamos.
-      if (!esAdminLike(req) && RABA_NOMBRES.has(proveedor)) continue;
+      if (!esAdminLike(req) && matchesRaba(proveedor)) continue;
       movimientos.push({
         id: r.id,
         fecha: r.fecha,
@@ -932,7 +944,7 @@ router.get('/proveedores', async (req, res) => {
       //     con el monto, pero con 🔒 y sin drill-down a la lista.
       //   - Admin/socio: ven todo (proveedor + categoría + drill-down 🔓).
       const esCatSensible = CATEGORIAS_DIRECCION_FUSE.has(categoria);
-      const esProveedorSensible = RABA_NOMBRES.has(proveedor);
+      const esProveedorSensible = matchesRaba(proveedor);
       const ocultarProveedor = !esAdminLike(req) && (esCatSensible || esProveedorSensible);
 
       // catAgg — agrupado por categoría canónica del movimiento. SIEMPRE
@@ -1368,7 +1380,7 @@ router.get('/proveedor-evolucion', async (req, res) => {
         const proveedor = r.proveedor_normalizado || provDerivado;
         const cat = categoria || r.categoria;
         // Defense in depth: Raba Buildings para no-admin → skip silencioso.
-        if (noAdmin && RABA_NOMBRES.has(proveedor)) continue;
+        if (noAdmin && matchesRaba(proveedor)) continue;
         const abs = Math.abs(+r.importe);
         const esSensible = noAdmin && perteneceAGastosDireccion(proveedor, r.categoria, gdOverridesEvol);
 
@@ -1447,7 +1459,7 @@ router.get('/proveedores-lista', async (req, res) => {
       const provFinal = r.proveedor_normalizado || proveedor;
       // No-admin: excluir Raba + categorías de dirección.
       if (noAdmin) {
-        if (RABA_NOMBRES.has(provFinal)) continue;
+        if (matchesRaba(provFinal)) continue;
         if (CATEGORIAS_DIRECCION_FUSE.has(categoria)) continue;
         if (CATEGORIAS_DIRECCION_FUSE.has(r.categoria)) continue;
       }
@@ -1491,8 +1503,10 @@ router.get('/periodos', async (req, res) => {
 // Seguridad (P2 — Raba Buildings): para roles no-admin/socio
 // excluímos INTRAGRUPO (que es donde cae 'Raba Buildings') + cualquier
 // match defensivo por nombre. Defense in depth aunque INTRAGRUPO ya
-// se filtra arriba.
-const RABA_NOMBRES = new Set(['Raba Buildings', 'Raba']);
+// se filtra arriba. El test de pertenencia usa matchesRaba() de
+// lib/access/sanitize.js (regex con word boundary — captura
+// 'Raba', 'Raba Buildings', 'RABA BUILDINGS SL', 'Raba Building Sl',
+// etc., sin matchear 'TRABAJO'/'TRABAJADAS').
 router.get('/proveedores-normalizados', async (req, res) => {
   try {
     const categoria = req.query.categoria || null;
@@ -1563,7 +1577,7 @@ router.get('/proveedores-normalizados', async (req, res) => {
       // Raba: defense in depth para no-admin (Raba se persiste como
       // PROVEEDOR_OTROS, no INTRAGRUPO, así que el filtro anterior no
       // la atrapaba).
-      if (noAdmin && RABA_NOMBRES.has(nombre)) continue;
+      if (noAdmin && matchesRaba(nombre)) continue;
       // Filtro por categoría solicitada (post-derivación, porque el
       // proveedor canónico puede caer en una categoría distinta a la
       // persistida cuando hay regla DB).
@@ -1700,7 +1714,7 @@ router.get('/grupo-detalle', async (req, res) => {
       if (grupo === FUSE_PROVEEDOR) {
         return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
       }
-      if (RABA_NOMBRES.has(grupo)) {
+      if (matchesRaba(grupo)) {
         return res.status(403).json({ error: 'Forbidden: grupo restringido por rol' });
       }
       const overrides = await loadGdOverrides();
@@ -2045,14 +2059,14 @@ router.post('/reclasificar', express.json(), async (req, res) => {
     //   2) No pueden asignar a categoría sensible ni a Raba como destino.
     if (!esAdminLike(req)) {
       const blocked = ['INTRAGRUPO', ...CATEGORIAS_DIRECCION_FUSE];
-      if (blocked.includes(categoria_nueva) || RABA_NOMBRES.has(proveedor_nuevo) || proveedor_nuevo === FUSE_PROVEEDOR) {
+      if (blocked.includes(categoria_nueva) || matchesRaba(proveedor_nuevo) || proveedor_nuevo === FUSE_PROVEEDOR) {
         return res.status(403).json({ error: 'Destino restringido: requiere admin/socio' });
       }
       const actual = await one(
         'SELECT MAX(categoria) AS cat, MAX(proveedor_normalizado) AS prov FROM ab_movimientos WHERE concepto=$1',
         [concepto]
       );
-      if (actual?.cat && (blocked.includes(actual.cat) || RABA_NOMBRES.has(actual.prov))) {
+      if (actual?.cat && (blocked.includes(actual.cat) || matchesRaba(actual.prov))) {
         return res.status(403).json({ error: 'Concepto restringido: requiere admin/socio' });
       }
     }
@@ -2139,7 +2153,7 @@ router.get('/reglas-normalizacion', async (req, res) => {
     );
     if (!esAdminLike(req)) {
       const blocked = new Set(['INTRAGRUPO', ...CATEGORIAS_DIRECCION_FUSE]);
-      rows = rows.filter((r) => !blocked.has(r.categoria) && !RABA_NOMBRES.has(r.proveedor_normalizado));
+      rows = rows.filter((r) => !blocked.has(r.categoria) && !matchesRaba(r.proveedor_normalizado));
     }
     res.json({ reglas: rows });
   } catch (e) {
