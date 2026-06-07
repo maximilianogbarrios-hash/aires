@@ -3865,3 +3865,62 @@ Decisiones manuales sobre las 3 cajas pendientes:
   TEST 5 — Reconciliación por caja: 25/25 cuadran al céntimo ✓
 
   Extra — Toggle incluir_especiales sigue inerte (Δ €0,00).
+
+
+────────────────────────────────────────────────────────────────────────
+2026-06-07 (d) — sanitize.js: quitar PRESTAMOS del set sensible
+────────────────────────────────────────────────────────────────────────
+
+Refinamiento del control de acceso v2: PRESTAMOS sale del set
+SENSITIVE_CATEGORIES. El agregado de GASTOS_DIRECCION y
+NOMINAS_DIRECCION ya estaba bien preservado (su detalle se vacía pero
+total/% sobreviven), pero PRESTAMOS se filtraba de más — ahora vuelve
+a fluir intacto en agregado Y detalle para no-admin.
+
+### Cambios
+
+  · lib/access/sanitize.js — SENSITIVE_CATEGORIES queda con solo
+    {GASTOS_DIRECCION, NOMINAS_DIRECCION}. Comentario explica que la
+    fusión visual de routes/bancos.js#CATEGORIAS_DIRECCION_FUSE (que
+    aún incluye PRESTAMOS) es una capa separada y NO se toca.
+  · scripts/utils/test-sanitize.js — invierte el test PRESTAMOS de
+    "filtrar" a "NO filtrar". Agrega matriz nueva con shape REAL del
+    donut combinado de caja (categorías con codigo+pct+n_proveedores)
+    para garantizar que el agregado de GASTOS_DIRECCION/
+    NOMINAS_DIRECCION queda intacto en su monto y %.
+  · scripts/utils/test-acceso-e2e.js — ASSERT 5 y ASSERT 6 nuevos:
+    5) SENSITIVE_CATEGORIES correcto + payload sintético PRESTAMOS
+       intacto en agregado y detalle.
+    6) matriz visibilidad categoría × rol.
+
+### Resultados
+
+  TEST UNITARIO (test-sanitize.js):   91/91 PASS
+  TEST E2E (test-acceso-e2e.js):     150/150 calls · 0 leaks
+    · ASSERT 1: Luciano y Marina ven GD total=€26.467,43 pct=0.6368%,
+      idénticos a admin (los porcentajes del donut cuadran).
+    · ASSERT 2: drill-down GD/Raba bloqueado con 403 para 4 no-admins.
+    · ASSERT 3: admin/socio ven 10 raba tokens + 36 movs GD intactos.
+    · ASSERT 4: TRABAJADAS NO enmascarado (gerente ve "HAS TRABAJADAS
+      PABLO FLORES SEMANA 23/3" literal).
+    · ASSERT 5: SENSITIVE_CATEGORIES = {GASTOS_DIRECCION,
+      NOMINAS_DIRECCION}; PRESTAMOS intacto en agregado + detalle.
+    · ASSERT 6: matriz por rol confirma comportamiento esperado.
+
+### Matriz final (no-admin)
+
+  | Categoría        | Agregado | Detalle |
+  |------------------|----------|---------|
+  | GASTOS_DIRECCION | VISIBLE  | BLOQUEADO |
+  | NOMINAS_DIRECCION| VISIBLE  | BLOQUEADO |
+  | PRESTAMOS        | VISIBLE  | VISIBLE   |
+  | Raba (string)    | enmascarado a "Transferencia a Gastos Dirección" |
+  | TRABAJADAS       | INTACTO (no es Raba)                              |
+
+### No tocado
+
+  · RABA_REGEX (\b(?:raba|buildings?)\b/i) y RABA_MASK intactos.
+  · Bloqueo de detalle de GASTOS_DIRECCION/NOMINAS_DIRECCION intacto.
+  · 403 por permiso de módulo intacto.
+  · Fail-closed del middleware intacto.
+  · routes/caja.js intacto (guardrail anti-doble-conteo conservado).
