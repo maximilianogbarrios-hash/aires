@@ -1168,4 +1168,182 @@ router.get('/mapeos/pendientes', soloAdmin, async (req, res) => {
   }
 });
 
+// ─── Mapeo caja externa → sociedad SL (CRUD) ──────────────────────────────
+// Reemplaza el match por nombre de SUCURSAL_A_SOCIEDAD (hardcoded).
+// Cada PUT re-ejecuta el backfill que sincroniza
+// ab_caja_movimientos.sociedad_id con la tabla.
+
+// GET — lista completa, ordenada por tipo (pendientes arriba para que
+// el admin las atienda primero). Devuelve también las cajas presentes
+// en ab_caja_movimientos que NO tienen entrada en la tabla (huérfanas
+// — pueden aparecer cuando se importa un CSV con sucursal nueva).
+router.get('/sociedades', soloAdmin, async (req, res) => {
+  try {
+    // Reglas de mapeo persistidas.
+    const rows = await many(
+      `SELECT id, caja_origen, tipo, sociedad_slug, sociedad_cif,
+              sociedad_nombre, nombre_canonico, notas, autor, activa,
+              created_at, updated_at
+         FROM ab_caja_mapeo_sociedades
+        ORDER BY
+          CASE tipo WHEN 'pendiente' THEN 0 WHEN 'sociedad' THEN 1
+                    WHEN 'interno'   THEN 2 ELSE 3 END,
+          caja_origen ASC`,
+      []
+    );
+    // Stats por caja desde la tabla de movs (para mostrar volumen).
+    const stats = await many(
+      `SELECT UPPER(TRIM(sucursal)) AS caja_origen,
+              COUNT(*)::int AS n_movs,
+              MIN(fecha)::text AS primer_mov,
+              MAX(fecha)::text AS ultimo_mov,
+              SUM(CASE WHEN LOWER(tipo)='ingreso'
+                       THEN monto ELSE -monto END)::float8 AS saldo_neto
+         FROM ab_caja_movimientos
+        GROUP BY UPPER(TRIM(sucursal))`,
+      []
+    );
+    const statsMap = new Map(stats.map((s) => [s.caja_origen, s]));
+    const reglas = rows.map((r) => ({
+      ...r,
+      ...statsMap.get(r.caja_origen) || { n_movs: 0, saldo_neto: 0 },
+    }));
+    // Cajas huérfanas: existen en movs pero no tienen regla.
+    const conRegla = new Set(rows.map((r) => r.caja_origen));
+    const huerfanas = stats
+      .filter((s) => !conRegla.has(s.caja_origen))
+      .map((s) => ({ caja_origen: s.caja_origen, tipo: 'pendiente', ...s, _huerfana: true }));
+    // Catálogo de sociedades para los dropdowns.
+    const catalogo = await many(
+      `SELECT DISTINCT sociedad_slug, sociedad_cif, sociedad_nombre
+         FROM ab_caja_mapeo_sociedades
+        WHERE tipo='sociedad' AND sociedad_slug IS NOT NULL
+        ORDER BY sociedad_nombre`,
+      []
+    );
+    res.json({
+      reglas: [...huerfanas, ...reglas],
+      catalogo_sociedades: catalogo,
+      n_pendientes: reglas.filter((r) => r.tipo === 'pendiente').length + huerfanas.length,
+    });
+  } catch (e) {
+    console.error('[caja.sociedades.list]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Helper interno: re-ejecuta el backfill desde ab_caja_mapeo_sociedades
+// hacia ab_caja_movimientos. Idempotente — solo toca filas con
+// sociedad_id distinto del esperado.
+async function backfillSociedadId() {
+  const r1 = await one(
+    `WITH upd AS (
+      UPDATE ab_caja_movimientos m
+         SET sociedad_id = s.sociedad_slug
+        FROM ab_caja_mapeo_sociedades s
+       WHERE s.caja_origen = UPPER(TRIM(m.sucursal))
+         AND s.activa = TRUE
+         AND m.sociedad_id IS DISTINCT FROM s.sociedad_slug
+      RETURNING m.id
+    ) SELECT COUNT(*)::int AS n FROM upd`,
+    []
+  );
+  const r2 = await one(
+    `WITH upd AS (
+      UPDATE ab_caja_movimientos m
+         SET sociedad_id = NULL
+       WHERE m.sociedad_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM ab_caja_mapeo_sociedades s
+            WHERE s.caja_origen = UPPER(TRIM(m.sucursal))
+              AND s.activa = TRUE
+              AND s.sociedad_slug IS NOT NULL
+         )
+      RETURNING m.id
+    ) SELECT COUNT(*)::int AS n FROM upd`,
+    []
+  );
+  return { reasignados: r1?.n || 0, nullificados: r2?.n || 0 };
+}
+
+// PUT bulk save + backfill automático. Body: { upserts: [...], deletes: [id, ...] }.
+router.put('/sociedades', soloAdmin, express.json(), async (req, res) => {
+  try {
+    const upserts = Array.isArray(req.body?.upserts) ? req.body.upserts : [];
+    const deletes = Array.isArray(req.body?.deletes) ? req.body.deletes : [];
+    const autor = req.session?.user?.email || 'desconocido';
+    let nIns = 0, nUpd = 0, nDel = 0, nErr = 0;
+
+    const TIPOS = new Set(['sociedad', 'interno', 'pendiente', 'excluir']);
+
+    for (const r of upserts) {
+      const caja_origen = String(r.caja_origen || '').trim().toUpperCase();
+      const tipo = TIPOS.has(r.tipo) ? r.tipo : 'pendiente';
+      if (!caja_origen) { nErr++; continue; }
+
+      // Si tipo='sociedad', requiere slug + cif + nombre.
+      const slug = tipo === 'sociedad' ? String(r.sociedad_slug || '').trim() || null : null;
+      const cif  = tipo === 'sociedad' ? String(r.sociedad_cif  || '').trim() || null : null;
+      const nom  = tipo === 'sociedad' ? String(r.sociedad_nombre || '').trim() || null : null;
+      if (tipo === 'sociedad' && (!slug || !nom)) { nErr++; continue; }
+
+      const canonico = r.nombre_canonico ? String(r.nombre_canonico).trim() : null;
+      const notas = r.notas ? String(r.notas).trim() : null;
+      const activa = r.activa === false ? false : true;
+
+      if (r.id) {
+        const upd = await one(
+          `UPDATE ab_caja_mapeo_sociedades
+             SET caja_origen=$1, tipo=$2, sociedad_slug=$3,
+                 sociedad_cif=$4, sociedad_nombre=$5,
+                 nombre_canonico=$6, notas=$7, activa=$8,
+                 autor=$9, updated_at=NOW()
+           WHERE id=$10
+           RETURNING id`,
+          [caja_origen, tipo, slug, cif, nom, canonico, notas, activa, autor, r.id]
+        );
+        if (upd) nUpd++; else nErr++;
+      } else {
+        const ins = await one(
+          `INSERT INTO ab_caja_mapeo_sociedades
+             (caja_origen, tipo, sociedad_slug, sociedad_cif,
+              sociedad_nombre, nombre_canonico, notas, activa, autor)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           ON CONFLICT (caja_origen) DO UPDATE SET
+             tipo=EXCLUDED.tipo,
+             sociedad_slug=EXCLUDED.sociedad_slug,
+             sociedad_cif=EXCLUDED.sociedad_cif,
+             sociedad_nombre=EXCLUDED.sociedad_nombre,
+             nombre_canonico=EXCLUDED.nombre_canonico,
+             notas=EXCLUDED.notas,
+             activa=EXCLUDED.activa,
+             autor=EXCLUDED.autor,
+             updated_at=NOW()
+           RETURNING (xmax = 0) AS inserted, id`,
+          [caja_origen, tipo, slug, cif, nom, canonico, notas, activa, autor]
+        );
+        if (ins?.inserted) nIns++; else nUpd++;
+      }
+    }
+    for (const id of deletes) {
+      const del = await one(
+        `DELETE FROM ab_caja_mapeo_sociedades WHERE id=$1 RETURNING id`,
+        [id]
+      );
+      if (del) nDel++;
+    }
+    // Backfill — re-sincroniza ab_caja_movimientos.sociedad_id con la
+    // tabla recién editada.
+    const bf = await backfillSociedadId();
+    res.json({
+      ok: true,
+      inserted: nIns, updated: nUpd, deleted: nDel, errors: nErr,
+      backfill: bf,
+    });
+  } catch (e) {
+    console.error('[caja.sociedades.save]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 module.exports = router;

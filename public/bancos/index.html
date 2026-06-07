@@ -624,6 +624,58 @@
     <p id="dc-hint" style="font-size:10px;color:var(--text-2);margin-top:.5rem">Click en una categoría → detalle con proveedores y movimientos (banco + efectivo unificados).</p>
   </div>
 
+  <!-- ─── EDITOR de mapeo caja → SOCIEDAD (admin/socio) ─── -->
+  <div id="ms-section" class="card" style="margin-top:1.25rem;display:none">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:.75rem">
+      <p style="font-size:13px;font-weight:500">Mapeo cajas → sociedad SL</p>
+      <span id="ms-resumen" style="font-size:11px;color:var(--text-2)">—</span>
+      <span id="ms-pendientes-badge" style="display:none;padding:2px 8px;border-radius:10px;background:#facc15;color:#78350f;font-size:10px;font-weight:600">—</span>
+      <div style="margin-left:auto;display:flex;gap:6px">
+        <button onclick="loadMapeoSociedades()" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Recargar</button>
+        <button id="ms-btn-guardar" onclick="saveMapeoSociedades()" style="padding:5px 12px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500" disabled>Guardar cambios (0)</button>
+      </div>
+    </div>
+    <p style="font-size:11px;color:var(--text-2);margin-bottom:.75rem">
+      Atribuye cada caja externa a su SL. Las marcadas como <code>interno</code>/<code>excluir</code>/<code>pendiente</code> no se contabilizan en el filtro por sociedad. El nombre canónico (ej. "CHICKEN UNCLES") es solo para mostrar — la reconciliación sigue usando el nombre original ("CHICKEN ELCHE").
+    </p>
+
+    <!-- Sub-bloque: aplicación en lote -->
+    <div style="border:.5px solid var(--border-2);border-radius:6px;margin-bottom:1rem">
+      <div style="padding:8px 12px;background:var(--bg-secondary);border-bottom:.5px solid var(--border-2);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <p style="font-size:12px;font-weight:500;margin:0">Cajas registradas</p>
+        <input type="text" id="ms-filter" placeholder="Filtrar por caja / sociedad…" oninput="renderMapeoSociedadesTable()" style="margin-left:auto;padding:4px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);font-size:11px;width:240px">
+        <span style="font-size:11px;color:var(--text-2)">Bulk:</span>
+        <select id="ms-bulk-tipo" style="padding:4px 6px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);font-size:11px">
+          <option value="">— tipo —</option>
+          <option value="sociedad">sociedad</option>
+          <option value="interno">interno</option>
+          <option value="pendiente">pendiente</option>
+          <option value="excluir">excluir</option>
+        </select>
+        <select id="ms-bulk-sociedad" style="padding:4px 6px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-primary);color:var(--text);font-size:11px;min-width:160px"></select>
+        <button onclick="applyBulkSociedad()" style="padding:4px 10px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:11px">Aplicar</button>
+      </div>
+      <div style="overflow-x:auto;max-height:520px;overflow-y:auto">
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <thead style="position:sticky;top:0;background:var(--bg-primary);z-index:1">
+            <tr style="border-bottom:.5px solid var(--border-2);color:var(--text-2);font-size:10px;text-transform:uppercase;letter-spacing:.5px">
+              <th style="padding:6px;text-align:left;width:24px"><input type="checkbox" id="ms-selall" onchange="msSelAll(this.checked)"></th>
+              <th style="padding:6px;text-align:left">Caja (origen)</th>
+              <th style="padding:6px;text-align:left">Tipo</th>
+              <th style="padding:6px;text-align:left">Sociedad SL</th>
+              <th style="padding:6px;text-align:left">Nombre canónico (opc.)</th>
+              <th style="padding:6px;text-align:right">n movs</th>
+              <th style="padding:6px;text-align:right">Saldo neto</th>
+              <th style="padding:6px;text-align:left">Notas</th>
+              <th style="padding:6px;text-align:center">⌫</th>
+            </tr>
+          </thead>
+          <tbody id="ms-body"><tr><td colspan="9" style="padding:18px;text-align:center;color:var(--text-2)">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── EDITOR de mapeo subtipo caja → categoría banco (admin/socio) ─── -->
   <div id="mc-section" class="card" style="margin-top:1.25rem;display:none">
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:.75rem">

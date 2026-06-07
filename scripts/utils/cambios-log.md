@@ -3640,3 +3640,99 @@ SIN_CATEGORIA del donut combinado de €20.405 (180 movs) a €5.499
   · Gestionar reglas de banco: intacto, otro módulo (ab_reglas_categorias).
   · Donut combinado del commit fd69983: sigue funcionando, ahora con
     mapeo persistente que reduce el "Sin categoría" mostrado.
+
+
+────────────────────────────────────────────────────────────────────────
+2026-06-07 — Mapeo persistente caja → sociedad SL + editor (fix CHICKEN ELCHE)
+────────────────────────────────────────────────────────────────────────
+
+Reemplaza el match por nombre hardcoded (`SUCURSAL_A_SOCIEDAD` en
+`lib/caja/sucursales.js`) por una tabla editable
+`ab_caja_mapeo_sociedades`. Corrige el bug crítico: 'CHICKEN ELCHE'
+(que es Chicken Uncles, Aires Alicante SL) se atribuía a Grupo
+Hostelero Aires SL porque el nombre contiene "ELCHE".
+
+### Cambios
+
+  · lib/migrations.js — migration 28 `mapeo_cajas_sociedades`:
+    crea tabla + siembra 29 reglas (15 operativas en 5 SL + 11 internas
+    + 3 pendientes) + ejecuta backfill que reescribe
+    ab_caja_movimientos.sociedad_id según la tabla.
+  · lib/caja/sucursales.js — corrige hardcoded fallback:
+    'CHICKEN ELCHE' → 'alicante' (era 'hostelero'). Agrega
+    'CHICKEN UNCLES' → 'alicante' por completitud. Estos quedan como
+    fallback si la tabla DB está vacía.
+  · routes/caja.js — endpoints admin-only:
+      GET /api/v1/caja/sociedades   → lista + stats por caja + huérfanas
+      PUT /api/v1/caja/sociedades   → bulk upsert + delete + backfill
+    El backfill reasigna sociedad_id en ab_caja_movimientos en función
+    de la tabla recién editada (idempotente).
+  · public/bancos/index.html — sección `#ms-section` dentro de
+    "Flujo Total" (oculta si no admin/socio). Lista con tipo editable
+    (sociedad/interno/pendiente/excluir), dropdown de SL, nombre
+    canónico opcional, multi-select + bulk apply.
+  · public/js/bancos.js — módulo `ms` con dirty tracking, bulk apply,
+    delete, save. Tras guardar recarga el donut y flujo total.
+
+### Validación 6/6 PASS
+
+  TEST 1 — CHICKEN ELCHE migró: 652 movs ahora sociedad_id=alicante (saldo -€37.370).
+  TEST 1b — Sueldo CHICKEN ELCHE de -€2.360 mes 04/2026 ahora en alicante.
+  TEST 2 — Sociedades agregadas (saldo neto):
+    alicante  · 4 cajas ·  2.994 movs · saldo €-35.973 (incluye CHICKEN ELCHE)
+    benidorm  · 1 caja  ·    450 movs · saldo €74.610
+    hostelero · 1 caja  ·    859 movs · saldo €3.772 (solo ELCHE)
+    murcia    · 5 cajas ·  3.717 movs · saldo €27.177
+    smart     · 3 cajas ·  2.221 movs · saldo €-3.003
+    (NULL)    · 11 cajas·    745 movs · saldo €-284.979 (internas + pendientes)
+  TEST 3 — hostelero: solo ELCHE ✓
+  TEST 4 — alicante: ALICANTE, ARENALES, CHICKEN ELCHE, CREVILLENTE ✓
+  TEST 5 — 11 cajas internas + pendientes en NULL: CAJA MAXI Y DANI,
+    ESPECIALES, IFA*, MADRID*, MURCIA NUEVO*, NAVE, NAVE NUEVA,
+    OFICINA, OFICINA VERONICA, PRODUCCIÓN, TRASTERO  (* = pendiente)
+  TEST 6 — Reconciliación con sistema externo:
+    25/25 cajas cuadran al céntimo. La atribución por SL no toca el saldo
+    de la caja, solo a qué grupo se agrupa.
+
+### Delta clave (antes → después)
+
+  hostelero (Grupo Hostelero Aires SL):
+    Antes:  2 cajas (ELCHE + CHICKEN ELCHE) — bug
+    Ahora:  1 caja  (solo ELCHE)
+    Δ neto: −€-37.370 (saldo migrado fuera de la SL)
+
+  alicante (Aires Alicante SL):
+    Antes:  3 cajas (ALICANTE, ARENALES, CREVILLENTE)
+    Ahora:  4 cajas (+CHICKEN ELCHE = CHICKEN UNCLES)
+    Δ neto: +€-37.370 (recibe los movs de CHICKEN ELCHE)
+
+### Pendientes para asignación manual
+
+  IFA          (10 movs, €7.808)   — pendiente: ¿qué SL?
+  MADRID       (411 movs, €31.170) — pendiente: ¿qué SL? (alta volumen)
+  MURCIA NUEVO (55 movs, €26.363)  — pendiente: ¿es Aires Murcia SL?
+
+  El admin los asigna en el editor → tras guardar, backfill recompone
+  ab_caja_movimientos.sociedad_id sin redeploy.
+
+### Regresión cero verificada
+
+  · Donut combinado (commit fd69983) usa sociedad_id de la columna:
+    al recompuesta por backfill, el donut refleja la corrección
+    automáticamente. Sin cambios de schema/queries.
+  · Reconciliación por caja: 25/25 cuadran (el saldo de la caja
+    NO depende del filtro por sociedad, solo a qué grupo se agrupa).
+  · Tabla ab_caja_mapeo_subtipos (categorías) intacta.
+  · Proveedores intactos (no usa sociedad_id de caja).
+
+### Supuestos
+
+  · IFA / MADRID / MURCIA NUEVO seedeadas como 'pendiente' (NULL en
+    sociedad_id). Sus saldos quedan fuera de cualquier filtro por SL
+    hasta que el admin los asigne en el panel.
+  · "SUCURSAL DE PRUEBA" y "OFICINA (FORA)" no aparecen en la data
+    actual pero se seedean como 'interno' por si reaparecen en
+    re-imports futuros.
+  · nombre_canonico aplica SOLO al display (donut/filtros muestran
+    "CHICKEN UNCLES"). La reconciliación contra Control de Cajas
+    sigue usando el caja_origen literal ("CHICKEN ELCHE").

@@ -1683,6 +1683,7 @@ function renderFlujoTotal() {
   // Editor de mapeos caja (admin/socio). Carga datos en paralelo al
   // donut combinado; oculta la sección si el rol no aplica.
   if (typeof loadMapeosCaja === 'function') loadMapeosCaja();
+  if (typeof loadMapeoSociedades === 'function') loadMapeoSociedades();
   // Tras renderFlujoTotal cargar también el donut combinado de la sección
   // nueva. Reutiliza los mismos filtros (sociedad + incluir_especiales +
   // período del selector global).
@@ -3922,6 +3923,241 @@ function showSavePill(msg) {
   p._t = setTimeout(() => { p.style.display = 'none'; }, 3500);
 }
 
+// ─── Editor de mapeo caja externa → sociedad SL (admin/socio) ──────────
+// Lee/escribe ab_caja_mapeo_sociedades. El backend re-corre el backfill
+// tras cada PUT — actualiza ab_caja_movimientos.sociedad_id de un golpe.
+const ms = { reglas: [], catalogo: [], dirty: new Map(), nextTempId: -1 };
+
+async function loadMapeoSociedades() {
+  const sec = document.getElementById('ms-section');
+  if (!sec) return;
+  if (!rolEsAdmin()) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  try {
+    const r = await fetch('/api/v1/caja/sociedades').then((x) => x.json());
+    ms.reglas = (r.reglas || []).map((x) => ({ ...x, _orig: { ...x } }));
+    ms.catalogo = r.catalogo_sociedades || [];
+    ms.dirty = new Map();
+    populateBulkSociedadSelect();
+    renderMapeoSociedadesTable();
+    refreshMsDirty();
+    document.getElementById('ms-resumen').textContent =
+      `${ms.reglas.length} cajas · ${ms.reglas.filter((x) => x.tipo === 'sociedad').length} en SL · ${ms.reglas.filter((x) => x.tipo === 'interno').length} internas`;
+    const pend = ms.reglas.filter((x) => x.tipo === 'pendiente').length;
+    const badge = document.getElementById('ms-pendientes-badge');
+    if (pend > 0) {
+      badge.style.display = '';
+      badge.textContent = `⚠ ${pend} pendientes`;
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (e) {
+    console.error('[ms] load', e);
+    document.getElementById('ms-resumen').textContent = 'Error al cargar.';
+  }
+}
+
+function populateBulkSociedadSelect() {
+  const sel = document.getElementById('ms-bulk-sociedad');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— sociedad —</option>' +
+    ms.catalogo.map((s) => `<option value="${s.sociedad_slug}|${s.sociedad_cif || ''}|${s.sociedad_nombre || ''}">${escapeHtml(s.sociedad_nombre)}</option>`).join('');
+}
+
+function renderMapeoSociedadesTable() {
+  const body = document.getElementById('ms-body');
+  if (!body) return;
+  const filtro = (document.getElementById('ms-filter')?.value || '').toLowerCase();
+  const list = ms.reglas.filter((r) =>
+    !filtro || (r.caja_origen || '').toLowerCase().includes(filtro) ||
+    (r.sociedad_nombre || '').toLowerCase().includes(filtro) ||
+    (r.tipo || '').toLowerCase().includes(filtro) ||
+    (r.nombre_canonico || '').toLowerCase().includes(filtro));
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="9" style="padding:18px;text-align:center;color:var(--text-2)">— sin resultados —</td></tr>';
+    return;
+  }
+  const tipos = ['sociedad', 'interno', 'pendiente', 'excluir'];
+  const socOpts = ['<option value=""></option>']
+    .concat(ms.catalogo.map((s) => `<option value="${s.sociedad_slug}">${escapeHtml(s.sociedad_nombre)}</option>`))
+    .join('');
+  body.innerHTML = list.map((r) => {
+    const idAttr = r.id != null ? r.id : ('tmp' + r._tempId);
+    const dirty = ms.dirty.has('ms:' + idAttr);
+    const isPend = r.tipo === 'pendiente';
+    const isHuerf = r._huerfana;
+    const rowBg = dirty
+      ? 'background:rgba(24,95,165,.06)'
+      : (isPend || isHuerf ? 'background:rgba(250,204,21,.08)' : '');
+    const saldo = r.saldo_neto != null ? r.saldo_neto : 0;
+    const saldoCol = saldo < 0 ? '#dc2626' : (saldo > 0 ? '#16a34a' : 'var(--text-2)');
+    return `
+      <tr data-rid="${idAttr}" style="border-bottom:.5px solid var(--border-3);${rowBg}">
+        <td style="padding:5px"><input type="checkbox" class="ms-chk"></td>
+        <td style="padding:5px;font-family:monospace;font-size:11px">
+          ${escapeHtml(r.caja_origen)}${isHuerf ? ' <span style="font-size:9px;color:#dc2626">(NUEVA)</span>' : ''}
+        </td>
+        <td style="padding:5px">
+          <select class="ms-fld" data-fld="tipo" style="padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px">
+            ${tipos.map((t) => `<option value="${t}" ${t === r.tipo ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </td>
+        <td style="padding:5px">
+          <select class="ms-fld" data-fld="sociedad_slug" style="padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px;min-width:160px" ${r.tipo === 'sociedad' ? '' : 'disabled'}>
+            ${socOpts.replace(`value="${r.sociedad_slug}"`, `value="${r.sociedad_slug}" selected`)}
+          </select>
+        </td>
+        <td style="padding:5px">
+          <input type="text" class="ms-fld" data-fld="nombre_canonico" value="${escapeHtml(r.nombre_canonico || '')}" placeholder="—" style="width:100%;min-width:120px;padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px">
+        </td>
+        <td style="padding:5px;text-align:right;color:var(--text-2)">${(r.n_movs || 0).toLocaleString()}</td>
+        <td style="padding:5px;text-align:right;color:${saldoCol}">€${(saldo).toFixed(2)}</td>
+        <td style="padding:5px">
+          <input type="text" class="ms-fld" data-fld="notas" value="${escapeHtml(r.notas || '')}" style="width:100%;min-width:100px;padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-primary);color:var(--text);font-size:11px">
+        </td>
+        <td style="padding:5px;text-align:center">
+          ${r.id != null ? `<button onclick="msDeleteRegla(${r.id})" title="Eliminar" style="background:transparent;border:none;color:#dc2626;cursor:pointer;font-size:13px">⌫</button>` : ''}
+        </td>
+      </tr>`;
+  }).join('');
+  body.querySelectorAll('.ms-fld').forEach((el) => {
+    el.addEventListener('change', onMsFieldChange);
+    if (el.tagName === 'INPUT' && el.type === 'text') el.addEventListener('input', onMsFieldChange);
+  });
+}
+
+function onMsFieldChange(ev) {
+  const row = ev.target.closest('tr[data-rid]');
+  if (!row) return;
+  const rid = row.dataset.rid;
+  const r = ms.reglas.find((x) =>
+    String(x.id) === rid || ('tmp' + x._tempId) === rid);
+  if (!r) return;
+  const fld = ev.target.dataset.fld;
+  const val = ev.target.type === 'checkbox' ? ev.target.checked : ev.target.value;
+  r[fld] = val;
+  // Si cambia tipo, sincronizar campos derivados.
+  if (fld === 'tipo') {
+    if (val !== 'sociedad') {
+      r.sociedad_slug = null; r.sociedad_cif = null; r.sociedad_nombre = null;
+    }
+    renderMapeoSociedadesTable(); // re-render para habilitar/deshabilitar select
+  }
+  if (fld === 'sociedad_slug') {
+    const cat = ms.catalogo.find((c) => c.sociedad_slug === val);
+    if (cat) {
+      r.sociedad_cif = cat.sociedad_cif;
+      r.sociedad_nombre = cat.sociedad_nombre;
+    }
+  }
+  // Crear regla nueva si la fila era huérfana — pasa de huérfana a editable real.
+  if (r._huerfana) {
+    r._tempId = ms.nextTempId--;
+    delete r._huerfana;
+    r.id = null;
+  }
+  const orig = r._orig || {};
+  const isDirty = ['caja_origen','tipo','sociedad_slug','sociedad_cif','sociedad_nombre','nombre_canonico','notas','activa']
+    .some((k) => String(r[k] || '') !== String(orig[k] || ''));
+  const key = 'ms:' + (r.id != null ? r.id : 'tmp' + r._tempId);
+  if (isDirty) ms.dirty.set(key, r); else ms.dirty.delete(key);
+  refreshMsDirty();
+}
+
+function msSelAll(checked) {
+  document.querySelectorAll('.ms-chk').forEach((c) => { c.checked = checked; });
+}
+
+function applyBulkSociedad() {
+  const tipo = document.getElementById('ms-bulk-tipo')?.value;
+  const socVal = document.getElementById('ms-bulk-sociedad')?.value;
+  if (!tipo) { alert('Elegí un tipo en el bulk.'); return; }
+  if (tipo === 'sociedad' && !socVal) { alert('Si el tipo es "sociedad", elegí también la SL.'); return; }
+  const checks = [...document.querySelectorAll('.ms-chk:checked')];
+  if (!checks.length) { alert('Marcá al menos una caja.'); return; }
+  const [slug, cif, nombre] = socVal ? socVal.split('|') : ['', '', ''];
+  let n = 0;
+  checks.forEach((chk) => {
+    const row = chk.closest('tr[data-rid]');
+    if (!row) return;
+    const rid = row.dataset.rid;
+    const r = ms.reglas.find((x) => String(x.id) === rid || ('tmp' + x._tempId) === rid);
+    if (!r) return;
+    r.tipo = tipo;
+    if (tipo === 'sociedad') {
+      r.sociedad_slug = slug; r.sociedad_cif = cif; r.sociedad_nombre = nombre;
+    } else {
+      r.sociedad_slug = null; r.sociedad_cif = null; r.sociedad_nombre = null;
+    }
+    if (r._huerfana) { r._tempId = ms.nextTempId--; delete r._huerfana; r.id = null; }
+    const orig = r._orig || {};
+    const isDirty = ['caja_origen','tipo','sociedad_slug','sociedad_cif','sociedad_nombre','nombre_canonico','notas','activa']
+      .some((k) => String(r[k] || '') !== String(orig[k] || ''));
+    const key = 'ms:' + (r.id != null ? r.id : 'tmp' + r._tempId);
+    if (isDirty) ms.dirty.set(key, r); else ms.dirty.delete(key);
+    n++;
+  });
+  renderMapeoSociedadesTable();
+  refreshMsDirty();
+  if (n) showSavePill(`${n} cajas actualizadas — falta Guardar.`);
+}
+
+window.msDeleteRegla = function (rid) {
+  if (!confirm('¿Eliminar esta regla? El backfill recalculará sociedad_id al guardar.')) return;
+  const idx = ms.reglas.findIndex((r) => String(r.id) === String(rid));
+  if (idx < 0) return;
+  ms.dirty.set('msdel:' + rid, { _delete: rid });
+  ms.reglas.splice(idx, 1);
+  renderMapeoSociedadesTable();
+  refreshMsDirty();
+};
+
+function refreshMsDirty() {
+  const n = ms.dirty.size;
+  const btn = document.getElementById('ms-btn-guardar');
+  if (btn) { btn.textContent = `Guardar cambios (${n})`; btn.disabled = n === 0; }
+}
+
+async function saveMapeoSociedades() {
+  const upserts = [];
+  const deletes = [];
+  for (const [k, v] of ms.dirty.entries()) {
+    if (k.startsWith('msdel:')) { deletes.push(v._delete); continue; }
+    const payload = {
+      caja_origen: v.caja_origen,
+      tipo: v.tipo,
+      sociedad_slug: v.sociedad_slug,
+      sociedad_cif: v.sociedad_cif,
+      sociedad_nombre: v.sociedad_nombre,
+      nombre_canonico: v.nombre_canonico || null,
+      notas: v.notas || null,
+      activa: v.activa !== false,
+    };
+    if (v.id != null) payload.id = v.id;
+    upserts.push(payload);
+  }
+  const btn = document.getElementById('ms-btn-guardar');
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+  try {
+    const r = await fetch('/api/v1/caja/sociedades', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ upserts, deletes }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'save failed');
+    const bf = j.backfill || {};
+    showSavePill(`✓ ${j.inserted} nuevas · ${j.updated} editadas · ${j.deleted} borradas · backfill ${bf.reasignados || 0} mov reasignados, ${bf.nullificados || 0} → null`);
+    await loadMapeoSociedades();
+    if (typeof loadFlujoTotal === 'function') await loadFlujoTotal();
+    if (typeof loadDonutCombinado === 'function') await loadDonutCombinado();
+  } catch (e) {
+    console.error('[ms] save', e);
+    alert('Error al guardar: ' + (e.message || e));
+    if (btn) btn.disabled = false;
+    refreshMsDirty();
+  }
+}
+
 Object.assign(window, {
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
   // Selector global de período (Mes único / Rango)
@@ -3957,5 +4193,8 @@ Object.assign(window, {
   // Editor de mapeo subtipos caja → categoría banco (admin/socio)
   loadMapeosCaja, saveMapeosCaja, renderMapeosTable, mcPendSelAll,
   applyBulkMapeo, mcNuevaRegla,
+  // Editor de mapeo cajas → sociedad SL (admin/socio)
+  loadMapeoSociedades, saveMapeoSociedades, renderMapeoSociedadesTable,
+  msSelAll, applyBulkSociedad,
 });
 boot();
