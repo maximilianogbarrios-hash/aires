@@ -17,6 +17,11 @@ const http = require('http');
 
 const bancosRouter = require('../../routes/bancos');
 const cajaRouter   = require('../../routes/caja');
+const ventasRouter      = require('../../routes/ventas');
+const pedidosRouter     = require('../../routes/pedidos');
+const pedidosMp2Router  = require('../../routes/pedidos-mp2');
+const facturacionRouter = require('../../routes/facturacion');
+const airesRouter       = require('../../routes/aires');
 
 const ROLES = [
   { role: 'admin',          email: 'maxi@aires.com',   esAdmin: true,  alias: 'Maxi (admin)' },
@@ -58,7 +63,35 @@ const ENDPOINTS_CAJA = [
   '/api/v1/caja/reconciliacion',
 ];
 
-const ENDPOINTS = [...ENDPOINTS_BANCOS, ...ENDPOINTS_CAJA];
+// PARTE E — endpoints de OTROS módulos. Si alguno expone GD/Raba sin
+// pasar por el sanitizer, este test lo detecta.
+const ENDPOINTS_OTROS = [
+  '/api/v1/ventas/kpis',
+  '/api/v1/ventas/productos',
+  '/api/v1/ventas/sucursales',
+  '/api/v1/ventas/promociones',
+  '/api/v1/ventas/dia-hora',
+  '/api/v1/ventas/camareros',
+  '/api/v1/ventas/costos',
+  '/api/v1/ventas/filtros-meta',
+  '/api/v1/pedidos/bootstrap',
+  '/api/v1/pedidos/proveedores-activos',
+  '/api/v1/pedidos/proveedores-mix',
+  '/api/v1/pedidos/historial',
+  '/api/v1/pedidos/comparativa-bancos',
+  '/api/v1/pedidos/ranking-eficiencia',
+  '/api/v1/pedidos-mp2/meta',
+  '/api/v1/pedidos-mp2/catalogo',
+  '/api/v1/pedidos-mp2/pedidos',
+  '/api/v1/pedidos-mp2/resumen',
+  '/api/v1/pedidos-mp2/kpis',
+  '/api/v1/facturacion/semanal',
+  '/api/v1/aires/bootstrap',
+  '/api/v1/aires/locales',
+  '/api/v1/aires/historial',
+];
+
+const ENDPOINTS = [...ENDPOINTS_BANCOS, ...ENDPOINTS_CAJA, ...ENDPOINTS_OTROS];
 
 function buildApp(role, email) {
   const app = express();
@@ -66,8 +99,13 @@ function buildApp(role, email) {
     req.session = { user: { role, email, id: 999, totp_enabled: true } };
     next();
   });
-  app.use('/api/v1/bancos', bancosRouter);
-  app.use('/api/v1/caja',   cajaRouter);
+  app.use('/api/v1/bancos',      bancosRouter);
+  app.use('/api/v1/caja',        cajaRouter);
+  app.use('/api/v1/ventas',      ventasRouter);
+  app.use('/api/v1/pedidos',     pedidosRouter);
+  app.use('/api/v1/pedidos-mp2', pedidosMp2Router);
+  app.use('/api/v1/facturacion', facturacionRouter);
+  app.use('/api/v1/aires',       airesRouter);
   return app;
 }
 
@@ -214,14 +252,27 @@ function extractGdAgregado(body) {
     console.log(`  ${nPass} pass · ${nDenied} denied (403/401) · ${nFail} fail\n`);
   }
 
-  // ─── ASSERT 1: AGREGADO GD visible para no-admin ───────────────────
-  console.log('=== ASSERT 1: AGREGADO GASTOS_DIRECCION visible para no-admin ===');
+  // ─── ASSERT 1: AGREGADO GD y NOMINAS_DIRECCION visibles para no-admin ───
+  console.log('=== ASSERT 1: AGREGADO sensibles visibles con monto+% = admin ===');
   const epProv = '/api/v1/bancos/proveedores';
   const admin = ROLES.find((r) => r.role === 'admin');
   const appAdmin = buildApp(admin.role, admin.email);
   const adminResp = await request(appAdmin, epProv);
-  const adminGd = extractGdAgregado(adminResp.body);
-  console.log(`  Admin GASTOS_DIRECCION: ${adminGd ? `total=${adminGd.total} pct=${adminGd.pct}` : 'NO encontrado'}`);
+
+  // Helper local para extraer cualquier agregado por codigo.
+  const extractAggByCode = (body, codigo) => {
+    let obj; try { obj = JSON.parse(body); } catch { return null; }
+    const arr = obj?.por_categoria || obj?.categorias || [];
+    const x = arr.find?.((c) => c.codigo === codigo);
+    if (!x) return null;
+    const pct = x.pct != null ? x.pct : (x.porcentaje != null ? x.porcentaje : null);
+    return { total: x.total, pct, n_movs: x.n_movs };
+  };
+
+  const adminGd = extractAggByCode(adminResp.body, 'GASTOS_DIRECCION');
+  const adminNd = extractAggByCode(adminResp.body, 'NOMINAS_DIRECCION');
+  console.log(`  Admin GASTOS_DIRECCION:  ${adminGd ? `total=${adminGd.total} pct=${adminGd.pct}` : 'NO encontrado'}`);
+  console.log(`  Admin NOMINAS_DIRECCION: ${adminNd ? `total=${adminNd.total} pct=${adminNd.pct}` : 'NO encontrado'}`);
 
   for (const r of ROLES.filter((x) => !x.esAdmin)) {
     const app = buildApp(r.role, r.email);
@@ -230,25 +281,52 @@ function extractGdAgregado(body) {
       console.log(`  ${r.alias}: denied (${resp.status}) — endpoint bloqueado por perm de módulo, no aplica assert`);
       continue;
     }
-    const gd = extractGdAgregado(resp.body);
-    if (!gd) {
-      console.log(`  ✗ ${r.alias}: AGREGADO GD NO presente — debería estar visible`);
-      totalLeaks++;
-      continue;
+    for (const [codigo, adminAgg] of [['GASTOS_DIRECCION', adminGd], ['NOMINAS_DIRECCION', adminNd]]) {
+      if (!adminAgg) continue;
+      const agg = extractAggByCode(resp.body, codigo);
+      if (!agg) {
+        console.log(`  ✗ ${r.alias} ${codigo}: NO presente — debería estar visible`);
+        totalLeaks++; continue;
+      }
+      const totalMatch = agg.total === adminAgg.total;
+      const pctMatch = Math.abs((agg.pct || 0) - (adminAgg.pct || 0)) < 0.0001;
+      const sym = totalMatch && pctMatch ? '✓' : '✗';
+      console.log(`  ${sym} ${r.alias} ${codigo}: total=${agg.total} (admin=${adminAgg.total}, match=${totalMatch}) · pct=${agg.pct} (match=${pctMatch})`);
+      if (!totalMatch || !pctMatch) totalLeaks++;
     }
-    const totalMatch = gd.total === adminGd.total;
-    const pctMatch = Math.abs((gd.pct || 0) - (adminGd.pct || 0)) < 0.0001;
-    const sym = totalMatch && pctMatch ? '✓' : '✗';
-    console.log(`  ${sym} ${r.alias}: total=${gd.total} (admin=${adminGd.total}, match=${totalMatch}) · pct=${gd.pct} (admin=${adminGd.pct}, match=${pctMatch})`);
-    if (!totalMatch || !pctMatch) totalLeaks++;
+  }
+
+  // ─── ASSERT 1bis: Egresos roll-up — /caja/flujo-total ──────────────
+  console.log('\n=== ASSERT 1bis: /caja/flujo-total — sub-ítems vacíos en cats sensibles ===');
+  for (const r of ROLES.filter((x) => !x.esAdmin && (x.role === 'gerente'))) {
+    const app = buildApp(r.role, r.email);
+    const resp = await request(app, '/api/v1/caja/flujo-total');
+    if (resp.status !== 200) { console.log(`  ${r.alias}: status=${resp.status}, no aplica`); continue; }
+    try {
+      const j = JSON.parse(resp.body);
+      const egresos = j.egresos_por_categoria || [];
+      const gdRow = egresos.find((e) => e.categoria === 'GASTOS_DIRECCION');
+      const ndRow = egresos.find((e) => e.categoria === 'NOMINAS_DIRECCION');
+      for (const [name, row] of [['GASTOS_DIRECCION', gdRow], ['NOMINAS_DIRECCION', ndRow]]) {
+        if (!row) { console.log(`  ${r.alias} ${name}: no presente en flujo-total (puede ser que no haya datos en filtro)`); continue; }
+        const nSubBanco = (row.top_banco || []).length;
+        const nSubCaja  = (row.top_caja  || []).length;
+        const ok = nSubBanco === 0 && nSubCaja === 0;
+        console.log(`  ${ok?'✓':'✗'} ${r.alias} ${name}: una sola línea con total=${row.total} · top_banco=${nSubBanco} · top_caja=${nSubCaja}`);
+        if (!ok) totalLeaks++;
+      }
+    } catch (e) { console.log(`  ✗ ${r.alias}: error parsing — ${e.message}`); totalLeaks++; }
   }
 
   // ─── ASSERT 2: Drill-down sigue bloqueado ──────────────────────────
   console.log('\n=== ASSERT 2: Drill-down bloqueado para no-admin (403) ===');
   const drills = [
     '/api/v1/bancos/categoria-movimientos?codigo=GASTOS_DIRECCION',
+    '/api/v1/bancos/categoria-movimientos?codigo=NOMINAS_DIRECCION',
     '/api/v1/bancos/grupo-detalle?grupo=Gastos%20Direcci%C3%B3n',
     '/api/v1/bancos/grupo-detalle?grupo=Raba%20Buildings',
+    '/api/v1/caja/donut-proveedores?categoria=GASTOS_DIRECCION',
+    '/api/v1/caja/donut-proveedores?categoria=NOMINAS_DIRECCION',
   ];
   for (const r of ROLES.filter((x) => !x.esAdmin)) {
     for (const d of drills) {
@@ -349,6 +427,21 @@ function extractGdAgregado(body) {
   console.log('  PRESTAMOS         → agregado VISIBLE · detalle VISIBLE');
   console.log('  Raba (string)     → enmascarado a "Transferencia a Gastos Dirección"');
   console.log('  TRABAJADAS        → INTACTO (no es Raba)');
+
+  // ─── ASSERT 5 (PARTE E): otros módulos no exponen GD ni Raba ───────
+  console.log('\n=== ASSERT 5: otros módulos (ventas/pedidos/pedidos-mp2/facturacion/aires) ===');
+  let otrosLeaks = 0;
+  for (const r of ROLES.filter((x) => !x.esAdmin)) {
+    for (const ep of ENDPOINTS_OTROS) {
+      const res2 = matriz[r.alias][ep];
+      if (!res2 || res2.status >= 400) continue;
+      if (res2.leakRaba || res2.leakMovDetalle) {
+        console.log(`  ✗ ${r.alias} ${ep}: leak detectado`);
+        otrosLeaks++;
+      }
+    }
+  }
+  if (otrosLeaks === 0) console.log('  ✓ todos los endpoints de otros módulos limpios (sin GD/Raba en respuestas)');
 
   console.log(`\n=== TOTAL ===`);
   console.log(`Llamadas: ${totalCalls}`);

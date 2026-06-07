@@ -32,7 +32,11 @@ const {
 } = require('../lib/caja/proveedor-caja');
 const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers');
 const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
-const { jsonSanitizerMiddleware } = require('../lib/access/sanitize');
+const bankDb = require('../lib/bank/db');
+const { query } = require('../lib/db');
+const { jsonSanitizerMiddleware, markEndpoint } = require('../lib/access/sanitize');
+const tagAggregate = markEndpoint('aggregate');
+const tagDetail    = markEndpoint('detail');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -90,7 +94,7 @@ function buildFilters(req, opts = {}) {
 }
 
 // ─── KPIs ──────────────────────────────────────────────────────────────
-router.get('/resumen', async (req, res) => {
+router.get('/resumen', tagAggregate, async (req, res) => {
   try {
     const { sql, vals } = buildFilters(req);
     const r = await one(
@@ -133,7 +137,7 @@ router.get('/resumen', async (req, res) => {
 });
 
 // ─── Por sucursal ──────────────────────────────────────────────────────
-router.get('/por-sucursal', async (req, res) => {
+router.get('/por-sucursal', tagAggregate, async (req, res) => {
   try {
     const { sql, vals } = buildFilters(req);
     const rows = await many(
@@ -164,7 +168,7 @@ router.get('/por-sucursal', async (req, res) => {
 });
 
 // ─── Por sociedad ──────────────────────────────────────────────────────
-router.get('/por-sociedad', async (req, res) => {
+router.get('/por-sociedad', tagAggregate, async (req, res) => {
   try {
     const { sql, vals } = buildFilters(req);
     const rows = await many(
@@ -194,7 +198,7 @@ router.get('/por-sociedad', async (req, res) => {
 });
 
 // ─── Categorías de gasto (subtipos) ────────────────────────────────────
-router.get('/categorias', async (req, res) => {
+router.get('/categorias', tagAggregate, async (req, res) => {
   try {
     const { sql, vals } = buildFilters(req);
     // Top 20 subtipos por monto absoluto agregado (egresos primero).
@@ -217,7 +221,7 @@ router.get('/categorias', async (req, res) => {
 });
 
 // ─── Flujo mensual ─────────────────────────────────────────────────────
-router.get('/flujo-mensual', async (req, res) => {
+router.get('/flujo-mensual', tagAggregate, async (req, res) => {
   try {
     const { sql, vals } = buildFilters(req);
     const rows = await many(
@@ -247,7 +251,7 @@ router.get('/flujo-mensual', async (req, res) => {
 });
 
 // ─── Movimientos paginados ─────────────────────────────────────────────
-router.get('/movimientos', async (req, res) => {
+router.get('/movimientos', tagDetail, async (req, res) => {
   try {
     const limit = Math.min(+req.query.limit || 50, 500);
     const offset = +req.query.offset || 0;
@@ -275,7 +279,7 @@ router.get('/movimientos', async (req, res) => {
 // ─── Combinado banco + efectivo (mensual) ──────────────────────────────
 // Devuelve serie mensual con ingresos/gastos de AMBOS canales para el
 // período pedido. Usado por la vista combinada de Flujo Anual.
-router.get('/combinado', async (req, res) => {
+router.get('/combinado', tagAggregate, async (req, res) => {
   try {
     // Filtros propios de la query — para banco usamos sociedad+período;
     // para caja aplicamos buildFilters() que ya respeta los mismos
@@ -369,7 +373,7 @@ router.get('/combinado', async (req, res) => {
 // Reusa filtros de buildFilters() (desde/hasta/sociedad_id/etc.) para
 // caja; para banco aplica el mismo período + sociedad. Sin sociedad =
 // todas. Floor por rol vía el helper.
-router.get('/flujo-total', async (req, res) => {
+router.get('/flujo-total', tagAggregate, async (req, res) => {
   try {
     // Precarga el mapeo DB-driven (cache 60s) antes del loop sobre cajaRows.
     await loadMapeos();
@@ -784,7 +788,7 @@ async function agregarPorCategoria(req, fuente) {
 }
 
 // ─── Endpoint principal: donut combinado por categoría ────────────────
-router.get('/donut-categorias', async (req, res) => {
+router.get('/donut-categorias', tagAggregate, async (req, res) => {
   try {
     const fuente = (req.query.fuente || 'todo').toLowerCase(); // todo|banco|efectivo
     const validFuente = ['todo', 'banco', 'efectivo'].includes(fuente) ? fuente : 'todo';
@@ -873,7 +877,20 @@ router.get('/donut-categorias', async (req, res) => {
 });
 
 // ─── Drill-down: proveedores de una categoría ─────────────────────────
-router.get('/donut-proveedores', async (req, res) => {
+// NOTA: marcado tagAggregate porque devuelve TOP de proveedores agregados
+// por categoría — pero si la cat solicitada ES sensible (GASTOS_DIRECCION /
+// NOMINAS_DIRECCION), exponer la lista interna de proveedores es DETALLE
+// → 403 explícito abajo. Defense in depth: el sanitizer también bloquea
+// los items individuales con proveedor=FUSE o Raba.
+router.get('/donut-proveedores', tagAggregate, async (req, res) => {
+    // Bloqueo: cat sensible solicitada por no-admin → 403, no se expone
+    // qué proveedores la componen.
+    {
+      const catReq = String(req.query.categoria || '').trim();
+      if (!esAdminLike(req) && (catReq === 'GASTOS_DIRECCION' || catReq === 'NOMINAS_DIRECCION')) {
+        return res.status(403).json({ error: 'Forbidden: categoría restringida por rol' });
+      }
+    }
   try {
     const cat = String(req.query.categoria || '').trim();
     if (!cat) return res.status(400).json({ error: 'categoria requerida' });
@@ -964,7 +981,7 @@ router.get('/donut-proveedores', async (req, res) => {
 });
 
 // ─── Drill-down nivel 2: movs individuales de un proveedor en una categoría ──
-router.get('/donut-movimientos', async (req, res) => {
+router.get('/donut-movimientos', tagDetail, async (req, res) => {
   try {
     const cat = String(req.query.categoria || '').trim();
     const prov = String(req.query.proveedor || '').trim();
@@ -1060,7 +1077,7 @@ router.get('/donut-movimientos', async (req, res) => {
 // Nota informativa: los saldos parten de 0 al 09/07/2025 (primer mov
 // del histórico); NO representan efectivo físico previo. Cuadrar entre
 // ambos sistemas significa que el histórico está completo y consistente.
-router.get('/reconciliacion', async (req, res) => {
+router.get('/reconciliacion', tagAggregate, async (req, res) => {
   try {
     const rows = await many(`
       WITH calc AS (
@@ -1482,6 +1499,183 @@ router.put('/sociedades', soloAdmin, express.json(), async (req, res) => {
   } catch (e) {
     console.error('[caja.sociedades.save]', e);
     res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ─── Mover proveedor a otra categoría (admin/socio) ──────────────────────
+//
+// REUTILIZA los motores existentes — no crea un sistema paralelo:
+//   · BANCO    → ab_reglas_normalizacion (motor de Gestionar reglas).
+//                  El backfill UPDATE ab_movimientos + recalc resumen es
+//                  idéntico al de /api/v1/bancos/reglas-prov/asignar.
+//   · EFECTIVO → ab_caja_mapeo_subtipos (motor del editor de mapeo).
+//                Una regla `exact` por subtipo distinto que pertenezca
+//                al proveedor, con prioridad 1500 (gana sobre las 1100
+//                de prorrateo y las 700 de proveedores específicos).
+//
+// La regla queda guardada y se ve en su editor respectivo. Reversible:
+// mover de vuelta = update de las mismas reglas con la cat original.
+//
+// `modo` controla el comportamiento:
+//   · 'preview'   → solo cuenta, no escribe. Devuelve resumen.
+//   · 'confirmar' → ejecuta upsert + UPDATE + recalc + invalidate cache.
+
+// Validación de categoría destino contra ab_categorias.
+async function _loadCategoriasValidas() {
+  const rows = await many('SELECT codigo FROM ab_categorias', []);
+  return new Set(rows.map((r) => r.codigo));
+}
+
+router.post('/mover-proveedor', soloAdmin, express.json(), async (req, res) => {
+  try {
+    const proveedor = String(req.body?.proveedor || '').trim();
+    const categoria_origen = String(req.body?.categoria_origen || '').trim();
+    const categoria_destino = String(req.body?.categoria_destino || '').trim();
+    const modo = String(req.body?.modo || 'preview');
+    if (!proveedor || !categoria_destino) {
+      return res.status(400).json({ error: 'proveedor y categoria_destino requeridos' });
+    }
+    if (categoria_destino === categoria_origen) {
+      return res.status(400).json({ error: 'categoria_destino igual a categoria_origen — nada que mover' });
+    }
+    const validas = await _loadCategoriasValidas();
+    if (!validas.has(categoria_destino)) {
+      return res.status(400).json({ error: `categoría inválida: "${categoria_destino}"` });
+    }
+
+    // ─── BANCO: contar movs con proveedor_normalizado = proveedor ───
+    // Incluimos también match por concepto (substring) porque el motor
+    // de reglas de banco hace exactamente eso al reclasificar.
+    const movsBancoCnt = await one(
+      `SELECT COUNT(*)::int AS n,
+              COALESCE(SUM(ABS(importe)), 0)::float8 AS total
+         FROM ab_movimientos
+        WHERE (proveedor_normalizado = $1
+               OR position(LOWER($1) IN LOWER(concepto)) > 0)
+          AND importe < 0`,
+      [proveedor]
+    );
+
+    // ─── CAJA: identificar subtipos que pertenecen al proveedor ────
+    // Carga TODOS los subtipos distintos egresos y filtra por
+    // proveedorDeCaja(subtipo) === proveedor. Esto refleja la misma
+    // agrupación que ve el donut.
+    const subtiposRows = await many(
+      `SELECT subtipo, COUNT(*)::int AS n, SUM(monto)::float8 AS total
+         FROM ab_caja_movimientos
+        WHERE LOWER(tipo) = 'egreso'
+          AND subtipo IS NOT NULL
+        GROUP BY subtipo`,
+      []
+    );
+    const subtiposMatch = subtiposRows.filter(
+      (r) => proveedorDeCaja(r.subtipo) === proveedor
+    );
+    const movsCajaTotal = subtiposMatch.reduce((s, r) => s + r.n, 0);
+    const importeCajaTotal = subtiposMatch.reduce((s, r) => s + r.total, 0);
+
+    if (modo === 'preview') {
+      return res.json({
+        modo: 'preview',
+        proveedor, categoria_origen, categoria_destino,
+        banco: { n_movs: movsBancoCnt.n, total: movsBancoCnt.total },
+        efectivo: {
+          n_movs: movsCajaTotal,
+          total: importeCajaTotal,
+          subtipos: subtiposMatch.map((r) => ({ subtipo: r.subtipo, n: r.n, total: r.total })),
+        },
+        n_total_movs: movsBancoCnt.n + movsCajaTotal,
+      });
+    }
+
+    if (modo !== 'confirmar') {
+      return res.status(400).json({ error: 'modo debe ser preview o confirmar' });
+    }
+
+    // ─── EJECUTAR ─────────────────────────────────────────────────
+    let banco_regla_id = null, banco_affected = 0;
+    if (movsBancoCnt.n > 0) {
+      // 1) Upsert regla idéntico al de /reglas-prov/asignar.
+      let regla = await one(
+        `SELECT id FROM ab_reglas_normalizacion
+          WHERE proveedor_normalizado = $1 AND patron = $1 AND activo = TRUE
+          LIMIT 1`,
+        [proveedor]
+      );
+      if (regla) {
+        await query(
+          `UPDATE ab_reglas_normalizacion
+              SET categoria = $1, prioridad = 120, forzar_visible = TRUE
+            WHERE id = $2`,
+          [categoria_destino, regla.id]
+        );
+      } else {
+        regla = await one(
+          `INSERT INTO ab_reglas_normalizacion
+             (patron, tipo_match, categoria, proveedor_normalizado, prioridad, forzar_visible)
+           VALUES ($1, 'ilike', $2, $1, 120, TRUE)
+           RETURNING id`,
+          [proveedor, categoria_destino]
+        );
+      }
+      banco_regla_id = regla.id;
+      // 2) UPDATE histórico de ab_movimientos.
+      const upd = await query(
+        `UPDATE ab_movimientos
+            SET categoria = $1, proveedor_normalizado = $2
+          WHERE (proveedor_normalizado = $2 OR position(LOWER($2) IN LOWER(concepto)) > 0)
+            AND importe < 0
+          RETURNING sociedad_id, periodo`,
+        [categoria_destino, proveedor]
+      );
+      banco_affected = upd.rowCount || 0;
+      const combos = new Set((upd.rows || []).map((r) => `${r.sociedad_id}|${r.periodo}`));
+      // 3) Recalc resumen y cruces para los combos tocados.
+      for (const c of combos) {
+        const [soc, per] = c.split('|');
+        try { await bankDb.recalcResumenMensual(soc, per); } catch (e) { /* tolerante */ }
+        try { await bankDb.recalcCrucesParaSociedadPeriodo(soc, per); } catch (e) { /* tolerante */ }
+      }
+    }
+
+    let caja_reglas_upsert = 0;
+    const autor = req.session?.user?.email || 'desconocido';
+    for (const sub of subtiposMatch) {
+      // upsert por subtipo: tipo_match='exact', prioridad 1500.
+      // Sobreescribe siempre por categoria_destino (pasamos así el "mover").
+      await one(
+        `INSERT INTO ab_caja_mapeo_subtipos
+           (patron, tipo_match, prioridad, categoria_destino, autor, notas, activa)
+         VALUES ($1, 'exact', 1500, $2, $3, $4, TRUE)
+         ON CONFLICT (patron, tipo_match) DO UPDATE SET
+           categoria_destino = EXCLUDED.categoria_destino,
+           prioridad = GREATEST(EXCLUDED.prioridad, ab_caja_mapeo_subtipos.prioridad),
+           notas = EXCLUDED.notas,
+           autor = EXCLUDED.autor,
+           activa = TRUE,
+           updated_at = NOW()
+         RETURNING id`,
+        [sub.subtipo, categoria_destino, autor,
+         `Mover proveedor "${proveedor}" → ${categoria_destino} (desde donut)`]
+      );
+      caja_reglas_upsert++;
+    }
+    if (caja_reglas_upsert > 0) invalidateMapeosCache();
+
+    res.json({
+      ok: true,
+      modo: 'confirmar',
+      proveedor, categoria_origen, categoria_destino,
+      banco: { regla_id: banco_regla_id, movs_afectados: banco_affected },
+      efectivo: {
+        reglas_upsert: caja_reglas_upsert,
+        movs_afectados: movsCajaTotal,
+        subtipos: subtiposMatch.map((r) => r.subtipo),
+      },
+    });
+  } catch (e) {
+    console.error('[caja.mover-proveedor]', e);
+    res.status(500).json({ error: e.message || 'internal' });
   }
 });
 

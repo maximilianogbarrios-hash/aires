@@ -1858,20 +1858,25 @@ async function openDcSidebar(codigo) {
       $('prov-sb-body').innerHTML = '<p style="font-size:12px;color:var(--text-2);padding:20px;text-align:center">Sin proveedores en este filtro.</p>';
       return;
     }
-    $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:var(--text-2);margin-bottom:10px">${provs.length} proveedores. Click → movimientos individuales.</p>` +
+    const puedeMover = rolEsAdmin();
+    $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:var(--text-2);margin-bottom:10px">${provs.length} proveedores. Click → movimientos individuales.${puedeMover ? ' Botón "Mover" reasigna el proveedor a otra categoría.' : ''}</p>` +
       provs.map((p) => {
         const provJs = (p.proveedor || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const catJs = (cat.codigo || '').replace(/'/g, "\\'");
         const badge = (p.banco_egreso > 0 && p.efectivo_egreso > 0)
           ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px;margin-right:3px">B</span><span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">E</span>`
           : (p.banco_egreso > 0
               ? `<span style="font-size:9px;background:#185FA5;color:#fff;padding:1px 5px;border-radius:8px">banco</span>`
               : `<span style="font-size:9px;background:#A78BFA;color:#fff;padding:1px 5px;border-radius:8px">efectivo</span>`);
-        return `<div onclick="openDcMovs('${(cat.codigo||'').replace(/'/g,"\\'")}','${provJs}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;cursor:pointer;background:var(--bg-secondary)" onmouseover="this.style.borderColor='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)'">
+        const btnMover = puedeMover
+          ? `<button onclick="event.stopPropagation();openMoverProveedor('${provJs}','${catJs}')" title="Mover a otra categoría" style="background:transparent;border:.5px solid var(--border-3);color:var(--text-2);padding:3px 8px;font-size:10px;border-radius:5px;cursor:pointer;margin-right:6px" onmouseover="this.style.borderColor='#185FA5';this.style.color='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)';this.style.color='var(--text-2)'">⇄ Mover</button>`
+          : '';
+        return `<div onclick="openDcMovs('${catJs}','${provJs}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;border:.5px solid var(--border-3);border-radius:8px;cursor:pointer;background:var(--bg-secondary)" onmouseover="this.style.borderColor='#185FA5'" onmouseout="this.style.borderColor='var(--border-3)'">
           <div style="flex:1;min-width:0">
             <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.proveedor} ${badge}</p>
             <p style="font-size:10px;color:var(--text-2);margin-top:2px">${p.n_movs} tx${p.banco_egreso>0?' · banco '+eur(p.banco_egreso):''}${p.efectivo_egreso>0?' · efectivo '+eur(p.efectivo_egreso):''}</p>
           </div>
-          <span style="font-size:13px;font-weight:500;color:#dc2626">${eur(p.total_egreso)}</span>
+          ${btnMover}<span style="font-size:13px;font-weight:500;color:#dc2626">${eur(p.total_egreso)}</span>
         </div>`;
       }).join('');
   } catch (e) {
@@ -2768,6 +2773,25 @@ async function openCategoriaSidebar(codigo) {
   $('prov-sb-body').innerHTML = `<p style="font-size:11px;color:var(--text-2);padding:8px">Cargando…</p>`;
   $('prov-sidebar-backdrop').style.display = '';
   $('prov-sidebar').style.display = '';
+
+  // Candado cerrado: para no-admin con cat sensible (puede_drilldown=false)
+  // NO hacemos fetch ni mostramos "sin proveedores en este filtro" — se
+  // renderiza directamente el bloqueo. El backend igual devolvería 403,
+  // pero abrir el panel y mostrar mensaje vacío era confuso.
+  if (cat.puede_drilldown === false) {
+    const titulo = nombreLegible || (cat.codigo || '').toUpperCase();
+    $('prov-sb-meta').textContent = nombreLegible ? `${nombreLegible}` : '';
+    $('prov-sb-body').innerHTML = `
+      <div style="padding:40px 20px;text-align:center">
+        <p style="font-size:42px;margin-bottom:10px;line-height:1">🔒</p>
+        <p style="font-size:14px;font-weight:600;margin-bottom:6px">Acceso restringido</p>
+        <p style="font-size:12px;color:var(--text-2);line-height:1.5;max-width:340px;margin:0 auto">
+          El detalle de <strong>${titulo}</strong> está disponible solo para administradores.
+          El total agregado y el % se siguen mostrando en el donut para que los porcentajes cuadren.
+        </p>
+      </div>`;
+    return;
+  }
 
   try {
     const params = buildGrupoDetalleQuery();
@@ -4158,6 +4182,134 @@ async function saveMapeoSociedades() {
   }
 }
 
+// ─── Mover proveedor a otra categoría (admin/socio) ────────────────────
+// Abre un modal con selector de categoría destino + preview live + botón
+// confirmar. Llama a POST /api/v1/caja/mover-proveedor en dos pasos:
+//   1) modo='preview' → muestra cuántos movs (banco + efectivo) afectaría
+//   2) modo='confirmar' → ejecuta upsert en ambos motores y refresca todo
+// El botón solo aparece para admin/socio (rolEsAdmin), y el endpoint
+// además aplica gate 403 server-side.
+async function openMoverProveedor(proveedor, catOrigen) {
+  if (!rolEsAdmin()) { alert('Solo admin/socio puede mover categorías.'); return; }
+  // Cerrar cualquier modal existente.
+  const existing = document.getElementById('mover-modal');
+  if (existing) existing.remove();
+  // Cargar catálogo de categorías para el selector.
+  let cats = [];
+  try {
+    const j = await fetch('/api/v1/caja/mapeos/categorias').then((r) => r.json());
+    cats = (j.categorias || []).filter((c) => c.codigo !== catOrigen);
+  } catch (e) {
+    alert('No pude cargar el catálogo de categorías: ' + e.message);
+    return;
+  }
+  const modal = document.createElement('div');
+  modal.id = 'mover-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--bg-primary);border-radius:10px;padding:1.25rem 1.5rem;width:min(520px,95vw);max-height:90vh;overflow-y:auto;border:.5px solid var(--border-2)">
+      <p style="font-size:10px;color:var(--text-2);text-transform:uppercase;letter-spacing:1px;margin-bottom:.25rem">Mover proveedor</p>
+      <h2 style="font-size:17px;font-weight:600;margin:0 0 .5rem">${escapeHtml(proveedor)}</h2>
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:1rem">Categoría actual: <code>${escapeHtml(catOrigen || '—')}</code>. Reasigna TODOS los movimientos del proveedor (banco + efectivo, todos los períodos y sociedades) a la nueva categoría.</p>
+      <div style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:1rem">
+        <label style="font-size:11px;color:var(--text-2)">Categoría destino:
+          <select id="mp-destino" onchange="previewMoverProveedor()" style="width:100%;margin-top:4px;padding:6px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
+            <option value="">— elegir —</option>
+            ${cats.map((c) => `<option value="${c.codigo}">${escapeHtml(c.codigo)} — ${escapeHtml(c.nombre_display || '')}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <div id="mp-preview" style="margin-bottom:1rem;padding:10px;border:.5px dashed var(--border-2);border-radius:6px;background:var(--bg-secondary);font-size:11px;color:var(--text-2);min-height:60px">Elegí una categoría destino para ver el preview.</div>
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button onclick="document.getElementById('mover-modal').remove()" style="padding:7px 14px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px">Cancelar</button>
+        <button id="mp-confirm" onclick="confirmMoverProveedor()" disabled style="padding:7px 14px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-size:12px;font-weight:500;opacity:.5">Confirmar movimiento</button>
+      </div>
+    </div>`;
+  modal.dataset.proveedor = proveedor;
+  modal.dataset.catOrigen = catOrigen || '';
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+}
+
+async function previewMoverProveedor() {
+  const modal = document.getElementById('mover-modal');
+  if (!modal) return;
+  const destino = document.getElementById('mp-destino')?.value;
+  const preview = document.getElementById('mp-preview');
+  const btn = document.getElementById('mp-confirm');
+  btn.disabled = true; btn.style.opacity = '.5';
+  if (!destino) {
+    preview.innerHTML = 'Elegí una categoría destino para ver el preview.';
+    return;
+  }
+  preview.innerHTML = '<span style="color:var(--text-2)">Calculando…</span>';
+  try {
+    const r = await fetch('/api/v1/caja/mover-proveedor', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proveedor: modal.dataset.proveedor,
+        categoria_origen: modal.dataset.catOrigen,
+        categoria_destino: destino,
+        modo: 'preview',
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) { preview.innerHTML = '<span style="color:#dc2626">Error: ' + escapeHtml(j.error || 'unknown') + '</span>'; return; }
+    const n = j.n_total_movs;
+    if (n === 0) {
+      preview.innerHTML = '<span style="color:#dc2626">No hay movimientos que coincidan — ¿el proveedor ya no existe en ' + escapeHtml(modal.dataset.catOrigen) + '?</span>';
+      return;
+    }
+    const subts = j.efectivo.subtipos.slice(0, 6).map((s) =>
+      `<li><code>${escapeHtml(s.subtipo)}</code> · ${s.n} movs · ${eur(s.total)}</li>`).join('');
+    const masSubts = j.efectivo.subtipos.length > 6 ? `<li>… y ${j.efectivo.subtipos.length - 6} más</li>` : '';
+    preview.innerHTML = `
+      <p style="margin-bottom:.5rem;color:var(--text);font-weight:500">Esto reclasificará <span style="color:#185FA5">${n} movimientos</span> de <code>${escapeHtml(modal.dataset.proveedor)}</code> a <code>${escapeHtml(destino)}</code>:</p>
+      <ul style="margin:0 0 .5rem;padding-left:18px;font-size:11px">
+        <li><strong>Banco:</strong> ${j.banco.n_movs} movs (${eur(j.banco.total)}) → regla en <code>ab_reglas_normalizacion</code></li>
+        <li><strong>Efectivo:</strong> ${j.efectivo.n_movs} movs (${eur(j.efectivo.total)}) en ${j.efectivo.subtipos.length} subtipos → reglas en <code>ab_caja_mapeo_subtipos</code></li>
+      </ul>
+      ${j.efectivo.subtipos.length > 0 ? `<details style="margin-top:.5rem"><summary style="cursor:pointer;font-size:11px">Subtipos afectados</summary><ul style="margin:.25rem 0;padding-left:18px;font-size:10px;color:var(--text-2)">${subts}${masSubts}</ul></details>` : ''}
+      <p style="margin-top:.5rem;font-size:10px;color:var(--text-2)">Aplica a TODOS los períodos y sociedades. Reversible — mover de vuelta = actualizar las mismas reglas.</p>`;
+    btn.disabled = false; btn.style.opacity = '1';
+  } catch (e) {
+    preview.innerHTML = '<span style="color:#dc2626">Error: ' + escapeHtml(e.message || e) + '</span>';
+  }
+}
+
+async function confirmMoverProveedor() {
+  const modal = document.getElementById('mover-modal');
+  if (!modal) return;
+  const destino = document.getElementById('mp-destino')?.value;
+  const btn = document.getElementById('mp-confirm');
+  if (!destino) return;
+  btn.disabled = true; btn.textContent = 'Aplicando…';
+  try {
+    const r = await fetch('/api/v1/caja/mover-proveedor', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proveedor: modal.dataset.proveedor,
+        categoria_origen: modal.dataset.catOrigen,
+        categoria_destino: destino,
+        modo: 'confirmar',
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'save failed');
+    showSavePill(`✓ Reclasificado: ${j.banco.movs_afectados} banco + ${j.efectivo.movs_afectados} efectivo (${j.efectivo.reglas_upsert} subtipos)`);
+    modal.remove();
+    // Refresco completo: donut + KPIs + tablas + cierro sidebar para
+    // forzar siguiente click a re-fetch.
+    closeProvSidebar();
+    if (typeof loadDonutCombinado === 'function') await loadDonutCombinado();
+    if (typeof loadFlujoTotal === 'function') await loadFlujoTotal();
+  } catch (e) {
+    console.error('[mp] confirm', e);
+    alert('Error al guardar: ' + (e.message || e));
+    btn.disabled = false; btn.textContent = 'Confirmar movimiento';
+  }
+}
+
 Object.assign(window, {
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
   // Selector global de período (Mes único / Rango)
@@ -4196,5 +4348,7 @@ Object.assign(window, {
   // Editor de mapeo cajas → sociedad SL (admin/socio)
   loadMapeoSociedades, saveMapeoSociedades, renderMapeoSociedadesTable,
   msSelAll, applyBulkSociedad,
+  // Botón "Mover proveedor a otra categoría" en el drill-down del donut
+  openMoverProveedor, previewMoverProveedor, confirmMoverProveedor,
 });
 boot();

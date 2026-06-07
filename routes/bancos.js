@@ -21,8 +21,15 @@ const bankDb = require('../lib/bank/db');
 const {
   jsonSanitizerMiddleware,
   matchesRaba,
+  markEndpoint,
   RABA_MASK,
 } = require('../lib/access/sanitize');
+
+// Aliases prácticos para no repetir markEndpoint('aggregate')/('detail')
+// en cada router.get. Aplicados como middleware por-handler — el
+// sanitizer luego decide qué hacer según el kind.
+const tagAggregate = markEndpoint('aggregate');
+const tagDetail    = markEndpoint('detail');
 
 // Selector ampliado de sociedad (Mejora B): traduce valores virtuales
 // 'sin_elche' (excluye hostelero=Grupo Hostelero Aires SL) y 'solo_elche'
@@ -437,7 +444,7 @@ router.post('/upload-cierres-tpv', requirePerm('bancos_upload_admin'), upload.si
 // ─── QUERIES ───────────────────────────────────────────────────────────
 
 // Listado paginado de movimientos con filtros.
-router.get('/movimientos', async (req, res) => {
+router.get('/movimientos', tagDetail, async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
     // Clamp del período por rol — no-admin no puede consultar meses
@@ -497,7 +504,7 @@ router.get('/movimientos', async (req, res) => {
 });
 
 // Resumen mensual por sociedad (todos los períodos disponibles).
-router.get('/resumen', async (req, res) => {
+router.get('/resumen', tagAggregate, async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
     let sql = `SELECT sociedad_id, periodo,
@@ -548,7 +555,7 @@ router.get('/resumen', async (req, res) => {
 // resolver nombre_display. Resultado: el donut "Distribución de gastos por
 // categoría" y la tabla Top 50 quedan sincronizados con la pantalla Reglas
 // — si TGSS está en SS_LABORAL en Reglas, acá aparece bajo "Seguridad Social".
-router.get('/gastos-por-proveedor', async (req, res) => {
+router.get('/gastos-por-proveedor', tagAggregate, async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
     // Clamp del período por rol (defense in depth con frontend).
@@ -712,7 +719,7 @@ router.get('/gastos-por-proveedor', async (req, res) => {
 // Dirección" absorbe — ej. NOMINAS_DIRECCION y PRESTAMOS, cuyos
 // proveedores resueltos ("Sueldos Dirección", "Préstamos Bancarios")
 // caen dentro del bucket fusionado).
-router.get('/categoria-movimientos', async (req, res) => {
+router.get('/categoria-movimientos', tagDetail, async (req, res) => {
   try {
     const codigo = String(req.query.codigo || '').trim();
     if (!codigo) return res.status(400).json({ error: 'codigo requerido' });
@@ -792,7 +799,7 @@ router.get('/categoria-movimientos', async (req, res) => {
 });
 
 // Cruces TPV vs banco.
-router.get('/cruces', async (req, res) => {
+router.get('/cruces', tagAggregate, async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
     const periodo = req.query.periodo || null;
@@ -823,7 +830,7 @@ router.get('/cruces', async (req, res) => {
 // Ranking de proveedores normalizado: agrupa por concepto canónico
 // excluyendo transferencias intra-grupo. Soporta sociedad (todas o
 // individual) y periodo (mes único o rango periodo_desde..periodo_hasta).
-router.get('/proveedores', async (req, res) => {
+router.get('/proveedores', tagAggregate, async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
     const clamped = clampPeriodoParaNoAdmin(req, {
@@ -1295,7 +1302,7 @@ router.get('/proveedores', async (req, res) => {
 // GET /bancos/proveedor-evolucion?proveedores=A,B&categorias=X,Y&desde=YYYY-MM&hasta=YYYY-MM&sociedad_id=
 // Devuelve serie mensual por cada proveedor + serie por cada categoría.
 // Si yoy=1, también devuelve la serie del mismo rango del año anterior.
-router.get('/proveedor-evolucion', async (req, res) => {
+router.get('/proveedor-evolucion', tagDetail, async (req, res) => {
   try {
     const sociedad_id = req.query.sociedad_id || null;
     let desde = req.query.desde || null;
@@ -1681,7 +1688,7 @@ router.get('/proveedores-normalizados', async (req, res) => {
 // Devuelve la lista con totales por concepto, ordenada por importe desc.
 // Usa la MISMA lógica de derivación de grupo que /proveedores
 // (proveedor_normalizado > regla DB > normalizarProveedor()).
-router.get('/grupo-detalle', async (req, res) => {
+router.get('/grupo-detalle', tagDetail, async (req, res) => {
   try {
     const grupo = String(req.query.grupo || '').trim();
     if (!grupo) return res.status(400).json({ error: 'grupo requerido' });
@@ -2848,7 +2855,7 @@ router.delete('/categorias/:codigo', requirePerm('bancos_reglas_admin'), async (
 // canónica tras pipeline). Para gerente: filtra las 3 cats sensibles
 // (GASTOS_DIRECCION/NOMINAS_DIRECCION/PRESTAMOS) del desglose pero
 // mantiene los totales de ingresos/gastos/neto correctos.
-router.get('/flujo-mensual', async (req, res) => {
+router.get('/flujo-mensual', tagAggregate, async (req, res) => {
   try {
     // Defense in depth: el frontend ya esconde la tab para roles sin
     // permiso, pero por las dudas rechazamos si el rol no la tiene.
