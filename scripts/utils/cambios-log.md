@@ -3736,3 +3736,83 @@ Hostelero Aires SL porque el nombre contiene "ELCHE".
   · nombre_canonico aplica SOLO al display (donut/filtros muestran
     "CHICKEN UNCLES"). La reconciliación contra Control de Cajas
     sigue usando el caja_origen literal ("CHICKEN ELCHE").
+
+
+────────────────────────────────────────────────────────────────────────
+2026-06-07 (b) — Guardrail anti-doble-conteo ESPECIALES/PRODUCCIÓN
+────────────────────────────────────────────────────────────────────────
+
+Auditoría reveló DOBLE CONTEO latente: el toggle "Incluir cuentas
+especiales" del frontend (`incluir_especiales=true`) hacía que el
+donut sumara los egresos de las cajas padre ESPECIALES (€99.458) y
+PRODUCCIÓN (€96.850) además de los "Prorrateo desde X" repartidos en
+operativas (€99.143 + €96.733). El total CSV €1.520.864 incluye AMBAS
+formas; contar las dos suma ~€196k extra que no existen.
+
+### Hallazgos
+
+  · Default (incluir_especiales=false): el donut suma €1.224.355
+    (cajas operativas). Correcto, sin doble conteo.
+  · Toggle ON: el donut sumaba €1.520.864 (TODAS las cajas, incluso
+    las padre). El delta de €296.509 incluye ESPECIALES+PRODUCCIÓN
+    €196.308 que YA estaban contados como prorrateo.
+  · La regla genérica 'prorrateo desde' enviaba ESPECIALES y
+    PRODUCCIÓN a GASTOS_DIRECCION cuando son NÓMINAS PERSONAL.
+
+### Cambios
+
+  · routes/caja.js — guardrail nuevo:
+    `buildWhereCajaEgresoDonut(req)` FUERZA `es_especial=FALSE` para
+    egresos del donut, ignorando el query param incluir_especiales.
+    Se cablea en los 3 endpoints del donut:
+      `agregarPorCategoria()` — donut-categorias
+      `/donut-proveedores`
+      `/donut-movimientos`
+    Ingresos siguen respetando el toggle (no hay riesgo de
+    duplicación: las padre no generan ingresos repartidos).
+  · sanity log: `sanityNoInternasEnEgresos(rows, label)` recorre
+    los rows post-fetch y loguea WARN a Railway si alguna caja
+    interna filtró egresos (debería ser 0). Incluye monto y lista
+    de cajas.
+  · migration 29 `prorrateo_padres_a_nominas`:
+    Inserta 2 reglas con prioridad 1100 (> 1000 de la regla genérica)
+    que mapean:
+      'prorrateo\s+desde\s+especiales' → NOMINAS
+      'prorrateo\s+desde\s+producci(o|ó)n' → NOMINAS
+  · routes/caja.js (fix lateral): `buildWhereBanco` con `wAll`
+    filtrado podía generar `WHERE  ` vacío cuando no había filtros.
+    Fallback a 'TRUE' para queries de histórico completo.
+
+### Validación 4/4 PASS
+
+  TEST 1 — Toggle inerte para gasto del donut:
+    incluir_especiales=false → gasto caja = €1.224.355,13
+    incluir_especiales=true  → gasto caja = €1.224.355,13
+    Δ = €0,00 ✓
+
+  TEST 2 — Prorrateos en NOMINAS, dirección queda limpia:
+    NOMINAS          efectivo: €1.023.800 (antes €830.222, +€193.578)
+    GASTOS_DIRECCION efectivo: €43.686    (solo socios reales)
+
+  TEST 3 — Cuadre matemático:
+    total CSV €1.520.864 − internas €296.509 = €1.224.355 donut ✓
+
+  TEST 4 — Categorización aplicada:
+    "Prorrateo desde ESPECIALES" → NOMINAS  ✓
+    "Prorrateo desde PRODUCCIÓN" → NOMINAS  ✓
+
+### Regla documentada
+
+  Los EGRESOS del donut combinado NUNCA suman cajas con
+  tipo='interno' (ESPECIALES, PRODUCCIÓN, OFICINA, NAVE, etc.). Su
+  plata real ya está repartida en las operativas como "Prorrateo
+  desde X". El toggle "Incluir cuentas especiales" del frontend es
+  silenciosamente ignorado para el cálculo de gasto del donut.
+
+### Regresión cero
+
+  · Reconciliación por caja sigue cuadrando 25/25 (el saldo de la
+    caja no depende del filtro de tipo).
+  · Donut por defecto: mismo número que antes (€1.224.355) — el
+    bug solo se activaba al togglear.
+  · Mapeo subtipos / sociedades intactos.

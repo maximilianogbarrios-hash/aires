@@ -570,6 +570,70 @@ function buildWhereCaja(req, soloEgreso) {
   return buildFilters(reqCaja);
 }
 
+// ─── GUARDRAIL ANTI-DOBLE-CONTEO ─────────────────────────────────────────
+//
+// Regla invariante: en el donut combinado, los EGRESOS de las cajas
+// internas (ESPECIALES, PRODUCCIÓN, OFICINA, NAVE, etc.) NUNCA deben
+// sumar al gasto, porque esas cajas son CONTENEDORES PADRE cuyo monto
+// total ya viene repartido por el sistema externo como "Prorrateo
+// desde ESPECIALES/PRODUCCIÓN" a las cajas operativas. Si entrasen
+// ambos, se duplicaría ~€196k (€99k ESPECIALES + €97k PRODUCCIÓN).
+//
+// Este helper devuelve el WHERE de CAJA para egresos del donut con
+// `es_especial = FALSE` FORZADO — ignora el query param
+// `incluir_especiales` (que el toggle del frontend expone). El toggle
+// puede seguir afectando ingresos / KPIs, pero el cálculo de gasto del
+// donut combinado SIEMPRE excluye padres.
+function buildWhereCajaEgresoDonut(req) {
+  // Clonar req quitando incluir_especiales: el helper buildFilters
+  // sólo añade el filtro es_especial=FALSE cuando NO se setea el flag,
+  // así que basta con forzar incluir_especiales=false.
+  const safeQuery = Object.assign({}, req.query);
+  safeQuery.incluir_especiales = 'false';
+  const safeReq = Object.assign({}, req, { query: safeQuery });
+  return buildFilters(safeReq);
+}
+
+// Sanity check: después de leer las filas de caja, verifica que
+// ninguna venga de una caja interna/excluir según
+// ab_caja_mapeo_sociedades. Si las hay, loguea warning con el monto
+// para que se vea en Railway logs y no se pase silenciosamente.
+let _internasSet = null;
+let _internasSetUntil = 0;
+async function loadInternasSet() {
+  const now = Date.now ? Date.now() : new Date().getTime();
+  if (_internasSet && now < _internasSetUntil) return _internasSet;
+  try {
+    const rows = await many(
+      `SELECT caja_origen FROM ab_caja_mapeo_sociedades
+        WHERE tipo IN ('interno','excluir') AND activa=TRUE`,
+      []
+    );
+    _internasSet = new Set(rows.map((r) => r.caja_origen));
+    _internasSetUntil = (Date.now ? Date.now() : new Date().getTime()) + 60_000;
+    return _internasSet;
+  } catch (e) {
+    return new Set();
+  }
+}
+async function sanityNoInternasEnEgresos(rows, label) {
+  const set = await loadInternasSet();
+  if (set.size === 0) return;
+  let n = 0, t = 0;
+  const cajas = new Set();
+  for (const r of rows) {
+    if ((r.tipo || '').toLowerCase() !== 'egreso') continue;
+    const key = String(r.sucursal || '').trim().toUpperCase();
+    if (set.has(key)) { n++; t += +r.monto || 0; cajas.add(key); }
+  }
+  if (n > 0) {
+    console.warn(
+      `[GUARDRAIL ${label}] ⚠ ${n} egresos de cajas internas filtraron al donut: €${t.toFixed(2)} desde ${[...cajas].join(', ')} — debería ser 0. ` +
+      'Revisar buildWhereCajaEgresoDonut() y es_especial.'
+    );
+  }
+}
+
 // Pipeline regla>histórico>heurística para banco (igual que /proveedores)
 async function categorizarBancoRow(r, reglasDb) {
   let proveedor, categoria;
@@ -631,10 +695,12 @@ async function agregarPorCategoria(req, fuente) {
   if (fuente === 'todo' || fuente === 'banco') {
     const { where: wB, vals: vB } = buildWhereBanco(req);
     // Necesitamos también los ingresos banco — quitar el filtro 'importe<0'.
+    // Fallback 'TRUE' por si quedaran 0 condiciones (histórico completo).
     const wAll = wB.filter((c) => c !== 'importe < 0');
+    const whereClause = wAll.length ? wAll.join(' AND ') : 'TRUE';
     const rows = await many(
       `SELECT concepto, categoria, importe::float8 AS importe, proveedor_normalizado
-         FROM ab_movimientos WHERE ${wAll.join(' AND ')}`,
+         FROM ab_movimientos WHERE ${whereClause}`,
       vB
     );
     for (const r of rows) {
@@ -651,16 +717,28 @@ async function agregarPorCategoria(req, fuente) {
     }
   }
 
-  // CAJA
+  // CAJA — dos queries separados para blindar contra doble conteo:
+  //   · EGRESOS  → buildWhereCajaEgresoDonut() FUERZA es_especial=FALSE,
+  //                ignora el toggle incluir_especiales del frontend.
+  //                Las cajas padre (ESPECIALES/PRODUCCIÓN) ya están
+  //                repartidas en operativas como "Prorrateo desde X";
+  //                contar también la padre duplicaría ~€196k.
+  //   · INGRESOS → respeta incluir_especiales (no hay riesgo de
+  //                duplicación porque las padre no generan ingresos
+  //                que se repartan).
   if (fuente === 'todo' || fuente === 'efectivo') {
-    const { sql: sqlC, vals: valsC } = buildWhereCaja(req, false);
-    const rows = await many(
+    // Egresos blindados.
+    const { sql: sqlE, vals: valsE } = buildWhereCajaEgresoDonut(
+      Object.assign({}, req, { query: Object.assign({}, req.query, { tipo: 'egreso' }) })
+    );
+    const rowsEgr = await many(
       `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
               monto::float8 AS monto, observaciones
-         FROM ab_caja_movimientos ${sqlC}`,
-      valsC
+         FROM ab_caja_movimientos ${sqlE}`,
+      valsE
     );
-    for (const r of rows) {
+    await sanityNoInternasEnEgresos(rowsEgr, 'agregarPorCategoria');
+    for (const r of rowsEgr) {
       if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) { caja_traspaso += r.monto; continue; }
       const cat = categoriaDeSubtipoCajaSync(r.subtipo);
       if (cat === 'INTRAGRUPO') continue;
@@ -668,8 +746,27 @@ async function agregarPorCategoria(req, fuente) {
       ent.n_movs++;
       const prov = proveedorDeCaja(r.subtipo);
       proveedorSet.get(cat).add(prov);
-      if ((r.tipo || '').toLowerCase() === 'egreso') ent.caja_egr += r.monto;
-      else if ((r.tipo || '').toLowerCase() === 'ingreso') ent.caja_ing += r.monto;
+      ent.caja_egr += r.monto;
+    }
+    // Ingresos (respeta toggle).
+    const { sql: sqlI, vals: valsI } = buildWhereCaja(
+      Object.assign({}, req, { query: Object.assign({}, req.query, { tipo: 'ingreso' }) }), false
+    );
+    const rowsIng = await many(
+      `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
+              monto::float8 AS monto, observaciones
+         FROM ab_caja_movimientos ${sqlI}`,
+      valsI
+    );
+    for (const r of rowsIng) {
+      if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) { caja_traspaso += r.monto; continue; }
+      const cat = categoriaDeSubtipoCajaSync(r.subtipo);
+      if (cat === 'INTRAGRUPO') continue;
+      const ent = ensure(cat);
+      ent.n_movs++;
+      const prov = proveedorDeCaja(r.subtipo);
+      proveedorSet.get(cat).add(prov);
+      ent.caja_ing += r.monto;
     }
   }
 
@@ -806,21 +903,42 @@ router.get('/donut-proveedores', async (req, res) => {
       }
     }
     if (validFuente === 'todo' || validFuente === 'efectivo') {
-      const { sql: sqlC, vals: valsC } = buildWhereCaja(req, false);
-      const rows = await many(
-        `SELECT subtipo, tipo, monto::float8 AS monto, observaciones
-           FROM ab_caja_movimientos ${sqlC}`,
-        valsC
+      // GUARDRAIL: egresos del donut SIEMPRE excluyen cajas internas
+      // (es_especial=FALSE forzado). Los ingresos respetan el toggle.
+      const { sql: sqlE, vals: valsE } = buildWhereCajaEgresoDonut(
+        Object.assign({}, req, { query: Object.assign({}, req.query, { tipo: 'egreso' }) })
       );
-      for (const r of rows) {
+      const rowsEgr = await many(
+        `SELECT sucursal, subtipo, tipo, monto::float8 AS monto, observaciones
+           FROM ab_caja_movimientos ${sqlE}`,
+        valsE
+      );
+      await sanityNoInternasEnEgresos(rowsEgr, 'donut-proveedores');
+      for (const r of rowsEgr) {
         if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
         const c = categoriaDeSubtipoCajaSync(r.subtipo);
         if (c !== cat) continue;
         const prov = proveedorDeCaja(r.subtipo);
         const ent = ensure(prov);
         ent.n_movs++;
-        if ((r.tipo || '').toLowerCase() === 'egreso') ent.caja_egr += r.monto;
-        else if ((r.tipo || '').toLowerCase() === 'ingreso') ent.caja_ing += r.monto;
+        ent.caja_egr += r.monto;
+      }
+      const { sql: sqlI, vals: valsI } = buildWhereCaja(
+        Object.assign({}, req, { query: Object.assign({}, req.query, { tipo: 'ingreso' }) }), false
+      );
+      const rowsIng = await many(
+        `SELECT subtipo, tipo, monto::float8 AS monto, observaciones
+           FROM ab_caja_movimientos ${sqlI}`,
+        valsI
+      );
+      for (const r of rowsIng) {
+        if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
+        const c = categoriaDeSubtipoCajaSync(r.subtipo);
+        if (c !== cat) continue;
+        const prov = proveedorDeCaja(r.subtipo);
+        const ent = ensure(prov);
+        ent.n_movs++;
+        ent.caja_ing += r.monto;
       }
     }
 
@@ -877,15 +995,31 @@ router.get('/donut-movimientos', async (req, res) => {
       }
     }
     if (validFuente === 'todo' || validFuente === 'efectivo') {
-      const { sql: sqlC, vals: valsC } = buildWhereCaja(req, false);
-      const rows = await many(
+      // GUARDRAIL: el drill-down de movs sigue la misma regla — los
+      // egresos NUNCA muestran movs de cajas internas (padres). Los
+      // ingresos respetan el toggle.
+      const { sql: sqlE, vals: valsE } = buildWhereCajaEgresoDonut(
+        Object.assign({}, req, { query: Object.assign({}, req.query, { tipo: 'egreso' }) })
+      );
+      const rowsEgr = await many(
         `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
                 monto::float8 AS monto, observaciones
-           FROM ab_caja_movimientos ${sqlC}
+           FROM ab_caja_movimientos ${sqlE}
           ORDER BY fecha DESC, id DESC`,
-        valsC
+        valsE
       );
-      for (const r of rows) {
+      await sanityNoInternasEnEgresos(rowsEgr, 'donut-movimientos');
+      const { sql: sqlI, vals: valsI } = buildWhereCaja(
+        Object.assign({}, req, { query: Object.assign({}, req.query, { tipo: 'ingreso' }) }), false
+      );
+      const rowsIng = await many(
+        `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
+                monto::float8 AS monto, observaciones
+           FROM ab_caja_movimientos ${sqlI}
+          ORDER BY fecha DESC, id DESC`,
+        valsI
+      );
+      for (const r of [...rowsEgr, ...rowsIng]) {
         if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
         const c = categoriaDeSubtipoCajaSync(r.subtipo);
         if (c !== cat) continue;
