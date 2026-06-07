@@ -3816,3 +3816,52 @@ formas; contar las dos suma ~€196k extra que no existen.
   · Donut por defecto: mismo número que antes (€1.224.355) — el
     bug solo se activaba al togglear.
   · Mapeo subtipos / sociedades intactos.
+
+
+────────────────────────────────────────────────────────────────────────
+2026-06-07 (c) — Reasignación MADRID, MURCIA NUEVO, IFA (eran pendientes)
+────────────────────────────────────────────────────────────────────────
+
+Decisiones manuales sobre las 3 cajas pendientes:
+  · MADRID       → operativa Aires Alicante SL (B44897973)
+  · MURCIA NUEVO → operativa Aires Burger Bar Murcia SL (B44896793),
+                   nombre canónico de display "MADERO"
+  · IFA          → interno (excluida)
+
+### Cambios
+
+  · migration 30 `reasignar_madrid_murcia_nuevo_ifa`:
+    1) UPDATE ab_caja_mapeo_sociedades (3 reglas).
+    2) DROP + ADD COLUMN es_especial (era GENERATED ALWAYS STORED con
+       la lista hardcoded de internas). Lista nueva quita MADRID y
+       MURCIA NUEVO, deja IFA. Postgres recalcula es_especial para los
+       10.986 movs.
+    3) Backfill sociedad_id desde la tabla recién editada.
+  · lib/caja/sucursales.js — sincronizar fallback hardcoded:
+    SUCURSALES_ESPECIALES quita MADRID y MURCIA NUEVO.
+    SUCURSAL_A_SOCIEDAD agrega MADRID→alicante, MURCIA NUEVO→murcia.
+
+### Validación 5/5 PASS
+
+  TEST 1 — Estado por caja:
+    IFA          tipo=interno  · es_especial=true  · egr €658
+    MADRID       tipo=sociedad · es_especial=false · egr €27.545
+    MURCIA NUEVO tipo=sociedad · es_especial=false · egr €26.163  canónico=MADERO
+
+  TEST 2 — Gasto donut combinado:
+    Antes : €1.224.355,13
+    Ahora : €1.278.062,41
+    Δ     : +€53.707,28  ≈ esperado +€54k ✓
+
+  TEST 3 — NOMINAS efectivo (incluye prorrateos de MADRID/MURCIA NUEVO):
+    Antes : €1.023.800,76
+    Ahora : €1.040.888,10
+    Δ     : +€17.087,34  (prorrateos que estaban ocultos en cajas internas)
+
+  TEST 4 — Filtros por SL ahora incluyen las nuevas operativas:
+    alicante: 5 cajas (+MADRID), gasto efectivo €360.137
+    murcia:   6 cajas (+MURCIA NUEVO), gasto efectivo €409.859
+
+  TEST 5 — Reconciliación por caja: 25/25 cuadran al céntimo ✓
+
+  Extra — Toggle incluir_especiales sigue inerte (Δ €0,00).
