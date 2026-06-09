@@ -1370,16 +1370,46 @@ async function loadSimuladorPresupuesto() {
     ]);
     simState.seed = seed;
     simState.saved = saved;
-    // Si hay guardado, usar eso; sino, usar el seed.
+    // OVERLAY: seed primero, montos guardados encima (priman). Set
+    // `editadas` para que la tabla pueda marcar visualmente cuáles
+    // están editadas vs vienen del seed histórico.
     const savedMap = new Map((saved.categorias || []).map((c) => [c.categoria, +c.monto]));
     simState.montos = {};
+    simState.editadas = new Set();
     for (const c of seed.categorias) {
-      simState.montos[c.codigo] = savedMap.has(c.codigo) ? savedMap.get(c.codigo) : c.monto_seed;
+      if (savedMap.has(c.codigo)) {
+        simState.montos[c.codigo] = savedMap.get(c.codigo);
+        simState.editadas.add(c.codigo);
+      } else {
+        simState.montos[c.codigo] = c.monto_seed;
+      }
+    }
+    // Cats que están guardadas pero NO aparecen en el seed (ej. el mes-1
+    // no tenía esa cat pero el user la presupuestó). Las agregamos.
+    for (const [cat, monto] of savedMap.entries()) {
+      if (!(cat in simState.montos)) {
+        simState.montos[cat] = monto;
+        simState.editadas.add(cat);
+        // También en seed.categorias para que se renderice en la tabla.
+        seed.categorias.push({
+          codigo: cat,
+          nombre_display: cat,
+          ratio_historico: 0,
+          monto_anterior: 0,
+          anterior_banco: 0,
+          anterior_efectivo: 0,
+          monto_seed: 0,
+        });
+      }
     }
     simState.dirty = false;
     _renderSimAll();
     const statusEl = $('sim-save-status');
-    if (statusEl) statusEl.textContent = saved.n > 0 ? `${saved.n} cats guardadas` : 'Usando seed histórico';
+    if (statusEl) {
+      statusEl.textContent = simState.editadas.size > 0
+        ? `${simState.editadas.size} cats con monto guardado · resto desde seed`
+        : 'Usando seed histórico';
+    }
   } catch (e) {
     console.error('[sim-presup] load:', e);
     const tb = $('sim-tbody');
@@ -1411,13 +1441,18 @@ function onSimCatEdit(codigo, val) {
   const n = Number(val);
   simState.montos[codigo] = Number.isFinite(n) && n >= 0 ? n : 0;
   simState.dirty = true;
+  // Tocar el monto NO marca "editada" todavía — solo el commit (guardar)
+  // confirma que vive en DB. La pista visual de "guardado" depende del
+  // set editadas que se setea desde la respuesta del PUT (o de load).
   _renderSimKpisAndDonut();
-  // Actualizar también el % de la fila editada.
   const ing = simState.seed?.ingresos_presupuestados || 0;
   const pctEl = document.querySelector(`#sim-pct-${cssId(codigo)}`);
   if (pctEl) pctEl.textContent = ing > 0 ? (simState.montos[codigo] / ing * 100).toFixed(1) + '%' : '—';
+  // Marcar la fila como "dirty" visualmente (ámbar).
+  const rowEl = document.querySelector(`#sim-row-${cssId(codigo)}`);
+  if (rowEl) rowEl.dataset.dirty = '1';
   const statusEl = $('sim-save-status');
-  if (statusEl) statusEl.textContent = 'Cambios sin guardar';
+  if (statusEl) statusEl.textContent = '✏ Cambios sin guardar';
 }
 
 function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
@@ -1486,13 +1521,19 @@ function _renderSimTabla() {
   const fmt = (v) => new Intl.NumberFormat('es-ES', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(Math.round(v));
   // Orden por monto vivo desc.
   const sorted = [...cats].sort((a, b) => (simState.montos[b.codigo] || 0) - (simState.montos[a.codigo] || 0));
+  const editadas = simState.editadas || new Set();
   tb.innerHTML = sorted.map((c) => {
     const monto = simState.montos[c.codigo] || 0;
     const pct = ing > 0 ? (monto / ing * 100).toFixed(1) : '—';
     const lock = simLockIcon(c.codigo);
     const tipoSens = esCatSensibleSim(c.codigo);
-    const labelHtml = `${c.nombre_display}${lock ? `<span title="${tipoSens ? (esAdminLikeSim() ? 'Categoría sensible — visible para tu rol' : 'Categoría sensible — detalle restringido') : ''}" style="margin-left:4px;opacity:.85;font-size:0.9em">${lock.trim()}</span>` : ''}`;
-    return `<tr style="border-bottom:.5px solid var(--border-3)">
+    const esEditada = editadas.has(c.codigo);
+    // Badge "✎ guardado" cuando viene de DB; nada cuando es seed.
+    const badgeGuardado = esEditada
+      ? '<span title="Monto editado y guardado" style="margin-left:6px;font-size:9px;padding:1px 5px;border-radius:8px;background:rgba(99,153,34,.15);color:#16a34a;font-weight:500">✎ guardado</span>'
+      : '';
+    const labelHtml = `${c.nombre_display}${lock ? `<span title="${tipoSens ? (esAdminLikeSim() ? 'Categoría sensible — visible para tu rol' : 'Categoría sensible — detalle restringido') : ''}" style="margin-left:4px;opacity:.85;font-size:0.9em">${lock.trim()}</span>` : ''}${badgeGuardado}`;
+    return `<tr id="sim-row-${cssId(c.codigo)}" style="border-bottom:.5px solid var(--border-3)">
       <td style="padding:5px 8px;font-weight:500">${labelHtml}</td>
       <td style="padding:5px 8px;text-align:right;color:var(--text-2)">${fmt(c.monto_anterior)}</td>
       <td style="padding:5px 8px;text-align:right;color:var(--text-2)" id="sim-pct-${cssId(c.codigo)}">${pct}%</td>
@@ -1513,10 +1554,20 @@ async function saveSimuladorPresupuesto() {
     const categorias = Object.entries(simState.montos).map(([categoria, monto]) => ({ categoria, monto }));
     const r = await Api.simPresupSave({ anio: simState.anio, mes: simState.mes, scope: simState.scope, categorias });
     simState.dirty = false;
+    // El PUT devuelve {ok, saved, inserted, updated}. Re-cargar desde
+    // backend garantiza overlay correcto (lee lo que efectivamente vive
+    // en DB) y actualiza el set `editadas` para que la tabla muestre el
+    // badge "✎ guardado" en las cats nuevas.
+    await loadSimuladorPresupuesto();
     const statusEl = $('sim-save-status');
-    if (statusEl) statusEl.textContent = `✓ Guardado (${r.saved} cats) · ${_simMesLabel(simState.anio, simState.mes)} / ${simState.scope}`;
+    if (statusEl) {
+      const det = r.inserted != null ? ` (${r.inserted} nuevas, ${r.updated} actualizadas)` : '';
+      statusEl.textContent = `✓ Guardado · ${r.saved} cats${det} · ${_simMesLabel(simState.anio, simState.mes)} / ${simState.scope}`;
+    }
   } catch (e) {
     Api.pill ? Api.pill('Error: ' + e.message, true) : alert('Error: ' + e.message);
+    const statusEl = $('sim-save-status');
+    if (statusEl) statusEl.textContent = '✗ Error al guardar: ' + e.message;
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
   }

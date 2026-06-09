@@ -732,11 +732,17 @@ router.get('/presupuesto-costos', async (req, res) => {
     if (!anio || !mes || !VALID_SCOPES.has(scope)) {
       return res.status(400).json({ error: 'anio, mes y scope válido requeridos' });
     }
+    // ORDER BY updated_at DESC: si por algún motivo quedaran duplicados
+    // (defense in depth tras migration 32), el frontend hace Map.set
+    // por categoria — el ÚLTIMO set wins; ordenando DESC el último
+    // procesado sería el más viejo, así el Map se queda con el más
+    // reciente como primer set. Tras el UNIQUE nuevo no debería haber
+    // duplicados, pero el ORDER explícito lo blinda.
     const rows = await many(
       `SELECT categoria, monto::float8 AS monto, updated_at
          FROM ab_presupuesto_costos_categoria
         WHERE anio = $1 AND mes = $2 AND scope = $3
-        ORDER BY monto DESC`,
+        ORDER BY updated_at DESC`,
       [anio, mes, scope]
     );
     res.json({ anio, mes, scope, categorias: rows, n: rows.length });
@@ -757,21 +763,29 @@ router.put('/presupuesto-costos', express.json({ limit: '256kb' }), async (req, 
     if (!Array.isArray(categorias)) {
       return res.status(400).json({ error: 'categorias[] requerido' });
     }
+    // UPSERT por (anio, mes, scope, categoria) — sin user_id en la key
+    // (migration 32). Antes el ON CONFLICT incluía user_id que siempre
+    // es NULL → NULL≠NULL en Postgres → cada save insertaba fila nueva.
+    // Resultado del fix: 1 fila por categoría, monto pisado en cada save.
     let saved = 0;
+    let inserted = 0;
+    let updated = 0;
     for (const c of categorias) {
       const cat = String(c?.categoria || '').trim();
       const monto = Number(c?.monto);
       if (!cat || !Number.isFinite(monto)) continue;
-      await query(
+      const r = await query(
         `INSERT INTO ab_presupuesto_costos_categoria (anio, mes, scope, categoria, monto, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
-         ON CONFLICT (user_id, anio, mes, scope, categoria) DO UPDATE
-           SET monto = EXCLUDED.monto, updated_at = NOW()`,
+         ON CONFLICT (anio, mes, scope, categoria) DO UPDATE
+           SET monto = EXCLUDED.monto, updated_at = NOW()
+         RETURNING (xmax = 0) AS was_insert`,
         [anio, mes, scope, cat, monto]
       );
       saved++;
+      if (r.rows[0]?.was_insert) inserted++; else updated++;
     }
-    res.json({ ok: true, saved });
+    res.json({ ok: true, saved, inserted, updated });
   } catch (e) {
     console.error('[aires.presupuesto-costos.put]', e);
     res.status(500).json({ error: 'internal' });
