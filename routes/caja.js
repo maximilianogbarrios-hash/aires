@@ -1717,4 +1717,10 @@ router.post('/mover-proveedor', soloAdmin, express.json(), async (req, res) => {
   }
 });
 
+// Exporta el router + helpers internos que routes/aires.js reusa para
+// el simulador de presupuesto (mismo pipeline combinado banco+efectivo
+// con anti-doble-conteo). Reusar evita reescribir la lógica de filtros
+// de sociedad/período/INTRAGRUPO/traspasos internos y mapeo de subtipos.
 module.exports = router;
+module.exports.agregarPorCategoria = agregarPorCategoria;
+module.exports.loadCatDisplay      = loadCatDisplay;

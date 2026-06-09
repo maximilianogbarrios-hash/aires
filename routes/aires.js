@@ -549,28 +549,41 @@ router.get('/bootstrap', async (req, res) => {
 // (panel al final del tab Presupuesto)
 //
 // Concepto:
-//   · Ingresos = SUM(fac_presupuestada) del mes+scope de ab_presupuesto.
-//     Fijo, no editable acá (viene del Presupuesto que ya está arriba).
-//   · Seed por categoría = ratio_histórico × ingresos_actuales, donde
-//     ratio_histórico = gasto_cat_mes_anterior / ingresos_mes_anterior.
-//     Si ratio total > 100% el neto arranca negativo — el usuario recorta.
+//   · Ingresos PRESUPUESTADOS del mes+scope (fac_presupuestada) →
+//     denominador del seed escalado. Fijo, no editable acá.
+//   · Seed por categoría = ratio_histórico × ingresos_presupuestados,
+//     donde:
+//       ratio_histórico = gasto_combinado_cat_mes_anterior /
+//                         ingresos_REALES_combinados_mes_anterior
+//     ─ gasto_combinado: banco + efectivo, con el anti-doble-conteo
+//       de Flujo Total ya aplicado (excluye cajas padre ESPECIALES/
+//       PRODUCCIÓN, cuenta solo los prorrateos repartidos en operativas,
+//       excluye INTRAGRUPO y traspasos internos). Reusa
+//       `agregarPorCategoria` de routes/caja.js — mismo pipeline que
+//       el donut combinado, sin duplicar lógica.
+//     ─ ingresos_reales_combinados: ingreso TOTAL real del mes-1
+//       (banco + efectivo). Fallback en cascada: si 0 → fac_presupuestada
+//       del mes-1; si 0 → gasto_total_anterior (degradación graceful).
 //   · Persiste por (anio, mes, scope, categoria) en
 //     ab_presupuesto_costos_categoria.
+//
+// Antes (#1, sólo banco): NÓMINAS aparecía con €30k (banco) e ignoraba
+// los ~€85k mensuales en efectivo → seed total subestimado, neto seed
+// falsamente POSITIVO. Ahora: NÓMINAS combinado ~€115k, neto seed
+// coherente con el neto real de Flujo Total.
 // ════════════════════════════════════════════════════════════════════
+
+const cajaRouter = require('./caja');
+const agregarPorCategoria = cajaRouter.agregarPorCategoria;
+const loadCatDisplayCaja  = cajaRouter.loadCatDisplay;
 
 const VALID_SCOPES = new Set(['sin_elche', 'solo_elche', 'todas']);
 
-// Cláusula JOIN ab_locales para filtrar por scope.
+// Filtro de scope sobre ab_locales para la facturación presupuestada
+// (denominador del seed escalado).
 function scopeFilterPresupuesto(scope) {
   if (scope === 'sin_elche')  return 'l.dani_only = FALSE';
   if (scope === 'solo_elche') return 'l.dani_only = TRUE';
-  return 'TRUE';
-}
-// Cláusula para ab_movimientos.sociedad_id según scope.
-// Elche es 'hostelero' (Grupo Hostelero Aires SL).
-function scopeFilterBanco(scope) {
-  if (scope === 'sin_elche')  return `sociedad_id <> 'hostelero'`;
-  if (scope === 'solo_elche') return `sociedad_id = 'hostelero'`;
   return 'TRUE';
 }
 
@@ -578,14 +591,12 @@ function periodoAnterior(anio, mes) {
   if (mes <= 1) return { anio: anio - 1, mes: 12 };
   return { anio, mes: mes - 1 };
 }
-function mesStart(anio, mes) {
+function mesStartIso(anio, mes) {
   return `${anio}-${String(mes).padStart(2, '0')}-01`;
 }
-function mesNextStart(anio, mes) {
-  const next = periodoAnterior(anio, mes + 1); // reuso para evitar wrap manual
-  // mes anterior de (anio, mes+1) = (anio, mes) cuando mes < 12; (anio+1, 1) si mes=13
-  if (mes >= 12) return `${anio + 1}-01-01`;
-  return `${anio}-${String(mes + 1).padStart(2, '0')}-01`;
+function mesEndIso(anio, mes) {
+  const last = new Date(anio, mes, 0).getDate();
+  return `${anio}-${String(mes).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
 }
 
 async function ingresosPresupuestadosScope(anio, mes, scope) {
@@ -600,19 +611,48 @@ async function ingresosPresupuestadosScope(anio, mes, scope) {
   return r.total || 0;
 }
 
-async function gastosPorCategoriaMes(anio, mes, scope) {
-  const r = await many(
-    `SELECT categoria, COALESCE(SUM(ABS(importe)), 0)::float8 AS total
-       FROM ab_movimientos
-      WHERE importe < 0
-        AND fecha >= $1::date AND fecha < $2::date
-        AND COALESCE(categoria, '') NOT IN ('INTRAGRUPO', '')
-        AND ${scopeFilterBanco(scope)}
-      GROUP BY categoria
-      ORDER BY total DESC`,
-    [mesStart(anio, mes), mesNextStart(anio, mes)]
-  );
-  return r;
+// Mapea scope del simulador → sociedad_id que entiende agregarPorCategoria
+// (el helper acepta 'sin_elche' / 'solo_elche' / slug específico / null).
+function scopeToSociedadId(scope) {
+  if (scope === 'sin_elche' || scope === 'solo_elche') return scope;
+  return null; // 'todas' → sin filtro
+}
+
+// Llama al agregador combinado del módulo Caja con un req mock que
+// replica los parámetros que usaría /api/v1/caja/donut-categorias para
+// el mes+scope dados. Devuelve {catAgg, ingresoTotalReal} ya con el
+// anti-doble-conteo aplicado.
+async function gastoCombinadoMes(req, anio, mes, scope) {
+  const sociedad_id = scopeToSociedadId(scope);
+  const reqMock = {
+    session: req.session, // necesario para esAdminLike (PERIODO_FLOOR_NO_ADMIN)
+    query: {
+      desde: mesStartIso(anio, mes),
+      hasta: mesEndIso(anio, mes),
+      incluir_especiales: 'false',  // forzado FALSE → coherente con Flujo Total
+      incluir_prorrateo:  'true',
+    },
+  };
+  if (sociedad_id) reqMock.query.sociedad_id = sociedad_id;
+  const { catAgg } = await agregarPorCategoria(reqMock, 'todo');
+  let ingresoTotal = 0;
+  const porCategoria = [];
+  for (const [cat, v] of catAgg.entries()) {
+    const egreso = (v.banco_egr || 0) + (v.caja_egr || 0);
+    const ingreso = (v.banco_ing || 0) + (v.caja_ing || 0);
+    ingresoTotal += ingreso;
+    if (egreso > 0) {
+      porCategoria.push({
+        categoria: cat,
+        total: egreso,
+        banco_egreso: v.banco_egr || 0,
+        efectivo_egreso: v.caja_egr || 0,
+        n_movs: v.n_movs || 0,
+      });
+    }
+  }
+  porCategoria.sort((a, b) => b.total - a.total);
+  return { ingresoTotal, porCategoria };
 }
 
 // GET /presupuesto-costos/seed?anio=&mes=&scope=
@@ -625,29 +665,39 @@ router.get('/presupuesto-costos/seed', async (req, res) => {
       return res.status(400).json({ error: 'anio, mes y scope válido requeridos' });
     }
     const prev = periodoAnterior(anio, mes);
-    const [ingresosActuales, ingresosAnteriores, gastosAnt] = await Promise.all([
+    const [ingresosActuales, ingresosPresupAnt, combinadoAnt, catDisplayMap] = await Promise.all([
       ingresosPresupuestadosScope(anio, mes, scope),
       ingresosPresupuestadosScope(prev.anio, prev.mes, scope),
-      gastosPorCategoriaMes(prev.anio, prev.mes, scope),
+      gastoCombinadoMes(req, prev.anio, prev.mes, scope),
+      loadCatDisplayCaja().catch(() => new Map()),
     ]);
-    // Catálogo de cats para nombre_display.
-    let catDisplay = new Map();
-    try {
-      const cats = await many(`SELECT codigo, nombre_display FROM ab_categorias`);
-      catDisplay = new Map(cats.map((c) => [c.codigo, c.nombre_display]));
-    } catch {}
-
+    const gastosAnt = combinadoAnt.porCategoria;
+    const ingresosRealesAnt = combinadoAnt.ingresoTotal;
     const totalGastosAnt = gastosAnt.reduce((s, x) => s + x.total, 0);
-    const baseRatio = ingresosAnteriores > 0 ? ingresosAnteriores : totalGastosAnt;
+
+    // Cascada para el denominador del ratio: real → presupuestado → gasto total.
+    let baseRatio = ingresosRealesAnt;
+    let baseRatioFuente = 'ingresos_reales_anteriores';
+    if (!(baseRatio > 0)) {
+      baseRatio = ingresosPresupAnt;
+      baseRatioFuente = baseRatio > 0 ? 'ingresos_presupuestados_anteriores' : baseRatioFuente;
+    }
+    if (!(baseRatio > 0)) {
+      baseRatio = totalGastosAnt;
+      baseRatioFuente = baseRatio > 0 ? 'gastos_totales_anteriores' : null;
+    }
 
     const categorias = gastosAnt.map((g) => {
       const ratio = baseRatio > 0 ? g.total / baseRatio : 0;
       const monto_seed = Math.round(ratio * ingresosActuales * 100) / 100;
       return {
         codigo: g.categoria,
-        nombre_display: catDisplay.get(g.categoria) || g.categoria,
+        nombre_display: catDisplayMap.get(g.categoria) || g.categoria,
         ratio_historico: ratio,
         monto_anterior: Math.round(g.total * 100) / 100,
+        // Desglose informativo banco vs efectivo del mes anterior.
+        anterior_banco:    Math.round((g.banco_egreso || 0) * 100) / 100,
+        anterior_efectivo: Math.round((g.efectivo_egreso || 0) * 100) / 100,
         monto_seed,
       };
     });
@@ -657,10 +707,12 @@ router.get('/presupuesto-costos/seed', async (req, res) => {
       anio, mes, scope,
       periodo_anterior: prev,
       ingresos_presupuestados: Math.round(ingresosActuales * 100) / 100,
-      ingresos_anteriores: Math.round(ingresosAnteriores * 100) / 100,
+      ingresos_reales_anteriores: Math.round(ingresosRealesAnt * 100) / 100,
+      ingresos_presupuestados_anteriores: Math.round(ingresosPresupAnt * 100) / 100,
       total_gastos_seed: Math.round(totalSeed * 100) / 100,
       neto_seed: Math.round((ingresosActuales - totalSeed) * 100) / 100,
-      base_ratio: baseRatio > 0 ? (ingresosAnteriores > 0 ? 'ingresos_anteriores' : 'gastos_totales_anteriores') : null,
+      base_ratio: baseRatioFuente,
+      fuente_gasto: 'combinado_banco_efectivo', // marca explícita del cambio
       categorias,
     });
   } catch (e) {
