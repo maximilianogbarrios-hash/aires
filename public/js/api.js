@@ -82,6 +82,16 @@ window.Api = (function () {
   const presupuestoContexto = (periodo) =>
     jsonFetch(`/api/v1/aires/presupuesto/contexto?periodo=${encodeURIComponent(periodo)}`);
 
+  // ─── Simulador de presupuesto de costos por categoría ─────────────
+  const simPresupSeed = ({ anio, mes, scope }) =>
+    jsonFetch(`/api/v1/aires/presupuesto-costos/seed?anio=${anio}&mes=${mes}&scope=${encodeURIComponent(scope)}`);
+  const simPresupGet = ({ anio, mes, scope }) =>
+    jsonFetch(`/api/v1/aires/presupuesto-costos?anio=${anio}&mes=${mes}&scope=${encodeURIComponent(scope)}`);
+  const simPresupSave = (payload) =>
+    jsonFetch('/api/v1/aires/presupuesto-costos', { method: 'PUT', body: JSON.stringify(payload) });
+  const simPresupReset = ({ anio, mes, scope }) =>
+    jsonFetch(`/api/v1/aires/presupuesto-costos?anio=${anio}&mes=${mes}&scope=${encodeURIComponent(scope)}`, { method: 'DELETE' });
+
   const saveFacturacionSemanal = (payload) =>
     jsonFetch('/api/v1/facturacion/semanal', { method: 'POST', body: JSON.stringify(payload) });
 
@@ -180,6 +190,7 @@ window.Api = (function () {
 
   return {
     bootstrap, saveConfig, lastParamsMod, saveLocal, savePresupuesto, presupuestoContexto,
+    simPresupSeed, simPresupGet, simPresupSave, simPresupReset,
     saveFacturacionSemanal, getFacturacionSemanal, saveHorasSemanal,
     pedidosBootstrap, pedidosMP, pedidosPersonal,
     pedidosMix, pedidosMixSave, pedidosMixCopy, pedidosMixImport,

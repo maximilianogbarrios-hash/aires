@@ -286,6 +286,87 @@
       <tbody id="tb-pres"></tbody>
     </table></div>
   </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       Simulador de Presupuesto de Costos por categoría
+       Panel abajo del tab Presupuesto. Estilo idéntico al donut de
+       Proveedores. Ingresos = fac. presupuestada del mes+scope (fija);
+       gastos editables por categoría con recálculo en vivo del neto.
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="card" id="sim-presup-card" style="margin-top:1.25rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.75rem">
+      <p style="font-size:14px;font-weight:500">🎯 Simulador de presupuesto por categoría
+        <span style="font-size:11px;color:var(--text-2);font-weight:400">— recortá hasta dejar el neto en verde</span>
+      </p>
+      <div style="display:flex;gap:6px">
+        <button id="sim-presup-btn-restore" onclick="restaurarSimuladorPresupuesto()" style="padding:5px 10px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px" title="Volver a los % históricos del seed">↻ Restaurar al seed</button>
+        <button id="sim-presup-btn-save" onclick="saveSimuladorPresupuesto()" style="padding:5px 12px;border:none;border-radius:6px;background:#185FA5;color:#fff;cursor:pointer;font-weight:500;font-size:11px">Guardar</button>
+      </div>
+    </div>
+
+    <!-- Selector de sociedad (scope). Mes lo lee del selector de arriba. -->
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:1rem">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--text-2)">Sociedad:</span>
+        <div role="tablist" style="display:flex;border:.5px solid var(--border-2);border-radius:6px;overflow:hidden">
+          <button type="button" id="sim-sc-sin"   onclick="setSimScope('sin_elche')"  style="padding:5px 10px;border:none;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">Sin Elche</button>
+          <button type="button" id="sim-sc-todas" onclick="setSimScope('todas')"      style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Con Elche (todas)</button>
+          <button type="button" id="sim-sc-solo"  onclick="setSimScope('solo_elche')" style="padding:5px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">Solo Elche</button>
+        </div>
+      </div>
+      <span style="font-size:10px;color:var(--text-2)" id="sim-period-label">—</span>
+      <span style="font-size:10px;color:var(--text-2);margin-left:auto" id="sim-save-status"></span>
+    </div>
+
+    <!-- KPIs estilo Proveedores -->
+    <div class="g4" style="margin-bottom:1rem">
+      <div class="surf">
+        <p style="font-size:11px;color:var(--text-2)">Total ingresos<br><span style="font-size:9px;opacity:.6">(presupuestado, fijo)</span></p>
+        <p style="font-size:19px;font-weight:500;color:#16a34a" id="sim-kpi-ing">—</p>
+      </div>
+      <div class="surf">
+        <p style="font-size:11px;color:var(--text-2)">Total gastos<br><span style="font-size:9px;opacity:.6">(suma de categorías)</span></p>
+        <p style="font-size:19px;font-weight:500;color:#dc2626" id="sim-kpi-gas">—</p>
+      </div>
+      <div class="surf">
+        <p style="font-size:11px;color:var(--text-2)">Resultado neto</p>
+        <p style="font-size:19px;font-weight:500" id="sim-kpi-neto">—</p>
+        <p style="font-size:10px;color:var(--text-2)" id="sim-kpi-neto-pct">—</p>
+      </div>
+      <div class="surf">
+        <p style="font-size:11px;color:var(--text-2)">Ratio costo/ingreso</p>
+        <p style="font-size:19px;font-weight:500" id="sim-kpi-ratio">—</p>
+        <p style="font-size:10px;color:var(--text-2)">objetivo &lt;100%</p>
+      </div>
+    </div>
+
+    <!-- Donut + tabla editable -->
+    <div style="display:grid;grid-template-columns:300px 1fr;gap:18px;align-items:start">
+      <div>
+        <p style="font-size:11px;color:var(--text-2);margin-bottom:6px">Distribución proyectada</p>
+        <div style="position:relative;height:280px"><canvas id="sim-donut"></canvas></div>
+      </div>
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem">
+          <p style="font-size:11px;color:var(--text-2)">Editá los montos para ajustar el presupuesto. El neto se recalcula al instante.</p>
+          <span style="font-size:10px;color:var(--text-2)" id="sim-cat-counter">—</span>
+        </div>
+        <div style="max-height:340px;overflow-y:auto;border:.5px solid var(--border-3);border-radius:6px">
+          <table style="width:100%;font-size:11px;border-collapse:collapse">
+            <thead style="position:sticky;top:0;background:var(--bg-primary);z-index:1">
+              <tr style="border-bottom:.5px solid var(--border-3);color:var(--text-2)">
+                <th style="text-align:left;padding:6px 8px">Categoría</th>
+                <th style="text-align:right;padding:6px 8px" title="Gasto real del mes anterior (referencia)">Hist.</th>
+                <th style="text-align:right;padding:6px 8px">% Ing.</th>
+                <th style="text-align:right;padding:6px 8px">Monto €</th>
+              </tr>
+            </thead>
+            <tbody id="sim-tbody"><tr><td colspan="4" style="padding:18px;text-align:center;color:var(--text-2)">—</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- SEGUIMIENTO -->

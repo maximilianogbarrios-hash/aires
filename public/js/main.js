@@ -1310,7 +1310,250 @@ Object.assign(window, {
   updPresFac, updPresReal, onPresMonthChange, togglePresWeek, updFacSemanal,
   navMes, srt, showTab, logout,
   loadSeguimiento, onSeguimientoFiltro,
+  // Simulador de presupuesto de costos por categoría
+  setSimScope, onSimCatEdit, saveSimuladorPresupuesto, restaurarSimuladorPresupuesto,
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// SIMULADOR DE PRESUPUESTO DE COSTOS POR CATEGORÍA
+// ═══════════════════════════════════════════════════════════════════════
+// Panel al final del tab Presupuesto. Ingresos = fac. presupuestada del
+// mes+scope (fija, no editable acá). Gastos editables por categoría con
+// recálculo en vivo del neto. Persiste por (anio, mes, scope).
+//
+// Reusa: lockedLabel + esCatSensibleFront (de bancos.js — pero este es
+// el dashboard principal, no /bancos). Acá replicamos el flag local
+// para no acoplar módulos.
+
+const SIM_CATS_SENSIBLES = new Set(['GASTOS_DIRECCION', 'NOMINAS_DIRECCION']);
+const SIM_CAT_COLORS = [
+  '#185FA5','#639922','#BA7517','#A32D2D','#7C3AED','#DB2777','#0891B2','#D97706',
+  '#059669','#DC2626','#0F766E','#9333EA','#B45309','#1E40AF','#15803D','#9F1239',
+  '#EA580C','#6B21A8','#0E7490','#65A30D','#B45309','#7E22CE','#0369A1','#16A34A',
+  '#BE123C','#1D4ED8','#A16207','#9333EA','#0891B2','#475569','#7C2D12','#9CA3AF',
+];
+
+const simState = {
+  scope: 'sin_elche',
+  anio: 2026,
+  mes: 5,
+  seed: null,        // { ingresos_presupuestados, categorias[{codigo,nombre_display,monto_seed,monto_anterior,ratio_historico}], ... }
+  saved: null,       // { categorias: [{categoria, monto}] }
+  montos: {},        // { codigo: monto } — estado vivo editado
+  dirty: false,
+  loading: false,
+  donut: null,
+};
+
+function esCatSensibleSim(codigo) { return SIM_CATS_SENSIBLES.has(codigo); }
+function esAdminLikeSim() {
+  const r = ctx?.user?.role;
+  return r === 'admin' || r === 'socio';
+}
+function simLockIcon(codigo) {
+  if (!esCatSensibleSim(codigo)) return '';
+  return esAdminLikeSim() ? ' 🔓' : ' 🔒';
+}
+
+async function loadSimuladorPresupuesto() {
+  if (simState.loading) return;
+  simState.loading = true;
+  // El mes lo lee del selector de arriba del tab Presupuesto.
+  simState.anio = uiState.presYear;
+  simState.mes = uiState.presMonth;
+  const label = $('sim-period-label');
+  if (label) label.textContent = `Período: ${_simMesLabel(simState.anio, simState.mes)}`;
+  try {
+    const [seed, saved] = await Promise.all([
+      Api.simPresupSeed({ anio: simState.anio, mes: simState.mes, scope: simState.scope }),
+      Api.simPresupGet({ anio: simState.anio, mes: simState.mes, scope: simState.scope }),
+    ]);
+    simState.seed = seed;
+    simState.saved = saved;
+    // Si hay guardado, usar eso; sino, usar el seed.
+    const savedMap = new Map((saved.categorias || []).map((c) => [c.categoria, +c.monto]));
+    simState.montos = {};
+    for (const c of seed.categorias) {
+      simState.montos[c.codigo] = savedMap.has(c.codigo) ? savedMap.get(c.codigo) : c.monto_seed;
+    }
+    simState.dirty = false;
+    _renderSimAll();
+    const statusEl = $('sim-save-status');
+    if (statusEl) statusEl.textContent = saved.n > 0 ? `${saved.n} cats guardadas` : 'Usando seed histórico';
+  } catch (e) {
+    console.error('[sim-presup] load:', e);
+    const tb = $('sim-tbody');
+    if (tb) tb.innerHTML = `<tr><td colspan="4" style="padding:14px;text-align:center;color:#dc2626">Error: ${e.message}</td></tr>`;
+  } finally { simState.loading = false; }
+}
+
+function _simMesLabel(anio, mes) {
+  const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  return `${meses[mes - 1] || mes} ${anio}`;
+}
+
+function setSimScope(scope) {
+  if (!['sin_elche','solo_elche','todas'].includes(scope)) return;
+  simState.scope = scope;
+  // Toggle visual de los 3 botones.
+  ['sin_elche','solo_elche','todas'].forEach((s) => {
+    const id = s === 'sin_elche' ? 'sim-sc-sin' : s === 'solo_elche' ? 'sim-sc-solo' : 'sim-sc-todas';
+    const el = $(id); if (!el) return;
+    const on = (s === scope);
+    el.style.background = on ? '#185FA5' : 'transparent';
+    el.style.color      = on ? '#fff'    : 'var(--text)';
+    el.style.fontWeight = on ? '500'     : '400';
+  });
+  loadSimuladorPresupuesto();
+}
+
+function onSimCatEdit(codigo, val) {
+  const n = Number(val);
+  simState.montos[codigo] = Number.isFinite(n) && n >= 0 ? n : 0;
+  simState.dirty = true;
+  _renderSimKpisAndDonut();
+  // Actualizar también el % de la fila editada.
+  const ing = simState.seed?.ingresos_presupuestados || 0;
+  const pctEl = document.querySelector(`#sim-pct-${cssId(codigo)}`);
+  if (pctEl) pctEl.textContent = ing > 0 ? (simState.montos[codigo] / ing * 100).toFixed(1) + '%' : '—';
+  const statusEl = $('sim-save-status');
+  if (statusEl) statusEl.textContent = 'Cambios sin guardar';
+}
+
+function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+function _renderSimAll() {
+  _renderSimKpisAndDonut();
+  _renderSimTabla();
+}
+
+function _renderSimKpisAndDonut() {
+  if (!simState.seed) return;
+  const ing = simState.seed.ingresos_presupuestados || 0;
+  const gas = Object.values(simState.montos).reduce((s, v) => s + (+v || 0), 0);
+  const neto = ing - gas;
+  const ratio = ing > 0 ? gas / ing : 0;
+  const fmt = (v) => new Intl.NumberFormat('es-ES', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(Math.round(v));
+  $('sim-kpi-ing').textContent = fmt(ing);
+  $('sim-kpi-gas').textContent = fmt(gas);
+  const netoEl = $('sim-kpi-neto');
+  netoEl.textContent = (neto >= 0 ? '+' : '') + fmt(neto);
+  netoEl.style.color = neto >= 0 ? '#16a34a' : '#dc2626';
+  $('sim-kpi-neto-pct').textContent = ing > 0 ? `${(neto / ing * 100).toFixed(1)}% sobre ingresos` : '—';
+  const ratioEl = $('sim-kpi-ratio');
+  ratioEl.textContent = (ratio * 100).toFixed(1) + '%';
+  ratioEl.style.color = ratio <= 1 ? '#16a34a' : '#dc2626';
+
+  // Donut: ordenar cats por monto desc.
+  const items = (simState.seed.categorias || []).map((c) => ({
+    codigo: c.codigo, nombre: c.nombre_display, monto: simState.montos[c.codigo] || 0,
+  })).filter((c) => c.monto > 0).sort((a, b) => b.monto - a.monto);
+  const labels = items.map((c) => c.nombre.toUpperCase());
+  const values = items.map((c) => c.monto);
+  const colors = items.map((_, i) => SIM_CAT_COLORS[i % SIM_CAT_COLORS.length]);
+  const cv = $('sim-donut');
+  if (cv && window.Chart) {
+    if (!simState.donut) {
+      simState.donut = new Chart(cv, {
+        type: 'doughnut',
+        data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderWidth: 2, borderColor: getComputedStyle(document.body).getPropertyValue('--bg-primary') || '#fff' }] },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: (ctx) => ` ${ctx.label}: ${fmt(ctx.raw)} (${gas > 0 ? (ctx.raw / gas * 100).toFixed(1) : '0'}%)` } },
+          },
+        },
+      });
+    }
+    simState.donut.data.labels = labels;
+    simState.donut.data.datasets[0].data = values;
+    simState.donut.data.datasets[0].backgroundColor = colors;
+    simState.donut.update();
+  }
+}
+
+function _renderSimTabla() {
+  const tb = $('sim-tbody');
+  if (!tb) return;
+  const cats = simState.seed?.categorias || [];
+  $('sim-cat-counter').textContent = `${cats.length} categorías`;
+  if (!cats.length) {
+    tb.innerHTML = '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text-2)">Sin datos del período anterior para hacer seed.</td></tr>';
+    return;
+  }
+  const ing = simState.seed.ingresos_presupuestados || 0;
+  const fmt = (v) => new Intl.NumberFormat('es-ES', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(Math.round(v));
+  // Orden por monto vivo desc.
+  const sorted = [...cats].sort((a, b) => (simState.montos[b.codigo] || 0) - (simState.montos[a.codigo] || 0));
+  tb.innerHTML = sorted.map((c) => {
+    const monto = simState.montos[c.codigo] || 0;
+    const pct = ing > 0 ? (monto / ing * 100).toFixed(1) : '—';
+    const lock = simLockIcon(c.codigo);
+    const tipoSens = esCatSensibleSim(c.codigo);
+    const labelHtml = `${c.nombre_display}${lock ? `<span title="${tipoSens ? (esAdminLikeSim() ? 'Categoría sensible — visible para tu rol' : 'Categoría sensible — detalle restringido') : ''}" style="margin-left:4px;opacity:.85;font-size:0.9em">${lock.trim()}</span>` : ''}`;
+    return `<tr style="border-bottom:.5px solid var(--border-3)">
+      <td style="padding:5px 8px;font-weight:500">${labelHtml}</td>
+      <td style="padding:5px 8px;text-align:right;color:var(--text-2)">${fmt(c.monto_anterior)}</td>
+      <td style="padding:5px 8px;text-align:right;color:var(--text-2)" id="sim-pct-${cssId(c.codigo)}">${pct}%</td>
+      <td style="padding:5px 8px;text-align:right">
+        <input type="number" min="0" step="100" value="${Math.round(monto)}"
+          onchange="onSimCatEdit('${c.codigo.replace(/'/g,"\\'")}',this.value)"
+          style="width:90px;padding:3px 6px;border:.5px solid var(--border-2);border-radius:4px;background:var(--bg-secondary);color:var(--text);font-size:11px;text-align:right">
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function saveSimuladorPresupuesto() {
+  if (!simState.seed) return;
+  const btn = $('sim-presup-btn-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+  try {
+    const categorias = Object.entries(simState.montos).map(([categoria, monto]) => ({ categoria, monto }));
+    const r = await Api.simPresupSave({ anio: simState.anio, mes: simState.mes, scope: simState.scope, categorias });
+    simState.dirty = false;
+    const statusEl = $('sim-save-status');
+    if (statusEl) statusEl.textContent = `✓ Guardado (${r.saved} cats) · ${_simMesLabel(simState.anio, simState.mes)} / ${simState.scope}`;
+  } catch (e) {
+    Api.pill ? Api.pill('Error: ' + e.message, true) : alert('Error: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
+  }
+}
+
+async function restaurarSimuladorPresupuesto() {
+  if (!confirm('Borrar el presupuesto guardado de este mes/scope y volver al seed histórico?')) return;
+  try {
+    await Api.simPresupReset({ anio: simState.anio, mes: simState.mes, scope: simState.scope });
+    await loadSimuladorPresupuesto();
+    const statusEl = $('sim-save-status');
+    if (statusEl) statusEl.textContent = '✓ Restaurado al seed histórico';
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+// Hook: cuando el user cambia de mes en el tab Presupuesto (selector de
+// arriba), refrescar el simulador también.
+const _origOnPresMonthChange = typeof onPresMonthChange === 'function' ? onPresMonthChange : null;
+if (_origOnPresMonthChange) {
+  window.onPresMonthChange = function () {
+    _origOnPresMonthChange.apply(this, arguments);
+    if (simState.seed) loadSimuladorPresupuesto();
+  };
+}
+
+// Hook: cuando se muestra el tab Presupuesto, cargar el simulador
+// (si aún no está cargado). El tab usa data-tab="presupuesto"; el
+// listener corre desde showTab.
+const _origShowTab = typeof showTab === 'function' ? showTab : null;
+if (_origShowTab) {
+  window.showTab = function (name, btn) {
+    _origShowTab.call(this, name, btn);
+    if (name === 'presupuesto' && !simState.seed) loadSimuladorPresupuesto();
+  };
+}
 
 // ─── Go ────────────────────────────────────────────────────────────────
 boot();

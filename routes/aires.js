@@ -544,4 +544,209 @@ router.get('/bootstrap', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════
+// Simulador de presupuesto de COSTOS por categoría
+// (panel al final del tab Presupuesto)
+//
+// Concepto:
+//   · Ingresos = SUM(fac_presupuestada) del mes+scope de ab_presupuesto.
+//     Fijo, no editable acá (viene del Presupuesto que ya está arriba).
+//   · Seed por categoría = ratio_histórico × ingresos_actuales, donde
+//     ratio_histórico = gasto_cat_mes_anterior / ingresos_mes_anterior.
+//     Si ratio total > 100% el neto arranca negativo — el usuario recorta.
+//   · Persiste por (anio, mes, scope, categoria) en
+//     ab_presupuesto_costos_categoria.
+// ════════════════════════════════════════════════════════════════════
+
+const VALID_SCOPES = new Set(['sin_elche', 'solo_elche', 'todas']);
+
+// Cláusula JOIN ab_locales para filtrar por scope.
+function scopeFilterPresupuesto(scope) {
+  if (scope === 'sin_elche')  return 'l.dani_only = FALSE';
+  if (scope === 'solo_elche') return 'l.dani_only = TRUE';
+  return 'TRUE';
+}
+// Cláusula para ab_movimientos.sociedad_id según scope.
+// Elche es 'hostelero' (Grupo Hostelero Aires SL).
+function scopeFilterBanco(scope) {
+  if (scope === 'sin_elche')  return `sociedad_id <> 'hostelero'`;
+  if (scope === 'solo_elche') return `sociedad_id = 'hostelero'`;
+  return 'TRUE';
+}
+
+function periodoAnterior(anio, mes) {
+  if (mes <= 1) return { anio: anio - 1, mes: 12 };
+  return { anio, mes: mes - 1 };
+}
+function mesStart(anio, mes) {
+  return `${anio}-${String(mes).padStart(2, '0')}-01`;
+}
+function mesNextStart(anio, mes) {
+  const next = periodoAnterior(anio, mes + 1); // reuso para evitar wrap manual
+  // mes anterior de (anio, mes+1) = (anio, mes) cuando mes < 12; (anio+1, 1) si mes=13
+  if (mes >= 12) return `${anio + 1}-01-01`;
+  return `${anio}-${String(mes + 1).padStart(2, '0')}-01`;
+}
+
+async function ingresosPresupuestadosScope(anio, mes, scope) {
+  const r = await one(
+    `SELECT COALESCE(SUM(p.fac_presupuestada), 0)::float8 AS total
+       FROM ab_presupuesto p
+       JOIN ab_locales l ON l.id = p.local_id
+      WHERE p.anio = $1 AND p.mes = $2
+        AND ${scopeFilterPresupuesto(scope)}`,
+    [anio, mes]
+  );
+  return r.total || 0;
+}
+
+async function gastosPorCategoriaMes(anio, mes, scope) {
+  const r = await many(
+    `SELECT categoria, COALESCE(SUM(ABS(importe)), 0)::float8 AS total
+       FROM ab_movimientos
+      WHERE importe < 0
+        AND fecha >= $1::date AND fecha < $2::date
+        AND COALESCE(categoria, '') NOT IN ('INTRAGRUPO', '')
+        AND ${scopeFilterBanco(scope)}
+      GROUP BY categoria
+      ORDER BY total DESC`,
+    [mesStart(anio, mes), mesNextStart(anio, mes)]
+  );
+  return r;
+}
+
+// GET /presupuesto-costos/seed?anio=&mes=&scope=
+router.get('/presupuesto-costos/seed', async (req, res) => {
+  try {
+    const anio = parseInt(req.query.anio, 10);
+    const mes = parseInt(req.query.mes, 10);
+    const scope = String(req.query.scope || 'sin_elche');
+    if (!anio || !mes || !VALID_SCOPES.has(scope)) {
+      return res.status(400).json({ error: 'anio, mes y scope válido requeridos' });
+    }
+    const prev = periodoAnterior(anio, mes);
+    const [ingresosActuales, ingresosAnteriores, gastosAnt] = await Promise.all([
+      ingresosPresupuestadosScope(anio, mes, scope),
+      ingresosPresupuestadosScope(prev.anio, prev.mes, scope),
+      gastosPorCategoriaMes(prev.anio, prev.mes, scope),
+    ]);
+    // Catálogo de cats para nombre_display.
+    let catDisplay = new Map();
+    try {
+      const cats = await many(`SELECT codigo, nombre_display FROM ab_categorias`);
+      catDisplay = new Map(cats.map((c) => [c.codigo, c.nombre_display]));
+    } catch {}
+
+    const totalGastosAnt = gastosAnt.reduce((s, x) => s + x.total, 0);
+    const baseRatio = ingresosAnteriores > 0 ? ingresosAnteriores : totalGastosAnt;
+
+    const categorias = gastosAnt.map((g) => {
+      const ratio = baseRatio > 0 ? g.total / baseRatio : 0;
+      const monto_seed = Math.round(ratio * ingresosActuales * 100) / 100;
+      return {
+        codigo: g.categoria,
+        nombre_display: catDisplay.get(g.categoria) || g.categoria,
+        ratio_historico: ratio,
+        monto_anterior: Math.round(g.total * 100) / 100,
+        monto_seed,
+      };
+    });
+    const totalSeed = categorias.reduce((s, c) => s + c.monto_seed, 0);
+
+    res.json({
+      anio, mes, scope,
+      periodo_anterior: prev,
+      ingresos_presupuestados: Math.round(ingresosActuales * 100) / 100,
+      ingresos_anteriores: Math.round(ingresosAnteriores * 100) / 100,
+      total_gastos_seed: Math.round(totalSeed * 100) / 100,
+      neto_seed: Math.round((ingresosActuales - totalSeed) * 100) / 100,
+      base_ratio: baseRatio > 0 ? (ingresosAnteriores > 0 ? 'ingresos_anteriores' : 'gastos_totales_anteriores') : null,
+      categorias,
+    });
+  } catch (e) {
+    console.error('[aires.presupuesto-costos.seed]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// GET /presupuesto-costos?anio=&mes=&scope=
+// Devuelve lo guardado por el user para ese mes+scope. Si no hay nada
+// guardado, devuelve categorias=[] (el frontend usa el seed entonces).
+router.get('/presupuesto-costos', async (req, res) => {
+  try {
+    const anio = parseInt(req.query.anio, 10);
+    const mes = parseInt(req.query.mes, 10);
+    const scope = String(req.query.scope || 'sin_elche');
+    if (!anio || !mes || !VALID_SCOPES.has(scope)) {
+      return res.status(400).json({ error: 'anio, mes y scope válido requeridos' });
+    }
+    const rows = await many(
+      `SELECT categoria, monto::float8 AS monto, updated_at
+         FROM ab_presupuesto_costos_categoria
+        WHERE anio = $1 AND mes = $2 AND scope = $3
+        ORDER BY monto DESC`,
+      [anio, mes, scope]
+    );
+    res.json({ anio, mes, scope, categorias: rows, n: rows.length });
+  } catch (e) {
+    console.error('[aires.presupuesto-costos.get]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// PUT /presupuesto-costos — bulk upsert. Body:
+// { anio, mes, scope, categorias: [{categoria, monto}, ...] }
+router.put('/presupuesto-costos', express.json({ limit: '256kb' }), async (req, res) => {
+  try {
+    const { anio, mes, scope, categorias } = req.body || {};
+    if (!Number.isInteger(anio) || !Number.isInteger(mes) || !VALID_SCOPES.has(scope)) {
+      return res.status(400).json({ error: 'anio, mes y scope válido requeridos' });
+    }
+    if (!Array.isArray(categorias)) {
+      return res.status(400).json({ error: 'categorias[] requerido' });
+    }
+    let saved = 0;
+    for (const c of categorias) {
+      const cat = String(c?.categoria || '').trim();
+      const monto = Number(c?.monto);
+      if (!cat || !Number.isFinite(monto)) continue;
+      await query(
+        `INSERT INTO ab_presupuesto_costos_categoria (anio, mes, scope, categoria, monto, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (user_id, anio, mes, scope, categoria) DO UPDATE
+           SET monto = EXCLUDED.monto, updated_at = NOW()`,
+        [anio, mes, scope, cat, monto]
+      );
+      saved++;
+    }
+    res.json({ ok: true, saved });
+  } catch (e) {
+    console.error('[aires.presupuesto-costos.put]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// DELETE /presupuesto-costos?anio=&mes=&scope= — restaura al seed
+// (borra todas las filas guardadas para ese mes+scope; el frontend
+// luego vuelve a usar el seed devuelto por /seed).
+router.delete('/presupuesto-costos', async (req, res) => {
+  try {
+    const anio = parseInt(req.query.anio, 10);
+    const mes = parseInt(req.query.mes, 10);
+    const scope = String(req.query.scope || 'sin_elche');
+    if (!anio || !mes || !VALID_SCOPES.has(scope)) {
+      return res.status(400).json({ error: 'anio, mes y scope válido requeridos' });
+    }
+    const r = await query(
+      `DELETE FROM ab_presupuesto_costos_categoria
+        WHERE anio = $1 AND mes = $2 AND scope = $3`,
+      [anio, mes, scope]
+    );
+    res.json({ ok: true, deleted: r.rowCount });
+  } catch (e) {
+    console.error('[aires.presupuesto-costos.delete]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 module.exports = router;
