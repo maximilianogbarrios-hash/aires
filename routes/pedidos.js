@@ -14,9 +14,15 @@ const { requireAuth, requirePerm } = require('../lib/auth');
 const { weeksInMonth, mondayOfIsoWeek, isoStr, addDays } = require('../lib/iso-weeks');
 const { normalizarProveedor, esIntraGrupo } = require('../lib/bank/normalizers');
 const { sociedadDeLocal } = require('../lib/bank/sociedades');
+const { jsonSanitizerMiddleware } = require('../lib/access/sanitize');
 
 const router = express.Router();
 router.use(requireAuth);
+// Sanitizer transversal: el endpoint /comparativa-bancos cruza con
+// ab_movimientos y devuelve concepto crudo de transferencias bancarias,
+// donde aparecen los pagos a Raba Buildings sin enmascarar. Defense in
+// depth — la lógica de rol vive en lib/access/sanitize.js.
+router.use(jsonSanitizerMiddleware);
 
 // Categorías canónicas de Materia Prima (UI/mix). El usuario las puede usar
 // libremente como tag; aquí sólo se valida que pertenezca al set.

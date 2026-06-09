@@ -1483,12 +1483,24 @@ router.get('/proveedores-lista', async (req, res) => {
 });
 
 // Lista de períodos con datos (para selectores).
+// Lista de meses (YYYY-MM) que tienen al menos un movimiento, uniendo
+// las 3 fuentes: ab_movimientos (banco), ab_cierres_tpv (cruces TPV)
+// y ab_caja_movimientos (efectivo). Así, al cargar un CSV de cajas
+// nuevo o un extracto bancario nuevo, el mes recién aparecido sale
+// automáticamente en el selector global de Período. Sólo meses CON
+// datos — no se inventan meses vacíos ni futuros.
+//
+// ab_caja_movimientos usa `fecha` (date), no tiene columna `periodo`
+// pre-computada como ab_movimientos. La extraemos con TO_CHAR para
+// que el shape ('YYYY-MM') sea idéntico al resto.
 router.get('/periodos', async (req, res) => {
   try {
     const rows = await many(
-      `SELECT DISTINCT periodo FROM ab_movimientos
+      `SELECT DISTINCT periodo FROM ab_movimientos WHERE periodo IS NOT NULL
        UNION
-       SELECT DISTINCT periodo FROM ab_cierres_tpv
+       SELECT DISTINCT periodo FROM ab_cierres_tpv  WHERE periodo IS NOT NULL
+       UNION
+       SELECT DISTINCT TO_CHAR(fecha, 'YYYY-MM') AS periodo FROM ab_caja_movimientos WHERE fecha IS NOT NULL
        ORDER BY periodo`
     );
     res.json({ periodos: rows.map((r) => r.periodo) });
