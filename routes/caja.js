@@ -34,6 +34,9 @@ const { esIntraGrupo, normalizarProveedor } = require('../lib/bank/normalizers')
 const { loadReglas, matchRegla } = require('../lib/bank/db-rules');
 const bankDb = require('../lib/bank/db');
 const { query } = require('../lib/db');
+const multer = require('multer');
+const path = require('path');
+const { importCajaCsvText, xlsxBufferToCsvText } = require('../lib/caja/importer');
 const { jsonSanitizerMiddleware, markEndpoint } = require('../lib/access/sanitize');
 const tagAggregate = markEndpoint('aggregate');
 const tagDetail    = markEndpoint('detail');
@@ -1721,6 +1724,59 @@ router.post('/mover-proveedor', soloAdmin, express.json(), async (req, res) => {
 // el simulador de presupuesto (mismo pipeline combinado banco+efectivo
 // con anti-doble-conteo). Reusar evita reescribir la lógica de filtros
 // de sociedad/período/INTRAGRUPO/traspasos internos y mapeo de subtipos.
+// ─── Upload archivo de cajas (Control de Cajas) ──────────────────────────
+//
+// Recibe un .csv / .xls / .xlsx y reutiliza el importer idempotente de
+// `lib/caja/importer.js`. NO duplica lógica de parseo / upsert.
+//
+// Flujo:
+//   1. multer en memoria (límite 20 MB; no se escribe a disco).
+//   2. Si la extensión es .xls/.xlsx, convertir buffer → CSV con xlsxBufferToCsvText.
+//   3. Pasar a importCajaCsvText(rawText, { fuente, queryFn }).
+//   4. Devolver el reporte JSON tal cual.
+//
+// Idempotencia: si el archivo ya fue cargado, insertadas_nuevas=0 y
+// ya_presentes_sin_cambios=N. Subir dos veces el mismo no cambia nada.
+
+const uploadCaja = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+});
+
+router.post('/upload', soloAdmin, uploadCaja.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'falta el campo "file" (multipart)' });
+    const original = req.file.originalname || 'archivo';
+    const ext = path.extname(original).toLowerCase();
+
+    let rawText;
+    try {
+      if (ext === '.xls' || ext === '.xlsx') {
+        rawText = xlsxBufferToCsvText(req.file.buffer);
+      } else if (ext === '.csv' || ext === '.txt' || ext === '') {
+        rawText = req.file.buffer.toString('utf8');
+      } else {
+        return res.status(400).json({
+          error: `extensión "${ext}" no soportada. Aceptado: .csv, .xls, .xlsx`,
+        });
+      }
+    } catch (e) {
+      return res.status(400).json({ error: 'No se pudo leer el archivo: ' + e.message });
+    }
+
+    const report = await importCajaCsvText(rawText, {
+      fuente: original,
+      queryFn: (sql, vals) => query(sql, vals),
+      logger: (m) => console.log('[caja.upload] ' + m),
+    });
+
+    res.json(report);
+  } catch (e) {
+    console.error('[caja.upload]', e);
+    res.status(500).json({ error: e.message || 'internal' });
+  }
+});
+
 module.exports = router;
 module.exports.agregarPorCategoria = agregarPorCategoria;
 module.exports.loadCatDisplay      = loadCatDisplay;

@@ -4053,3 +4053,76 @@ ABAJO devolvían diferentes números en rango (cuadraban con mes único).
   · Access control intacto (sigue sin tocar sanitize.js).
   · Los nuevos KPIs `traspasos_internos_banco/caja` se exponen
     informativos; el frontend puede ignorarlos si no los usa.
+
+
+────────────────────────────────────────────────────────────────────────
+2026-06-09 — Upload archivo de cajas desde UI (.csv / .xls / .xlsx)
+────────────────────────────────────────────────────────────────────────
+
+Hasta hoy, el importador de "Control de Cajas" solo se podía disparar
+del lado del servidor con scripts/import-caja.js. Ahora hay un
+uploader propio en el tab Efectivo, separado del de Bancos, que
+reutiliza el MISMO motor idempotente.
+
+### Refactor — lib/caja/importer.js (NUEVO)
+
+  Extrae del CLI las funciones reutilizables:
+    · parseCsvLine, parseFechaCarga
+    · parseResumen: con TOLERANCIA DE FORMATO. Si el bloque
+      "## RESUMEN POR CAJA" trae cabecera con nombres
+      (sucursal/saldo_actual/…), parsea POR NOMBRE; sino fallback a
+      posiciones legacy. Columnas extra (ej. n_prorrateos_incluidos)
+      se ignoran sin romper.
+    · xlsxBufferToCsvText: convierte .xls/.xlsx → CSV con separador
+      ';' usando la librería xlsx (ya dependencia del proyecto).
+    · importCajaCsvText(rawText, opts): orquesta TODO. UPSERT por id
+      externo idempotente, devuelve un reporte JSON con desglose
+      completo (filas procesadas, insertadas/actualizadas/sin cambios,
+      rango fechas, conteo DB antes/después, cajas desconocidas en
+      ab_caja_mapeo_sociedades, por sucursal).
+
+  scripts/import-caja.js se reduce a CLI wrapper que invoca el módulo.
+  Conducta CLI 100% preservada.
+
+### Backend — endpoint POST /api/v1/caja/upload
+
+  · multer.memoryStorage(), límite 20 MB (no escribe a disco).
+  · soloAdmin (esAdminLike = admin/socio = Maxi + Dani).
+  · Detecta extensión: .xls/.xlsx → xlsxBufferToCsvText; .csv/.txt →
+    decode utf8.
+  · Llama a importCajaCsvText(rawText, { fuente, queryFn }).
+  · Devuelve el reporte completo. Acepta solapamiento (UPSERT
+    deduplica por id), errores de formato → 400 con mensaje.
+
+### Frontend — zona de subida en el tab Efectivo
+
+  · Card colapsable con border dashed (estética distinta al uploader
+    de banco para evitar confusión).
+  · Drag&drop o click → file input. Acepta .csv/.xls/.xlsx.
+  · Tras subir: muestra reporte (nuevas / actualizadas / sin cambios,
+    rango antes-después) con tilde verde, alertas si hay cajas sin
+    mapeo. Sin recargar la página.
+  · Refresca KPIs del tab Efectivo + Flujo Total + donut combinado
+    automáticamente.
+  · Visible SOLO si rolEsAdmin() (server también enforcea con 403).
+
+### Validación 7/7 PASS
+
+  TEST 1 — 403 para no-admin: gerente, administrativo, personal ✓
+  TEST 2 — Upload CSV nuevo (10 ids): 10 nuevas, DB 10.986 → 10.996 ✓
+  TEST 3 — Idempotencia: subir el mismo CSV → 0 nuevas, 10 sin
+           cambios, Δ DB = 0 ✓
+  TEST 4 — Solapamiento (5 viejos + 5 nuevos): 5 nuevas, 5 sin
+           cambios ✓
+  TEST 5 — XLSX equivalente al CSV: mismo resultado, idempotente ✓
+  TEST 6 — Reconciliación por caja sigue cuadrando ✓
+  TEST 7 — Archivo sin cabecera id;fecha;hora → 500 con mensaje
+           "Cabecera de movimientos no encontrada" ✓
+
+### No tocado
+
+  · scripts/import-caja.js sigue funcionando como CLI (refactor
+    invisible para el script consumer).
+  · ab_caja_mapeo_subtipos / ab_caja_mapeo_sociedades intactos.
+  · Donut combinado, panel reconciliación, simulador presupuesto.
+  · Uploader Banco/Getnet (otro flujo, otro endpoint).

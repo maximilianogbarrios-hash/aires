@@ -397,6 +397,26 @@
 
 <!-- EFECTIVO — caja histórica (admin/socio/gerente) -->
 <div id="sect-efectivo" class="sect">
+  <!-- ─── Subir archivo de cajas (Control de Cajas) — admin/socio ─── -->
+  <div id="caja-upload-section" class="card" style="margin-bottom:1rem;display:none;border-style:dashed;border-color:var(--border-2)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:.5rem">
+      <p style="font-size:13px;font-weight:500;margin:0">Subir archivo de cajas — Control de Cajas</p>
+      <span style="font-size:10px;color:var(--text-2);background:var(--bg-secondary);padding:2px 6px;border-radius:8px">.csv · .xls · .xlsx</span>
+    </div>
+    <p style="font-size:11px;color:var(--text-2);margin-bottom:.75rem">Importa idempotentemente al motor existente (UPSERT por id externo). Subir el mismo archivo dos veces no cambia nada. Separado del uploader de banco.</p>
+    <div id="caja-up-dropzone"
+         ondragover="event.preventDefault();this.style.background='rgba(24,95,165,.08)'"
+         ondragleave="this.style.background='transparent'"
+         ondrop="cajaUploadDrop(event)"
+         onclick="document.getElementById('caja-up-input').click()"
+         style="border:1.5px dashed var(--border-2);border-radius:8px;padding:24px 18px;text-align:center;cursor:pointer;background:transparent;transition:.15s">
+      <p style="font-size:13px;font-weight:500;margin:0 0 .25rem">📁 Arrastrá el archivo aquí</p>
+      <p style="font-size:11px;color:var(--text-2);margin:0">o hacé click para elegir (.csv / .xls / .xlsx)</p>
+    </div>
+    <input type="file" id="caja-up-input" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange="cajaUploadChosen(event)" style="display:none">
+    <div id="caja-up-status" style="margin-top:.75rem"></div>
+  </div>
+
   <!-- KPIs -->
   <div class="g4" style="margin-bottom:.5rem">
     <div class="surf"><p style="font-size:11px;color:var(--text-2)">Total Ingresos<br><span style="font-size:10px;opacity:.7">(efectivo)</span></p><p style="font-size:19px;font-weight:500;color:#16a34a" id="caja-kpi-ingresos">—</p></div>

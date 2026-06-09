@@ -1199,6 +1199,7 @@ function showTab(name, btn) {
   if (name === 'efectivo') {
     initCajaFiltros();
     if (!state.caja?.loaded) loadCaja();
+    _cajaUpToggleSection();
   }
   if (name === 'flujototal') {
     initFlujoTotalFiltros();
@@ -4527,6 +4528,78 @@ async function confirmMoverProveedor() {
   }
 }
 
+// ─── Upload de archivo de cajas (Control de Cajas) — admin/socio ──────
+// Reusa el importer idempotente del backend. Acepta CSV y XLS/XLSX.
+// Muestra reporte (nuevas/duplicadas/actualizadas) sin recargar la página
+// y refresca KPIs/reconciliación al terminar.
+function _cajaUpToggleSection() {
+  const sec = document.getElementById('caja-upload-section');
+  if (!sec) return;
+  sec.style.display = rolEsAdmin() ? '' : 'none';
+}
+
+function cajaUploadDrop(e) {
+  e.preventDefault();
+  const dz = document.getElementById('caja-up-dropzone');
+  if (dz) dz.style.background = 'transparent';
+  const f = e.dataTransfer?.files?.[0];
+  if (f) uploadCajaFile(f);
+}
+
+function cajaUploadChosen(e) {
+  const f = e.target.files?.[0];
+  if (f) uploadCajaFile(f);
+  e.target.value = ''; // reset
+}
+
+async function uploadCajaFile(file) {
+  const status = document.getElementById('caja-up-status');
+  if (!status) return;
+  const ext = (file.name || '').toLowerCase().split('.').pop();
+  if (!['csv', 'xls', 'xlsx', 'txt'].includes(ext)) {
+    status.innerHTML = `<p style="color:#dc2626;font-size:11px">Extensión .${escapeHtml(ext)} no aceptada. Use .csv / .xls / .xlsx.</p>`;
+    return;
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    status.innerHTML = `<p style="color:#dc2626;font-size:11px">Archivo > 20 MB.</p>`;
+    return;
+  }
+  status.innerHTML = `<p style="font-size:11px;color:var(--text-2)">📤 Subiendo "${escapeHtml(file.name)}" (${(file.size/1024).toFixed(1)} KB)…</p>`;
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/v1/caja/upload', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok || !j.ok) {
+      status.innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${escapeHtml(j.error || 'unknown')}</p>`;
+      return;
+    }
+    const sucsDesc = j.cajas.desconocidas_en_mapeo;
+    const cajasWarn = sucsDesc.length
+      ? `<p style="font-size:10px;color:#b45309;margin-top:.4rem">⚠ ${sucsDesc.length} cajas sin mapeo en ab_caja_mapeo_sociedades: ${sucsDesc.map(escapeHtml).join(', ')}. Asignalas en el editor (Flujo Total → Mapeo cajas → sociedad SL).</p>`
+      : '';
+    status.innerHTML = `
+      <div style="border:.5px solid #16a34a;background:rgba(22,163,74,.06);border-radius:6px;padding:10px 12px">
+        <p style="font-size:12px;font-weight:500;color:#16a34a;margin:0 0 .5rem">✓ Importado "${escapeHtml(j.fuente)}"</p>
+        <ul style="margin:0;padding-left:18px;font-size:11px;line-height:1.5">
+          <li>filas en archivo: <strong>${j.archivo.n_filas_procesadas}</strong> (rango ${j.archivo.rango_fechas.desde} → ${j.archivo.rango_fechas.hasta})</li>
+          <li><strong style="color:#16a34a">${j.upsert.insertadas_nuevas}</strong> insertadas nuevas · <strong>${j.upsert.actualizadas}</strong> actualizadas · ${j.upsert.ya_presentes_sin_cambios} ya presentes sin cambios</li>
+          <li>DB total: ${j.db.antes} → <strong>${j.db.despues}</strong> filas (Δ +${j.db.delta}) · rango actual ${j.db.rango_total.desde} → ${j.db.rango_total.hasta}</li>
+          <li>resumen externo: ${j.resumen_externo.n_cajas} cajas actualizadas en ab_caja_saldos_externos</li>
+        </ul>
+        ${cajasWarn}
+      </div>`;
+    // Refrescar Efectivo + reconciliación + período sin recargar.
+    try {
+      if (typeof loadCaja === 'function') await loadCaja();
+      if (typeof loadDonutCombinado === 'function') await loadDonutCombinado();
+      if (typeof loadFlujoTotal === 'function') await loadFlujoTotal();
+    } catch (e) { /* tolerante — el reporte ya se mostró */ }
+  } catch (e) {
+    status.innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${escapeHtml(e.message || e)}</p>`;
+  }
+}
+
 Object.assign(window, {
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
   // Selector global de período (Mes único / Rango)
@@ -4569,5 +4642,7 @@ Object.assign(window, {
   msSelAll, applyBulkSociedad,
   // Botón "Mover proveedor a otra categoría" en el drill-down del donut
   openMoverProveedor, previewMoverProveedor, confirmMoverProveedor,
+  // Upload de archivo de cajas en el tab Efectivo
+  cajaUploadDrop, cajaUploadChosen, uploadCajaFile,
 });
 boot();
