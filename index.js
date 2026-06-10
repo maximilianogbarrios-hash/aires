@@ -18,6 +18,7 @@ const facturacionRoutes = require('./routes/facturacion');
 const pedidosRoutes = require('./routes/pedidos');
 const mp2Routes = require('./routes/pedidos-mp2');
 const ventasRoutes = require('./routes/ventas');
+const metaRoutes = require('./routes/meta');
 
 const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -65,6 +66,7 @@ app.use('/api/v1/facturacion', facturacionRoutes);
 app.use('/api/v1/pedidos', pedidosRoutes);
 app.use('/api/v1/mp2', mp2Routes);
 app.use('/api/v1/ventas', ventasRoutes);
+app.use('/api/v1/meta', metaRoutes);
 
 // ─── Static (login y assets públicos) ─────────────────────────────────
 app.use('/login', express.static(path.join(__dirname, 'public', 'login')));
@@ -92,6 +94,10 @@ app.get('/account', requireAuth, (req, res) => {
 
 app.get('/bancos', requireAuth, requirePerm('bancos'), (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'bancos', 'index.html'));
+});
+
+app.get('/ads', requireAuth, requirePerm('meta_ads_view'), (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'ads', 'index.html'));
 });
 
 // ─── 404 ──────────────────────────────────────────────────────────────

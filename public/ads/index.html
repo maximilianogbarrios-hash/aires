@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meta Ads · Aires Solo</title>
+<link rel="stylesheet" href="/css/styles.css">
+<style>
+  .ads-hero{display:grid;grid-template-columns:auto 1fr auto;gap:1rem;align-items:center;padding:.75rem 1rem;border:.5px solid var(--border-3);border-radius:var(--r-lg);background:var(--bg-primary);margin-bottom:1rem}
+  .avatar{width:48px;height:48px;border-radius:50%;background:var(--bg-secondary);object-fit:cover}
+  .kpi-mini{padding:.6rem .8rem;background:var(--bg-secondary);border-radius:var(--r-md);min-width:120px}
+  .kpi-mini .lbl{font-size:10px;color:var(--text-2);text-transform:uppercase;letter-spacing:1px;margin-bottom:2px}
+  .kpi-mini .val{font-size:18px;font-weight:600}
+  .grid-media{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+  .media-card{background:var(--bg-secondary);border-radius:var(--r-md);overflow:hidden;border:.5px solid var(--border-3);display:flex;flex-direction:column}
+  .media-thumb{width:100%;aspect-ratio:1/1;object-fit:cover;background:var(--bg);display:block}
+  .media-body{padding:8px 10px;font-size:11px}
+  .media-metrics{display:flex;gap:8px;flex-wrap:wrap;color:var(--text-2);font-size:10px;margin-top:4px}
+  .badge-warn{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:rgba(217,119,6,.15);color:#d97706;font-weight:500}
+  .badge-ok{background:rgba(99,153,34,.15);color:#16a34a}
+  .badge-err{background:rgba(220,38,38,.15);color:#dc2626}
+  .config-empty{padding:2rem 1.5rem;text-align:center;border:.5px dashed var(--border-2);border-radius:var(--r-lg);background:var(--bg-secondary)}
+  .config-empty h2{font-size:18px;font-weight:500;margin:1rem 0 .5rem}
+  .config-empty .env-list{display:inline-block;text-align:left;margin:1rem 0;font-family:monospace;font-size:12px;color:var(--text-2)}
+  .config-empty .env-list li{margin:2px 0}
+  .settings-card details>summary{cursor:pointer;padding:6px 0;font-size:13px;font-weight:500;list-style:none}
+  .settings-card details>summary::before{content:'▸ ';color:var(--text-2)}
+  .settings-card details[open]>summary::before{content:'▾ '}
+  .tok-form{display:grid;gap:8px;margin-top:.75rem}
+  .tok-form textarea{width:100%;min-height:80px;padding:8px;border:.5px solid var(--border-2);border-radius:var(--r-md);background:var(--bg-secondary);color:var(--text);font-family:monospace;font-size:11px;resize:vertical}
+  .tok-form button{padding:6px 14px;font-size:12px;border-radius:var(--r-md);cursor:pointer}
+  .btn-primary{background:#185FA5;color:#fff;border:none}
+  .btn-secondary{background:transparent;color:var(--text);border:.5px solid var(--border-2)}
+  .btn-danger{background:transparent;color:#dc2626;border:.5px solid #dc2626}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div>
+    <p style="font-size:10px;text-transform:uppercase;letter-spacing:1.6px;color:var(--text-2)">AIRES BURGER</p>
+    <h1 style="font-size:18px;font-weight:500">Meta Ads · Instagram</h1>
+  </div>
+  <div class="meta"><span id="tb-user">—</span></div>
+  <div class="actions">
+    <a href="/dashboard">← Volver</a>
+    <button onclick="refresh()" id="btn-refresh">↻ Refrescar</button>
+  </div>
+</div>
+
+<!-- AVISO de configuración (visible si faltan env vars) -->
+<div id="config-warning" class="config-empty" style="display:none">
+  <p style="font-size:42px;margin-bottom:.5rem">🔧</p>
+  <h2>Configurá las credenciales de Meta en Railway</h2>
+  <p style="font-size:12px;color:var(--text-2);max-width:500px;margin:0 auto">
+    Para que el panel se conecte a las cuentas de Aires Burger, seteá las siguientes
+    variables de entorno y redeployá. <strong>Sin estas variables el panel NO se conecta a ninguna cuenta</strong>
+    — diseñado así a propósito para evitar tocar cuentas de otros proyectos por accidente.
+  </p>
+  <ul class="env-list" id="env-missing-list"></ul>
+  <p style="font-size:11px;color:var(--text-2);margin-top:1rem">
+    Una vez configuradas, hacé reload de esta página.
+  </p>
+</div>
+
+<!-- DASHBOARD (visible cuando hay config y token) -->
+<div id="dashboard-wrap" style="display:none">
+  <!-- Hero: perfil + KPIs -->
+  <div class="ads-hero">
+    <img id="ig-avatar" class="avatar" alt="">
+    <div>
+      <p style="font-size:11px;color:var(--text-2)">Instagram Business</p>
+      <p id="ig-name" style="font-size:16px;font-weight:600">—</p>
+      <p id="ig-username" style="font-size:12px;color:var(--text-2)">—</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <div class="kpi-mini"><p class="lbl">Followers</p><p class="val" id="kpi-followers">—</p></div>
+      <div class="kpi-mini"><p class="lbl">Media count</p><p class="val" id="kpi-media">—</p></div>
+      <div class="kpi-mini"><p class="lbl">Views (28d)</p><p class="val" id="kpi-views">—</p></div>
+      <div class="kpi-mini"><p class="lbl">Reach (28d)</p><p class="val" id="kpi-reach">—</p></div>
+    </div>
+  </div>
+
+  <p id="ig-warning" style="display:none;font-size:11px;margin-bottom:1rem">
+    <span class="badge-warn" id="ig-warning-text"></span>
+  </p>
+
+  <!-- Tabs Posts / Reels -->
+  <div style="display:flex;gap:6px;margin-bottom:.5rem;border-bottom:.5px solid var(--border-3)">
+    <button class="tab on" id="tab-reels" onclick="setMediaTab('reels')">Reels</button>
+    <button class="tab" id="tab-posts" onclick="setMediaTab('posts')">Posts</button>
+    <span style="margin-left:auto;font-size:10px;color:var(--text-2);align-self:center">ordenados por reach desc</span>
+  </div>
+  <div class="card" style="margin-bottom:1rem">
+    <div class="grid-media" id="media-grid">
+      <p style="grid-column:1/-1;text-align:center;color:var(--text-2);padding:2rem">—</p>
+    </div>
+  </div>
+
+  <!-- Cache info -->
+  <p id="cache-info" style="font-size:10px;color:var(--text-2);text-align:right;margin-bottom:1rem">—</p>
+</div>
+
+<!-- SETTINGS (token management) — siempre visible -->
+<div class="card settings-card" id="settings-card">
+  <details id="settings-details">
+    <summary>⚙️ Settings — Token & estado del módulo</summary>
+    <div style="margin-top:.75rem">
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Estado del token de Instagram (Page Token):</p>
+      <div id="health-status" style="margin-bottom:1rem">—</div>
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Cargar / reemplazar token:</p>
+      <div class="tok-form">
+        <textarea id="tok-input" placeholder="Pegá acá el Page Access Token (no compartas con nadie). Permisos requeridos: instagram_basic, instagram_manage_insights, pages_read_engagement, pages_show_list."></textarea>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn-secondary" onclick="probeTok()">Probar</button>
+          <button class="btn-primary" onclick="saveTok()">Guardar</button>
+          <button class="btn-danger" onclick="clearTok()" style="margin-left:auto">Borrar token guardado</button>
+        </div>
+        <p id="tok-result" style="font-size:11px;min-height:14px;color:var(--text-2)"></p>
+      </div>
+      <hr style="margin:1rem 0;border:none;border-top:.5px solid var(--border-3)">
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Variables de entorno en Railway:</p>
+      <ul id="env-status" style="font-family:monospace;font-size:11px;list-style:none;padding:0;margin:0"></ul>
+    </div>
+  </details>
+</div>
+
+<script src="/js/ads.js"></script>
+</body>
+</html>
