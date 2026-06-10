@@ -17,7 +17,35 @@ const state = {
   currentTab: 'reels',     // sub-tab dentro de IG
   mainTab: 'ig',           // tab principal (ig | ads | backup)
   tokKind: 'ig_access_token',
+  glossary: null,          // {ads:{}, ig:{}} cargado 1x al boot
 };
+
+// ─── Glosario / tooltips ─────────────────────────────────────────────
+// Inyecta un ⓘ junto a la métrica. Hover/tap muestra: qué es, qué valor
+// es bueno/malo, qué hacer. Componente único reutilizable.
+function infoIcon(kind, metric) {
+  if (!state.glossary) return '';
+  const def = state.glossary[kind]?.[metric];
+  if (!def) return '';
+  const tip = [
+    def.what || '',
+    def.good_bad || '',
+    def.action || '',
+  ].filter(Boolean).join('\n\n');
+  const esc = tip.replace(/"/g, '&quot;');
+  return `<span class="tip-icon" title="${esc}" aria-label="info" style="display:inline-block;margin-left:4px;font-size:10px;color:var(--text-2);cursor:help;border:.5px solid var(--border-2);border-radius:50%;width:13px;height:13px;line-height:11px;text-align:center;vertical-align:middle">i</span>`;
+}
+// HTML "Label ⓘ" para usar en headers de KPI/tabla.
+function labelWithInfo(kind, metric, fallbackLabel) {
+  const def = state.glossary?.[kind]?.[metric];
+  const lab = def?.label || fallbackLabel || metric;
+  return `${lab}${infoIcon(kind, metric)}`;
+}
+// URL de proxy para miniaturas (evita CDN bloqueado por hotlink).
+function thumbProxy(url) {
+  if (!url) return '';
+  return '/api/v1/meta/media-thumb?url=' + encodeURIComponent(url);
+}
 
 async function api(path, opts) {
   const r = await fetch(path, { credentials: 'same-origin', headers: { 'content-type': 'application/json' }, ...(opts || {}) });
@@ -32,6 +60,11 @@ async function boot() {
     const me = await api('/api/v1/auth/me');
     if (me?.user) $('tb-user').textContent = `${me.user.email} (${me.user.role})`;
   } catch {}
+  // Glosario primero — el resto del render lo usa para tooltips.
+  try {
+    const g = await api('/api/v1/meta/glossary');
+    state.glossary = { ads: g.ads, ig: g.ig };
+  } catch (e) { console.warn('glossary:', e.message); }
   await loadConfigStatus();
   await loadHealth();
 }
@@ -133,14 +166,18 @@ function renderDashboardIg(d) {
   const p = d.profile || {};
   $('ig-name').textContent = p.name || p.username || '—';
   $('ig-username').textContent = p.username ? '@' + p.username : '—';
-  if (p.profile_picture_url) $('ig-avatar').src = p.profile_picture_url;
-  $('kpi-followers').textContent = eur0(p.followers_count);
-  $('kpi-media').textContent = eur0(d.media_count);
-  $('kpi-views').textContent = eur0(d.insights_28d?.views);
-  $('kpi-reach').textContent = eur0(d.insights_28d?.reach);
-  if (d.insights_28d?.warning) {
+  if (p.profile_picture_url) $('ig-avatar').src = thumbProxy(p.profile_picture_url);
+  // KPIs con tooltip ⓘ (proxy a glosario).
+  const periodLbl = (d.period_days ? d.period_days + 'd' : '28d');
+  $('ig-kpis').innerHTML = `
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ig','followers','Seguidores')}</p><p class="val">${eur0(p.followers_count)}</p></div>
+    <div class="kpi-mini"><p class="lbl">Publicaciones</p><p class="val">${eur0(d.media_count)}</p></div>
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ig','views','Visualizaciones')} (${periodLbl})</p><p class="val">${eur0(d.insights?.views)}</p></div>
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ig','reach','Alcance')} (${periodLbl})</p><p class="val">${eur0(d.insights?.reach)}</p></div>
+  `;
+  if (d.insights?.warning) {
     $('ig-warning').style.display = '';
-    $('ig-warning-text').textContent = d.insights_28d.warning;
+    $('ig-warning-text').textContent = d.insights.warning;
   } else $('ig-warning').style.display = 'none';
   renderMediaGrid(state.currentTab);
   $('cache-info').textContent = d.cached
@@ -163,8 +200,9 @@ function renderMediaGrid(tab) {
   g.innerHTML = items.map((m) => {
     const caption = (m.caption || '').slice(0, 90).replace(/[<>&"]/g, '');
     const thumb = m.media_url || '';
+    const proxied = thumbProxy(thumb);
     return `<div class="media-card">
-      ${thumb ? `<a href="${m.permalink}" target="_blank" rel="noopener"><img class="media-thumb" src="${thumb}" loading="lazy" alt=""></a>` : `<div class="media-thumb"></div>`}
+      ${thumb ? `<a href="${m.permalink}" target="_blank" rel="noopener"><img class="media-thumb" src="${proxied}" loading="lazy" alt="" onerror="this.style.display='none'"></a>` : `<div class="media-thumb"></div>`}
       <div class="media-body">
         <p style="font-size:10px;color:var(--text-2);margin-bottom:3px">${fmtDate(m.timestamp)}</p>
         <p style="font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${caption}">${caption || '(sin caption)'}</p>
@@ -210,10 +248,15 @@ function renderAds(d) {
   $('ads-acc-name').textContent = acc.name || acc.id || '—';
   $('ads-acc-id').textContent = `${acc.id || ''} · ${acc.currency || ''} · status=${acc.account_status || '—'}`;
   const t = d.totals_last_30d || {};
-  $('ads-kpi-spend').textContent = eurFmt(t.spend);
-  $('ads-kpi-imp').textContent   = eur0(t.impressions);
-  $('ads-kpi-clicks').textContent = eur0(t.clicks);
-  $('ads-kpi-cpc').textContent   = t.cpc != null ? '€' + t.cpc.toFixed(2) : '—';
+  $('ads-kpis-container').innerHTML = `
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ads','spend','Gasto')} (30d)</p><p class="val">${eurFmt(t.spend)}</p></div>
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ads','reach','Alcance')}</p><p class="val">${eur0(t.reach)}</p></div>
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ads','impressions','Impresiones')}</p><p class="val">${eur0(t.impressions)}</p></div>
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ads','clicks','Clics')}</p><p class="val">${eur0(t.clicks)}</p></div>
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ads','ctr','CTR')}</p><p class="val">${t.ctr != null ? (t.ctr*100).toFixed(2)+'%' : '—'}</p></div>
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ads','cpc','CPC')}</p><p class="val">${t.cpc != null ? '€'+t.cpc.toFixed(2) : '—'}</p></div>
+    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ads','cpm','CPM')}</p><p class="val">${t.cpm != null ? '€'+t.cpm.toFixed(2) : '—'}</p></div>
+  `;
 
   $('ads-camp-counter').textContent = `${d.n_campaigns} campañas · ${d.n_adsets} adsets · ${d.n_ads} ads`;
   const list = $('ads-camp-list');

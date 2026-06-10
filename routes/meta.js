@@ -22,11 +22,58 @@ const {
 } = require('../lib/meta/ads');
 const aiMod = require('../lib/meta/ai');
 const backupMod = require('../lib/meta/backup');
+const glossary = require('../lib/meta/glossary');
+const metaCache = require('../lib/meta/cache');
 const { isKeyAvailable } = require('../lib/meta/crypto');
 
 const router = express.Router();
 router.use(requireAuth);
 router.use(requirePerm('meta_ads_view'));
+
+// ─── Glosario de métricas ─────────────────────────────────────────────
+// Diccionario único reusable. Frontend lo carga 1 vez al boot y muestra
+// tooltips por cada métrica. Centralizado para editar redacción sin
+// tocar el HTML.
+router.get('/glossary', (req, res) => {
+  res.json({ ok: true, ...glossary.all() });
+});
+
+// ─── Proxy de miniaturas de Instagram ────────────────────────────────
+// scontent.cdninstagram.com bloquea hotlink desde otros dominios. El
+// browser nunca puede cargar `media_url`/`thumbnail_url` directo. Este
+// proxy hace el fetch server-side y stream-ea al cliente, con cache 1h.
+// Sin token aquí — las URLs ya vienen firmadas por Meta. Solo el rol
+// (meta_ads_view) gatea el acceso.
+router.get('/media-thumb', async (req, res) => {
+  try {
+    const url = String(req.query.url || '').trim();
+    if (!url) return res.status(400).send('url requerida');
+    // Whitelist: solo dominios oficiales de Meta para evitar SSRF.
+    if (!/^https:\/\/(scontent[a-z0-9-]*\.cdninstagram\.com|scontent[a-z0-9-]*\.xx\.fbcdn\.net|instagram\.[a-z]+\.fna\.fbcdn\.net|.*\.cdninstagram\.com|.*\.fbcdn\.net)\//i.test(url)) {
+      return res.status(400).send('dominio no permitido');
+    }
+    const cacheKey = 'thumb:' + Buffer.from(url).toString('base64').slice(0, 200);
+    const cached = await metaCache.get(cacheKey, 'binary');
+    if (cached?.buffer) {
+      res.setHeader('Content-Type', cached.content_type);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('X-Proxy-Cache', 'HIT');
+      return res.end(cached.buffer);
+    }
+    const r = await fetch(url);
+    if (!r.ok) return res.status(r.status).send('upstream error');
+    const contentType = r.headers.get('content-type') || 'image/jpeg';
+    const buf = Buffer.from(await r.arrayBuffer());
+    await metaCache.putBinary(cacheKey, buf, contentType, 3600);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('X-Proxy-Cache', 'MISS');
+    res.end(buf);
+  } catch (e) {
+    console.error('[meta.media-thumb]', e.message);
+    res.status(500).send('proxy error');
+  }
+});
 
 // ─── Estado de configuración ──────────────────────────────────────────
 // Devuelve qué env vars faltan + estado del token. El frontend lo usa

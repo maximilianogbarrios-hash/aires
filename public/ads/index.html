@@ -81,11 +81,8 @@
       <p id="ig-name" style="font-size:16px;font-weight:600">—</p>
       <p id="ig-username" style="font-size:12px;color:var(--text-2)">—</p>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <div class="kpi-mini"><p class="lbl">Followers</p><p class="val" id="kpi-followers">—</p></div>
-      <div class="kpi-mini"><p class="lbl">Media count</p><p class="val" id="kpi-media">—</p></div>
-      <div class="kpi-mini"><p class="lbl">Views (28d)</p><p class="val" id="kpi-views">—</p></div>
-      <div class="kpi-mini"><p class="lbl">Reach (28d)</p><p class="val" id="kpi-reach">—</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap" id="ig-kpis">
+      <!-- KPIs IG renderizados desde JS con labelWithInfo() para tooltips -->
     </div>
   </div>
 
@@ -133,11 +130,8 @@
         <p id="ads-acc-id" style="font-size:11px;color:var(--text-2)">—</p>
       </div>
       <div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <div class="kpi-mini"><p class="lbl">Gasto 30d</p><p class="val" id="ads-kpi-spend">—</p></div>
-        <div class="kpi-mini"><p class="lbl">Impresiones</p><p class="val" id="ads-kpi-imp">—</p></div>
-        <div class="kpi-mini"><p class="lbl">Clicks</p><p class="val" id="ads-kpi-clicks">—</p></div>
-        <div class="kpi-mini"><p class="lbl">CPC promedio</p><p class="val" id="ads-kpi-cpc">—</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap" id="ads-kpis-container">
+        <!-- KPIs renderizados desde JS con labelWithInfo() -->
       </div>
     </div>
 
