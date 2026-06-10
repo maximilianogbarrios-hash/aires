@@ -536,6 +536,8 @@ router.get('/bootstrap', async (req, res) => {
       pedidos_pagar:         !!(role && PERMS.pedidos_pagar_w.includes(role)),
       export_w:              !!(role && PERMS.export_w.includes(role)),
       print_w:               !!(role && PERMS.print_w.includes(role)),
+      meta_ads_view:         !!(role && PERMS.meta_ads_view.includes(role)),
+      meta_ads_admin:        !!(role && PERMS.meta_ads_admin.includes(role)),
     };
     res.json({ config, locales, historial, presupuesto, user: req.session.user, tabs, sub_tabs_pedidos, sub_tabs_bancos, flags });
   } catch (e) {

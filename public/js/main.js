@@ -119,6 +119,7 @@ function setUserUI() {
   if ($('soc-toggle-bar'))  $('soc-toggle-bar').style.display  = flags.vista_sociedad ? 'flex' : 'none';
   // Link Bancos en topbar
   if ($('tb-bancos-link'))  $('tb-bancos-link').style.display  = flags.bancos ? '' : 'none';
+  if ($('tb-ads-link'))     $('tb-ads-link').style.display     = flags.meta_ads_view ? '' : 'none';
   // Pestañas: filtrar por matriz tabs[]
   const tabs = ctx.tabs || [];
   document.querySelectorAll('.tab[data-tab]').forEach((el) => {
