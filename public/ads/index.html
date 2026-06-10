@@ -73,7 +73,7 @@
 
 <!-- DASHBOARD IG (visible cuando hay config y token) -->
 <div id="dashboard-wrap" class="main-section" data-section="ig" style="display:none">
-  <!-- Hero: perfil + KPIs -->
+  <!-- Header: perfil + selector período -->
   <div class="ads-hero">
     <img id="ig-avatar" class="avatar" alt="">
     <div>
@@ -81,20 +81,58 @@
       <p id="ig-name" style="font-size:16px;font-weight:600">—</p>
       <p id="ig-username" style="font-size:12px;color:var(--text-2)">—</p>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap" id="ig-kpis">
-      <!-- KPIs IG renderizados desde JS con labelWithInfo() para tooltips -->
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="font-size:10px;color:var(--text-2);text-transform:uppercase;letter-spacing:.6px">Período:</span>
+      <div role="tablist" style="display:flex;border:.5px solid var(--border-2);border-radius:var(--r-md);overflow:hidden">
+        <button class="tab on" id="igp-30" onclick="setIgPeriod(30)" style="padding:4px 10px;border:none;background:#185FA5;color:#fff;cursor:pointer;font-size:11px;font-weight:500">30d</button>
+        <button class="tab"    id="igp-60" onclick="setIgPeriod(60)" style="padding:4px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">60d</button>
+        <button class="tab"    id="igp-90" onclick="setIgPeriod(90)" style="padding:4px 10px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:11px">90d</button>
+      </div>
     </div>
+  </div>
+
+  <!-- KPIs grandes con variación vs período anterior -->
+  <div class="g4" id="ig-kpis" style="margin-bottom:1rem">
+    <!-- renderizado en JS -->
   </div>
 
   <p id="ig-warning" style="display:none;font-size:11px;margin-bottom:1rem">
     <span class="badge-warn" id="ig-warning-text"></span>
   </p>
 
-  <!-- Tabs Posts / Reels -->
-  <div style="display:flex;gap:6px;margin-bottom:.5rem;border-bottom:.5px solid var(--border-3)">
+  <!-- TOP MEJORES + PEORES -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:1rem">
+    <div class="card">
+      <p style="font-size:13px;font-weight:500;margin-bottom:.6rem;color:#16a34a">🏆 Top 5 que mejor funcionaron</p>
+      <div id="ig-top-list"><p style="font-size:11px;color:var(--text-2);padding:1rem">—</p></div>
+    </div>
+    <div class="card">
+      <p style="font-size:13px;font-weight:500;margin-bottom:.6rem;color:#dc2626">⚠ 5 a revisar (peor rendimiento)</p>
+      <div id="ig-bottom-list"><p style="font-size:11px;color:var(--text-2);padding:1rem">—</p></div>
+    </div>
+  </div>
+
+  <!-- AUDIENCIA -->
+  <div class="card" style="margin-bottom:1rem">
+    <p style="font-size:13px;font-weight:500;margin-bottom:.6rem">👥 Audiencia (seguidores)</p>
+    <div id="ig-audience" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
+      <p style="font-size:11px;color:var(--text-2);padding:1rem">—</p>
+    </div>
+  </div>
+
+  <!-- Tabs Posts / Reels (grilla completa con sort) -->
+  <div style="display:flex;gap:6px;margin-bottom:.5rem;border-bottom:.5px solid var(--border-3);align-items:center">
     <button class="tab on" id="tab-reels" onclick="setMediaTab('reels')">Reels</button>
     <button class="tab" id="tab-posts" onclick="setMediaTab('posts')">Posts</button>
-    <span style="margin-left:auto;font-size:10px;color:var(--text-2);align-self:center">ordenados por reach desc</span>
+    <span style="margin-left:auto;font-size:10px;color:var(--text-2)">Ordenar:</span>
+    <select id="ig-sort" onchange="setIgSort(this.value)" style="font-size:10px;padding:2px 6px;border-radius:4px;background:var(--bg-secondary);color:var(--text);border:.5px solid var(--border-2)">
+      <option value="reach">Alcance</option>
+      <option value="views">Visualizaciones</option>
+      <option value="interactions">Interacciones</option>
+      <option value="saved">Guardados</option>
+      <option value="shares">Compartidos</option>
+      <option value="timestamp">Fecha</option>
+    </select>
   </div>
   <div class="card" style="margin-bottom:1rem">
     <div class="grid-media" id="media-grid">
@@ -102,7 +140,6 @@
     </div>
   </div>
 
-  <!-- Cache info -->
   <p id="cache-info" style="font-size:10px;color:var(--text-2);text-align:right;margin-bottom:1rem">—</p>
 </div>
 

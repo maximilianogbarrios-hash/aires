@@ -11,13 +11,15 @@ const fmtDateTime = (iso) => { if (!iso) return ''; try { return new Date(iso).t
 
 const state = {
   config: null,
-  dashboard: null,         // F1
-  ads: null,               // F2
-  backups: null,           // F3
-  currentTab: 'reels',     // sub-tab dentro de IG
-  mainTab: 'ig',           // tab principal (ig | ads | backup)
+  dashboard: null,
+  ads: null,
+  backups: null,
+  currentTab: 'reels',
+  mainTab: 'ig',
   tokKind: 'ig_access_token',
-  glossary: null,          // {ads:{}, ig:{}} cargado 1x al boot
+  glossary: null,
+  igPeriod: 30,            // 30 | 60 | 90
+  igSort: 'reach',         // reach|views|interactions|saved|shares|timestamp
 };
 
 // ─── Glosario / tooltips ─────────────────────────────────────────────
@@ -140,10 +142,13 @@ function setMainTab(name) {
   if (name === 'backup') loadBackups();
 }
 
-// ─── F1: Instagram orgánico ──────────────────────────────────────────
+// ─── Instagram orgánico (Parte A) ───────────────────────────────────
 async function loadDashboardIg(refresh) {
   try {
-    const data = await api('/api/v1/meta/dashboard/instagram' + (refresh ? '?refresh=1' : ''));
+    const qs = new URLSearchParams();
+    qs.set('period', state.igPeriod);
+    if (refresh) qs.set('refresh', '1');
+    const data = await api('/api/v1/meta/dashboard/instagram?' + qs.toString());
     state.dashboard = data;
     if (!data.ok && (data.status === 'no_token' || data.status === 'not_configured')) {
       $('dashboard-wrap').style.display = 'none';
@@ -167,22 +172,112 @@ function renderDashboardIg(d) {
   $('ig-name').textContent = p.name || p.username || '—';
   $('ig-username').textContent = p.username ? '@' + p.username : '—';
   if (p.profile_picture_url) $('ig-avatar').src = thumbProxy(p.profile_picture_url);
-  // KPIs con tooltip ⓘ (proxy a glosario).
-  const periodLbl = (d.period_days ? d.period_days + 'd' : '28d');
-  $('ig-kpis').innerHTML = `
-    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ig','followers','Seguidores')}</p><p class="val">${eur0(p.followers_count)}</p></div>
-    <div class="kpi-mini"><p class="lbl">Publicaciones</p><p class="val">${eur0(d.media_count)}</p></div>
-    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ig','views','Visualizaciones')} (${periodLbl})</p><p class="val">${eur0(d.insights?.views)}</p></div>
-    <div class="kpi-mini"><p class="lbl">${labelWithInfo('ig','reach','Alcance')} (${periodLbl})</p><p class="val">${eur0(d.insights?.reach)}</p></div>
-  `;
-  if (d.insights?.warning) {
+  const periodLbl = (d.period_days || 30) + 'd';
+  const ins = d.insights || {};
+  // Tarjeta KPI con variación vs período anterior.
+  const kpi = (key, label, value, varPct, isPct) => {
+    const valStr = value == null ? '—' : (isPct ? (value * 100).toFixed(2) + '%' : eur0(value));
+    let varHtml = '';
+    if (varPct != null && Number.isFinite(varPct)) {
+      const arrow = varPct > 0.5 ? '↑' : varPct < -0.5 ? '↓' : '→';
+      const color = varPct > 0.5 ? '#16a34a' : varPct < -0.5 ? '#dc2626' : 'var(--text-2)';
+      varHtml = `<span style="font-size:10px;color:${color};margin-left:4px">${arrow} ${varPct > 0 ? '+' : ''}${varPct.toFixed(1)}%</span>`;
+    }
+    return `<div class="surf">
+      <p style="font-size:11px;color:var(--text-2)">${labelWithInfo('ig', key, label)}</p>
+      <p style="font-size:19px;font-weight:500">${valStr}${varHtml}</p>
+    </div>`;
+  };
+  $('ig-kpis').innerHTML =
+    kpi('followers',     'Seguidores',          p.followers_count,    null, false) +
+    kpi('reach',         `Alcance ${periodLbl}`, ins.reach,            ins.reach_var_pct, false) +
+    kpi('views',         `Visualizaciones ${periodLbl}`, ins.views,    ins.views_var_pct, false) +
+    kpi('profile_views', `Visitas perfil ${periodLbl}`, ins.profile_views, ins.profile_views_var_pct, false);
+
+  if (ins.warning) {
     $('ig-warning').style.display = '';
-    $('ig-warning-text').textContent = d.insights.warning;
+    $('ig-warning-text').textContent = ins.warning;
   } else $('ig-warning').style.display = 'none';
+
+  renderIgRanking(d);
+  renderIgAudience(d);
   renderMediaGrid(state.currentTab);
   $('cache-info').textContent = d.cached
     ? `cached · age=${d.cache_age_sec}s · fuente token: ${d.token_source}`
     : `fresh · fetched=${fmtDate(d.fetched_at)} · fuente token: ${d.token_source}`;
+}
+
+function setIgPeriod(p) {
+  if (![30, 60, 90].includes(p)) return;
+  state.igPeriod = p;
+  ['30','60','90'].forEach((k) => {
+    const el = $('igp-' + k); if (!el) return;
+    const on = +k === p;
+    el.style.background = on ? '#185FA5' : 'transparent';
+    el.style.color = on ? '#fff' : 'var(--text)';
+    el.style.fontWeight = on ? '500' : '400';
+  });
+  loadDashboardIg(false);
+}
+
+function setIgSort(v) { state.igSort = v; renderMediaGrid(state.currentTab); }
+
+function renderIgRanking(d) {
+  const tab = state.currentTab; // reels | posts
+  const top = tab === 'reels' ? d.reels_top : d.posts_top;
+  const bot = tab === 'reels' ? d.reels_bottom : d.posts_bottom;
+  const renderItem = (m) => {
+    const thumb = m.thumbnail_url || m.media_url || '';
+    const proxied = thumbProxy(thumb);
+    const caption = (m.caption || '').slice(0, 60).replace(/[<>"]/g, '');
+    return `<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:.5px dashed var(--border-3)">
+      ${thumb ? `<a href="${m.permalink}" target="_blank" rel="noopener" style="flex-shrink:0"><img src="${proxied}" style="width:48px;height:48px;border-radius:4px;object-fit:cover;background:var(--bg-secondary)" loading="lazy" alt="" onerror="this.style.display='none'"></a>` : ''}
+      <div style="flex:1;min-width:0">
+        <p style="font-size:11px;line-height:1.3;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${caption.replace(/"/g,'&quot;')}">${caption || '(sin caption)'}</p>
+        <p style="font-size:10px;color:var(--text-2);margin-bottom:2px">
+          ${m.reach != null ? `📊 ${eur0(m.reach)}` : ''}
+          ${m.saved != null ? ` · ★ ${eur0(m.saved)}` : ''}
+          ${m.shares != null ? ` · ↗ ${eur0(m.shares)}` : ''}
+          ${m.score ? ` · score ${m.score.toFixed(2)}` : ''}
+        </p>
+        <p style="font-size:10px;color:var(--text-2);font-style:italic">${m.motivo || ''}</p>
+      </div>
+    </div>`;
+  };
+  $('ig-top-list').innerHTML = top?.length ? top.map(renderItem).join('') : `<p style="font-size:11px;color:var(--text-2);padding:1rem">Sin ${tab} en el período.</p>`;
+  $('ig-bottom-list').innerHTML = bot?.length ? bot.map(renderItem).join('') : `<p style="font-size:11px;color:var(--text-2);padding:1rem">Sin datos suficientes para detectar los peores.</p>`;
+}
+
+function renderIgAudience(d) {
+  const aud = d.audience;
+  const el = $('ig-audience');
+  if (!aud) {
+    const warns = (d.audience_warnings || []).join(' · ') || 'Audiencia no disponible para esta cuenta.';
+    el.innerHTML = `<p style="grid-column:1/-1;font-size:11px;color:var(--text-2)">${warns}</p>`;
+    return;
+  }
+  const block = (titulo, key, formatKey) => {
+    const items = aud[key];
+    if (!items?.length) return `<div><p style="font-size:11px;color:var(--text-2)">${titulo}: sin datos</p></div>`;
+    const max = Math.max(...items.map((x) => x.value));
+    const rows = items.slice(0, 8).map((x) => {
+      const pct = max > 0 ? (x.value / max * 100).toFixed(0) : 0;
+      return `<div style="display:flex;align-items:center;gap:6px;font-size:11px;margin:3px 0">
+        <span style="width:42%;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${formatKey ? formatKey(x.key) : x.key}</span>
+        <div style="flex:1;background:var(--bg-secondary);height:6px;border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#185FA5"></div></div>
+        <span style="width:48px;text-align:right">${eur0(x.value)}</span>
+      </div>`;
+    }).join('');
+    return `<div>
+      <p style="font-size:12px;font-weight:500;margin-bottom:6px">${titulo}</p>
+      ${rows}
+    </div>`;
+  };
+  el.innerHTML =
+    block('🌍 Top países', 'country') +
+    block('🏙 Top ciudades', 'city') +
+    block('🎂 Edad', 'age') +
+    block('⚧ Género', 'gender', (k) => ({ M: '♂ Hombres', F: '♀ Mujeres', U: 'Sin especificar' }[k] || k));
 }
 
 function setMediaTab(name) {
@@ -190,27 +285,37 @@ function setMediaTab(name) {
   $('tab-reels').classList.toggle('on', name === 'reels');
   $('tab-posts').classList.toggle('on', name === 'posts');
   renderMediaGrid(name);
+  if (state.dashboard) renderIgRanking(state.dashboard);
 }
 
 function renderMediaGrid(tab) {
   const d = state.dashboard; if (!d) return;
-  const items = tab === 'reels' ? (d.reels || []) : (d.posts || []);
+  const itemsBase = tab === 'reels' ? (d.reels || []) : (d.posts || []);
+  // Aplicar sort según state.igSort
+  const sortKey = state.igSort || 'reach';
+  const items = [...itemsBase].sort((a, b) => {
+    if (sortKey === 'timestamp') return new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
+    if (sortKey === 'interactions') return (b.interactions_weighted || 0) - (a.interactions_weighted || 0);
+    return (b[sortKey] || 0) - (a[sortKey] || 0);
+  });
   const g = $('media-grid');
   if (!items.length) { g.innerHTML = `<p style="grid-column:1/-1;text-align:center;color:var(--text-2);padding:2rem">Sin ${tab}.</p>`; return; }
   g.innerHTML = items.map((m) => {
     const caption = (m.caption || '').slice(0, 90).replace(/[<>&"]/g, '');
-    const thumb = m.media_url || '';
+    const thumb = m.thumbnail_url || m.media_url || '';
     const proxied = thumbProxy(thumb);
     return `<div class="media-card">
       ${thumb ? `<a href="${m.permalink}" target="_blank" rel="noopener"><img class="media-thumb" src="${proxied}" loading="lazy" alt="" onerror="this.style.display='none'"></a>` : `<div class="media-thumb"></div>`}
       <div class="media-body">
-        <p style="font-size:10px;color:var(--text-2);margin-bottom:3px">${fmtDate(m.timestamp)}</p>
+        <p style="font-size:10px;color:var(--text-2);margin-bottom:3px">${fmtDate(m.timestamp)}${m.score ? ` · score ${m.score.toFixed(2)}` : ''}</p>
         <p style="font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${caption}">${caption || '(sin caption)'}</p>
         <div class="media-metrics">
-          ${m.views != null ? `<span>👁 ${eur0(m.views)}</span>` : ''}
-          ${m.reach != null ? `<span>📊 ${eur0(m.reach)}</span>` : ''}
-          ${m.like_count != null ? `<span>♥ ${eur0(m.like_count)}</span>` : ''}
-          ${m.comments_count != null ? `<span>💬 ${eur0(m.comments_count)}</span>` : ''}
+          ${m.reach != null ? `<span title="Alcance">📊 ${eur0(m.reach)}</span>` : ''}
+          ${m.views != null ? `<span title="Visualizaciones">👁 ${eur0(m.views)}</span>` : ''}
+          ${m.like_count != null ? `<span title="Likes">♥ ${eur0(m.like_count)}</span>` : ''}
+          ${m.comments_count != null ? `<span title="Comentarios">💬 ${eur0(m.comments_count)}</span>` : ''}
+          ${m.saved != null ? `<span title="Guardados (señal MUY fuerte de interés)">★ ${eur0(m.saved)}</span>` : ''}
+          ${m.shares != null ? `<span title="Compartidos">↗ ${eur0(m.shares)}</span>` : ''}
         </div>
       </div>
     </div>`;
@@ -438,6 +543,8 @@ async function clearTok() {
 window.refresh = refresh;
 window.setMediaTab = setMediaTab;
 window.setMainTab = setMainTab;
+window.setIgPeriod = setIgPeriod;
+window.setIgSort = setIgSort;
 window.probeTok = probeTok;
 window.saveTok = saveTok;
 window.clearTok = clearTok;

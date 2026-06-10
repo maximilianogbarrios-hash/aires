@@ -140,7 +140,8 @@ router.get('/health', async (req, res) => {
 router.get('/dashboard/instagram', async (req, res) => {
   try {
     const refresh = String(req.query.refresh || '') === '1';
-    const data = await buildInstagramDashboard({ refresh });
+    const period = parseInt(req.query.period, 10) || 30;
+    const data = await buildInstagramDashboard({ refresh, period });
     res.json(data);
   } catch (e) {
     console.error('[meta.dashboard.instagram]', e);
