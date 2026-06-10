@@ -8,6 +8,14 @@ const eur0 = (v) => v == null ? '—' : new Intl.NumberFormat('es-ES', { maximum
 const eurFmt = (v) => v == null ? '—' : '€' + eur0(v);
 const fmtDate = (iso) => { if (!iso) return ''; try { return new Date(iso).toLocaleDateString('es-ES', { day:'2-digit', month:'short', year:'numeric' }); } catch { return iso; } };
 const fmtDateTime = (iso) => { if (!iso) return ''; try { return new Date(iso).toLocaleString('es-ES', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' }); } catch { return iso; } };
+// "hace 5 min", "hace 2h", "hace 3d" — antigüedad humanizada del cache.
+function ago(seconds) {
+  if (seconds == null || !Number.isFinite(seconds)) return '';
+  if (seconds < 60) return `hace ${Math.round(seconds)}s`;
+  if (seconds < 3600) return `hace ${Math.round(seconds / 60)} min`;
+  if (seconds < 86400) return `hace ${Math.round(seconds / 3600)}h`;
+  return `hace ${Math.round(seconds / 86400)}d`;
+}
 
 const state = {
   config: null,
@@ -217,8 +225,8 @@ function renderDashboardIg(d) {
   renderIgAudience(d);
   renderMediaGrid(state.currentTab);
   $('cache-info').textContent = d.cached
-    ? `cached · age=${d.cache_age_sec}s · fuente token: ${d.token_source}`
-    : `fresh · fetched=${fmtDate(d.fetched_at)} · fuente token: ${d.token_source}`;
+    ? `Actualizado ${ago(d.cache_age_sec)} · fuente token: ${d.token_source}`
+    : `Recién actualizado · fuente token: ${d.token_source}`;
 }
 
 function setIgPeriod(p) {
@@ -387,6 +395,11 @@ function renderAds(d) {
   // Lista de la pestaña actual.
   if (!state.adsStatusTab) state.adsStatusTab = 'active';
   renderAdsList(d, state.adsStatusTab);
+  // Antigüedad del dato.
+  const ci = $('ads-cache-info');
+  if (ci) ci.textContent = d.cached
+    ? `Actualizado ${ago(d.cache_age_sec)} (cache ${d.cache_source || 'mem'}) · token: ${d.token_source}`
+    : `Recién actualizado · token: ${d.token_source}`;
 }
 
 // Comparativo color contra promedio cuenta. low_is_good=true para CPC, CPA, frecuencia.
