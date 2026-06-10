@@ -48,6 +48,20 @@ function thumbProxy(url) {
   if (!url) return '';
   return '/api/v1/meta/media-thumb?url=' + encodeURIComponent(url);
 }
+// Renderizador de markdown ligero (headings + bold + listas + saltos)
+// usado para el análisis IA. Escapa HTML primero.
+function renderMarkdownLight(md) {
+  if (!md) return '';
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  let out = esc(md);
+  out = out.replace(/^## (.+)$/gm, '<h3 style="font-size:13px;font-weight:600;margin:.75rem 0 .25rem">$1</h3>');
+  out = out.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  out = out.replace(/(<li>.*<\/li>\n?)+/gs, (m) => '<ol style="margin:.25rem 0 .25rem 1.2rem;padding:0">' + m + '</ol>');
+  out = out.replace(/^- (.+)$/gm, '<li>$1</li>');
+  out = out.split('\n\n').map((p) => p.trim() ? (p.startsWith('<') ? p : '<p style="margin:.4rem 0">' + p.replace(/\n/g, '<br>') + '</p>') : '').join('');
+  return out;
+}
 
 async function api(path, opts) {
   const r = await fetch(path, { credentials: 'same-origin', headers: { 'content-type': 'application/json' }, ...(opts || {}) });
@@ -363,38 +377,120 @@ function renderAds(d) {
     <div class="kpi-mini"><p class="lbl">${labelWithInfo('ads','cpm','CPM')}</p><p class="val">${t.cpm != null ? '€'+t.cpm.toFixed(2) : '—'}</p></div>
   `;
 
-  $('ads-camp-counter').textContent = `${d.n_campaigns} campañas · ${d.n_adsets} adsets · ${d.n_ads} ads`;
+  // Contadores por estado.
+  $('ads-st-active-n').textContent = `(${d.groups?.active?.count || 0})`;
+  $('ads-st-paused-n').textContent = `(${d.groups?.paused?.count || 0})`;
+  $('ads-st-otros-n').textContent  = `(${d.groups?.otros?.count || 0})`;
+
+  // Recomendaciones (top mejores y peores entre activas).
+  renderAdsRecommendations(d);
+  // Lista de la pestaña actual.
+  if (!state.adsStatusTab) state.adsStatusTab = 'active';
+  renderAdsList(d, state.adsStatusTab);
+}
+
+// Comparativo color contra promedio cuenta. low_is_good=true para CPC, CPA, frecuencia.
+function _colorVsAvg(val, avg, lowIsGood = false) {
+  if (val == null || !avg) return 'var(--text-2)';
+  const ratio = val / avg;
+  if (lowIsGood) {
+    if (ratio < 0.8) return '#16a34a';
+    if (ratio > 1.3) return '#dc2626';
+    return 'var(--text-2)';
+  }
+  if (ratio > 1.3) return '#16a34a';
+  if (ratio < 0.5) return '#dc2626';
+  return 'var(--text-2)';
+}
+
+function renderAdsRecommendations(d) {
+  const top = d.recommendations?.top || [];
+  const bot = d.recommendations?.bottom || [];
+  const renderRow = (c) => {
+    const i = c.insights || {};
+    const v = c.verdict || {};
+    return `<div style="padding:6px 0;border-bottom:.5px dashed var(--border-3)">
+      <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.name}</p>
+      <p style="font-size:10px;color:var(--text-2);margin:2px 0">${eurFmt(i.spend)} gastados · CTR ${i.ctr != null ? (i.ctr*100).toFixed(2)+'%' : '—'} · CPC ${i.cpc != null ? '€'+i.cpc.toFixed(2) : '—'}</p>
+      <p style="font-size:10px;color:${v.color || 'var(--text-2)'};font-style:italic">${v.reason || ''}</p>
+    </div>`;
+  };
+  $('ads-top-list').innerHTML = top.length ? top.map(renderRow).join('') : `<p style="font-size:11px;color:var(--text-2);padding:1rem">Sin campañas para escalar todavía. ${d.groups?.active?.count ? 'Las activas están cerca del promedio.' : 'Activá alguna primero.'}</p>`;
+  $('ads-bottom-list').innerHTML = bot.length ? bot.map(renderRow).join('') : `<p style="font-size:11px;color:var(--text-2);padding:1rem">Sin campañas para pausar/optimizar entre las activas. 👍</p>`;
+}
+
+function setAdsStatusTab(name) {
+  state.adsStatusTab = name;
+  ['active', 'paused', 'otros'].forEach((k) => {
+    const el = $('ads-st-' + k); if (!el) return;
+    el.classList.toggle('on', k === name);
+  });
+  if (state.ads) renderAdsList(state.ads, name);
+}
+
+function renderAdsList(d, group) {
+  const camps = d.groups?.[group]?.campaigns || [];
+  $('ads-camp-counter').textContent = `${camps.length} campañas — ordenadas por gasto desc`;
   const list = $('ads-camp-list');
-  if (!d.campaigns?.length) { list.innerHTML = '<p style="color:var(--text-2);padding:1rem">Sin campañas.</p>'; return; }
-  list.innerHTML = d.campaigns.map((c) => {
+  if (!camps.length) { list.innerHTML = '<p style="color:var(--text-2);padding:1rem">Sin campañas en este grupo.</p>'; return; }
+  const avg = d.averages || {};
+  list.innerHTML = camps.map((c) => {
     const statusBg = c.effective_status === 'ACTIVE' ? 'rgba(99,153,34,.18)'
                    : c.effective_status === 'PAUSED' ? 'rgba(217,119,6,.18)' : 'rgba(150,150,150,.18)';
     const statusColor = c.effective_status === 'ACTIVE' ? '#16a34a' : c.effective_status === 'PAUSED' ? '#d97706' : '#888';
     const i = c.insights || {};
+    const v = c.verdict || {};
+    const ctrColor = _colorVsAvg(i.ctr, avg.ctr);
+    const cpcColor = _colorVsAvg(i.cpc, avg.cpc, true);
+    const cpaColor = _colorVsAvg(i.cost_per_result, avg.cpa, true);
     return `<details style="border:.5px solid var(--border-3);border-radius:var(--r-md);padding:.5rem .75rem;margin-bottom:6px;background:var(--bg-secondary)">
       <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${statusBg};color:${statusColor};font-weight:500">${c.effective_status}</span>
+        <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${v.color || '#9ca3af'}33;color:${v.color || '#9ca3af'};font-weight:600">${v.label || '—'}</span>
         <strong style="font-size:13px">${c.name}</strong>
         <span style="color:var(--text-2);font-size:11px">${c.objective} · ${c.n_adsets} adsets · ${c.n_ads} ads</span>
         <span style="margin-left:auto;font-size:12px;color:#dc2626">${eurFmt(i.spend)}</span>
-        <span style="font-size:10px;color:var(--text-2)">${eur0(i.impressions)} imp · ${eur0(i.clicks)} clics${i.cpc != null ? ' · CPC €'+i.cpc.toFixed(2) : ''}</span>
       </summary>
       <div style="margin-top:8px;padding-top:8px;border-top:.5px dashed var(--border-3)">
+        <p style="font-size:11px;color:${v.color || 'var(--text-2)'};font-style:italic;margin-bottom:8px">${v.reason || ''}</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-bottom:8px;font-size:11px">
+          <div><span style="color:var(--text-2)">Alcance:</span> ${eur0(i.reach)}</div>
+          <div><span style="color:var(--text-2)">Imp:</span> ${eur0(i.impressions)}</div>
+          <div><span style="color:var(--text-2)">Frec:</span> ${i.frequency != null ? i.frequency.toFixed(2) : '—'}</div>
+          <div><span style="color:var(--text-2)">Clics:</span> ${eur0(i.clicks)}</div>
+          <div style="color:${ctrColor}"><span style="color:var(--text-2)">CTR:</span> ${i.ctr != null ? (i.ctr*100).toFixed(2)+'%' : '—'}</div>
+          <div style="color:${cpcColor}"><span style="color:var(--text-2)">CPC:</span> ${i.cpc != null ? '€'+i.cpc.toFixed(2) : '—'}</div>
+          <div><span style="color:var(--text-2)">CPM:</span> ${i.cpm != null ? '€'+i.cpm.toFixed(2) : '—'}</div>
+          <div><span style="color:var(--text-2)">Resultados:</span> ${i.results || 0}</div>
+          <div style="color:${cpaColor}"><span style="color:var(--text-2)">CPA:</span> ${i.cost_per_result != null ? '€'+i.cost_per_result.toFixed(2) : '—'}</div>
+          ${i.roas != null ? `<div><span style="color:var(--text-2)">ROAS:</span> ${i.roas.toFixed(2)}×</div>` : ''}
+        </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
           <button onclick="campToggle('${c.id}','${c.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}')" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">${c.status === 'ACTIVE' ? '⏸ Pausar' : '▶ Activar'} campaña</button>
           <button onclick="campBudget('${c.id}','${c.budget?.kind || ''}',${c.budget?.monto || 0})" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">💰 Presupuesto (${c.budget?.kind ? `${c.budget.kind}=€${c.budget.monto}` : 'sin'})</button>
         </div>
         ${c.adsets.map((s) => {
           const si = s.insights || {};
+          const sv = s.verdict || {};
           return `<div style="margin-left:1rem;padding:6px 8px;border-left:2px solid var(--border-3);margin-bottom:4px">
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
               <span style="padding:1px 6px;border-radius:8px;font-size:9px;background:${s.effective_status === 'ACTIVE' ? 'rgba(99,153,34,.15)' : 'rgba(150,150,150,.15)'};color:${s.effective_status === 'ACTIVE' ? '#16a34a' : '#888'}">${s.effective_status}</span>
               <span style="font-size:12px;font-weight:500">${s.name}</span>
+              <span style="padding:1px 6px;border-radius:8px;font-size:9px;background:${sv.color || '#9ca3af'}22;color:${sv.color || '#9ca3af'}">${sv.label?.replace(/[🟢🔵🟠🔴]\s*/, '') || ''}</span>
               <span style="color:var(--text-2);font-size:10px">${s.n_ads} ads · ${s.budget?.kind ? `${s.budget.kind}=€${s.budget.monto}` : 'sin presupuesto'}</span>
-              <span style="margin-left:auto;font-size:11px">${eurFmt(si.spend)} · ${eur0(si.impressions)} imp</span>
+              <span style="margin-left:auto;font-size:11px">${eurFmt(si.spend)} · CTR ${si.ctr != null ? (si.ctr*100).toFixed(2)+'%' : '—'}</span>
               <button onclick="adsetToggle('${s.id}','${s.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}')" style="padding:2px 8px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">${s.status === 'ACTIVE' ? '⏸' : '▶'}</button>
             </div>
-            ${s.ads.length ? `<div style="margin-left:1.2rem;margin-top:4px;font-size:10px;color:var(--text-2)">${s.ads.length} ads: ${s.ads.slice(0, 3).map((a) => `${a.name}${a.effective_status !== 'ACTIVE' ? ' ('+a.effective_status+')' : ''}`).join(' · ')}${s.ads.length > 3 ? ' …' : ''}</div>` : ''}
+            ${s.ads.length ? `<div style="margin-left:1.2rem;margin-top:4px">
+              ${s.ads.map((a) => {
+                const av = a.verdict || {};
+                return `<div style="display:flex;gap:6px;align-items:center;font-size:10px;color:var(--text-2);padding:2px 0">
+                  <span style="padding:1px 5px;border-radius:6px;font-size:9px;background:${av.color || '#9ca3af'}22;color:${av.color || '#9ca3af'}">${av.label?.replace(/[🟢🔵🟠🔴]\s*/, '') || ''}</span>
+                  ${a.name} · ${eurFmt(a.insights?.spend)} · CTR ${a.insights?.ctr != null ? (a.insights.ctr*100).toFixed(2)+'%' : '—'}
+                  <button onclick="adToggle('${a.id}','${a.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}')" style="margin-left:auto;padding:1px 6px;font-size:9px;border-radius:3px;cursor:pointer;border:.5px solid var(--border-3);background:transparent;color:var(--text-2)">${a.status === 'ACTIVE' ? '⏸' : '▶'}</button>
+                </div>`;
+              }).join('')}
+            </div>` : ''}
           </div>`;
         }).join('')}
       </div>
@@ -437,7 +533,9 @@ async function runAi() {
   try {
     const r = await api('/api/v1/meta/ai-analysis');
     if (r.ok) {
-      out.textContent = r.analysis + `\n\n— ${r.model} · ${r.input_tokens}→${r.output_tokens} tokens${r.cached ? ' (cache)' : ''}`;
+      // Render markdown light: ## headings, **bold**, listas.
+      out.innerHTML = renderMarkdownLight(r.analysis) +
+        `<p style="font-size:10px;color:var(--text-2);margin-top:.75rem">— ${r.model} · ${r.input_tokens}→${r.output_tokens} tokens${r.cached ? ' (cache)' : ''}</p>`;
     } else {
       out.textContent = '✗ ' + (r.message || r.error || 'sin datos para analizar');
     }
@@ -545,6 +643,7 @@ window.setMediaTab = setMediaTab;
 window.setMainTab = setMainTab;
 window.setIgPeriod = setIgPeriod;
 window.setIgSort = setIgSort;
+window.setAdsStatusTab = setAdsStatusTab;
 window.probeTok = probeTok;
 window.saveTok = saveTok;
 window.clearTok = clearTok;
