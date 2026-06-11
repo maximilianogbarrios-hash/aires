@@ -17,6 +17,78 @@ function ago(seconds) {
   return `hace ${Math.round(seconds / 86400)}d`;
 }
 
+// ─── Toast + loading helpers ─────────────────────────────────────────
+// toast(msg, 'ok'|'err'|'info') — esquina inferior derecha, 3.5s.
+function toast(msg, kind = 'info', durationMs = 3500) {
+  const stack = $('toast-stack'); if (!stack) { console.log('[toast]', msg); return; }
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.textContent = msg;
+  stack.appendChild(el);
+  setTimeout(() => {
+    el.style.transition = 'opacity .25s';
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 280);
+  }, durationMs);
+}
+// Marca un botón como cargando (spinner + disable). Restaurar pasando isLoading=false.
+function setBtnLoading(btn, isLoading, loadingLabel) {
+  if (!btn) return;
+  if (isLoading) {
+    if (!btn.dataset._origText) btn.dataset._origText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span>' + (loadingLabel || 'Procesando…');
+  } else {
+    btn.disabled = false;
+    if (btn.dataset._origText) { btn.innerHTML = btn.dataset._origText; delete btn.dataset._origText; }
+  }
+}
+
+// ─── Objetivo de campaña en español ──────────────────────────────────
+// Traducción de los `objective` que devuelve Marketing API a lenguaje
+// claro (badge + tooltip). Si aparece uno no listado, devuelve el
+// original tal cual para que el user vea algo y no mienta.
+const OBJECTIVE_DICT = {
+  LINK_CLICKS:         { label: 'Tráfico',                  hint: 'Conseguir clics al sitio o al perfil.' },
+  OUTCOME_TRAFFIC:     { label: 'Tráfico',                  hint: 'Conseguir clics al sitio o al perfil.' },
+  OUTCOME_AWARENESS:   { label: 'Reconocimiento',           hint: 'Que la marca se vea — alcance + impresiones.' },
+  BRAND_AWARENESS:     { label: 'Reconocimiento',           hint: 'Que la marca se vea — alcance + impresiones.' },
+  REACH:               { label: 'Alcance',                  hint: 'Llegar a la mayor cantidad de personas distintas.' },
+  OUTCOME_ENGAGEMENT:  { label: 'Interacción',              hint: 'Likes, comentarios, mensajes, guardados.' },
+  POST_ENGAGEMENT:     { label: 'Interacción',              hint: 'Likes, comentarios, mensajes, guardados.' },
+  OUTCOME_SALES:       { label: 'Ventas / Conversiones',    hint: 'Acciones de compra o conversión en el sitio.' },
+  CONVERSIONS:         { label: 'Ventas / Conversiones',    hint: 'Acciones de compra o conversión en el sitio.' },
+  OUTCOME_LEADS:       { label: 'Clientes potenciales',     hint: 'Captar datos de gente interesada (formulario).' },
+  LEAD_GENERATION:     { label: 'Clientes potenciales',     hint: 'Captar datos de gente interesada (formulario).' },
+  VIDEO_VIEWS:         { label: 'Vistas de video',          hint: 'Que el video se reproduzca lo más posible.' },
+  MESSAGES:            { label: 'Mensajes',                 hint: 'Iniciar conversaciones por DM/WhatsApp.' },
+};
+function objectiveLabel(obj) {
+  if (!obj) return { label: '—', hint: '' };
+  const d = OBJECTIVE_DICT[obj];
+  if (d) return d;
+  return { label: obj, hint: 'Objetivo personalizado/menos común — sin traducción definida.' };
+}
+
+// ─── Helpers de presupuesto ──────────────────────────────────────────
+function formatBudget(b) {
+  if (!b || !b.kind) return null;
+  if (b.kind === 'mixed') return { text: `€${eur0(b.daily || 0)}/día + €${eur0(b.lifetime || 0)} total`, kind: 'mixed' };
+  const sufijo = b.kind === 'daily' ? '/día' : ' total';
+  return { text: `€${eur0(b.monto)}${sufijo}`, kind: b.kind };
+}
+
+// ─── CTA traducido (call_to_action_type) ─────────────────────────────
+const CTA_DICT = {
+  LEARN_MORE: 'Más información', SHOP_NOW: 'Comprar', SIGN_UP: 'Registrate',
+  BOOK_TRAVEL: 'Reservar', DOWNLOAD: 'Descargar', GET_QUOTE: 'Cotizar',
+  CONTACT_US: 'Contactanos', SEND_MESSAGE: 'Mandanos un mensaje',
+  SUBSCRIBE: 'Suscribirse', WATCH_MORE: 'Mirá más', ORDER_NOW: 'Pedí ahora',
+  APPLY_NOW: 'Aplicar', GET_OFFER: 'Ver oferta', WHATSAPP_MESSAGE: 'Chat por WhatsApp',
+  CALL_NOW: 'Llamar ahora', GET_DIRECTIONS: 'Cómo llegar',
+};
+function ctaLabel(t) { return t ? (CTA_DICT[t] || t.replace(/_/g, ' ').toLowerCase()) : null; }
+
 const state = {
   config: null,
   dashboard: null,
@@ -447,91 +519,252 @@ function renderAdsList(d, group) {
   const list = $('ads-camp-list');
   if (!camps.length) { list.innerHTML = '<p style="color:var(--text-2);padding:1rem">Sin campañas en este grupo.</p>'; return; }
   const avg = d.averages || {};
-  list.innerHTML = camps.map((c) => {
-    const statusBg = c.effective_status === 'ACTIVE' ? 'rgba(99,153,34,.18)'
-                   : c.effective_status === 'PAUSED' ? 'rgba(217,119,6,.18)' : 'rgba(150,150,150,.18)';
-    const statusColor = c.effective_status === 'ACTIVE' ? '#16a34a' : c.effective_status === 'PAUSED' ? '#d97706' : '#888';
-    const i = c.insights || {};
-    const v = c.verdict || {};
-    const ctrColor = _colorVsAvg(i.ctr, avg.ctr);
-    const cpcColor = _colorVsAvg(i.cpc, avg.cpc, true);
-    const cpaColor = _colorVsAvg(i.cost_per_result, avg.cpa, true);
-    return `<details style="border:.5px solid var(--border-3);border-radius:var(--r-md);padding:.5rem .75rem;margin-bottom:6px;background:var(--bg-secondary)">
-      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${statusBg};color:${statusColor};font-weight:500">${c.effective_status}</span>
-        <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${v.color || '#9ca3af'}33;color:${v.color || '#9ca3af'};font-weight:600">${v.label || '—'}</span>
-        <strong style="font-size:13px">${c.name}</strong>
-        <span style="color:var(--text-2);font-size:11px">${c.objective} · ${c.n_adsets} adsets · ${c.n_ads} ads</span>
-        <span style="margin-left:auto;font-size:12px;color:#dc2626">${eurFmt(i.spend)}</span>
-      </summary>
-      <div style="margin-top:8px;padding-top:8px;border-top:.5px dashed var(--border-3)">
-        <p style="font-size:11px;color:${v.color || 'var(--text-2)'};font-style:italic;margin-bottom:8px">${v.reason || ''}</p>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-bottom:8px;font-size:11px">
-          <div><span style="color:var(--text-2)">Alcance:</span> ${eur0(i.reach)}</div>
-          <div><span style="color:var(--text-2)">Imp:</span> ${eur0(i.impressions)}</div>
-          <div><span style="color:var(--text-2)">Frec:</span> ${i.frequency != null ? i.frequency.toFixed(2) : '—'}</div>
-          <div><span style="color:var(--text-2)">Clics:</span> ${eur0(i.clicks)}</div>
-          <div style="color:${ctrColor}"><span style="color:var(--text-2)">CTR:</span> ${i.ctr != null ? (i.ctr*100).toFixed(2)+'%' : '—'}</div>
-          <div style="color:${cpcColor}"><span style="color:var(--text-2)">CPC:</span> ${i.cpc != null ? '€'+i.cpc.toFixed(2) : '—'}</div>
-          <div><span style="color:var(--text-2)">CPM:</span> ${i.cpm != null ? '€'+i.cpm.toFixed(2) : '—'}</div>
-          <div><span style="color:var(--text-2)">Resultados:</span> ${i.results || 0}</div>
-          <div style="color:${cpaColor}"><span style="color:var(--text-2)">CPA:</span> ${i.cost_per_result != null ? '€'+i.cost_per_result.toFixed(2) : '—'}</div>
-          ${i.roas != null ? `<div><span style="color:var(--text-2)">ROAS:</span> ${i.roas.toFixed(2)}×</div>` : ''}
+  list.innerHTML = camps.map((c) => renderCampaignCard(c, avg)).join('');
+}
+
+function renderCampaignCard(c, avg) {
+  const statusBg = c.effective_status === 'ACTIVE' ? 'rgba(99,153,34,.18)'
+                 : c.effective_status === 'PAUSED' ? 'rgba(217,119,6,.18)' : 'rgba(150,150,150,.18)';
+  const statusColor = c.effective_status === 'ACTIVE' ? '#16a34a' : c.effective_status === 'PAUSED' ? '#d97706' : '#888';
+  const i = c.insights || {};
+  const v = c.verdict || {};
+  const obj = objectiveLabel(c.objective);
+  const eb = c.effective_budget;
+  const fb = formatBudget(eb);
+  const ctrColor = _colorVsAvg(i.ctr, avg.ctr);
+  const cpcColor = _colorVsAvg(i.cpc, avg.cpc, true);
+  const cpaColor = _colorVsAvg(i.cost_per_result, avg.cpa, true);
+
+  // Barra de progreso para lifetime: gastado / presupuesto.
+  let progressHtml = '';
+  if (eb?.kind === 'lifetime' && eb.monto > 0 && i.spend > 0) {
+    const pct = Math.min(100, (i.spend / eb.monto) * 100);
+    progressHtml = `<div class="bar" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px" title="${i.spend.toFixed(2)} de €${eb.monto.toFixed(2)} (${pct.toFixed(0)}%)"><div style="width:${pct}%"></div></div>`;
+  }
+
+  // Mini-resumen del primer ad (mostrar QUÉ se promociona).
+  const primaryThumb = c.primary_thumbnail ? thumbProxy(c.primary_thumbnail) : null;
+  const firstAdCreative = (() => {
+    for (const s of c.adsets || []) {
+      for (const a of s.ads || []) {
+        if (a.creative?.body || a.creative?.title || a.creative?.thumbnail_url) return a.creative;
+      }
+    }
+    return null;
+  })();
+  const previewCopy = firstAdCreative?.body || firstAdCreative?.title || '';
+
+  // Tooltip presupuesto.
+  const budgetTip = 'Presupuesto diario = lo máximo que Meta puede gastar por día. Presupuesto total (lifetime) = lo máximo total para toda la campaña.';
+
+  return `<details style="border:.5px solid var(--border-3);border-radius:var(--r-md);padding:.5rem .75rem;margin-bottom:6px;background:var(--bg-secondary)">
+    <summary style="cursor:pointer;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      ${primaryThumb ? `<img src="${primaryThumb}" class="creative-thumb" alt="" loading="lazy" onerror="this.style.display='none'">` : `<div class="creative-thumb" style="display:flex;align-items:center;justify-content:center;color:var(--text-2);font-size:9px">sin imagen</div>`}
+      <div style="flex:1;min-width:200px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${statusBg};color:${statusColor};font-weight:500">${c.effective_status}</span>
+          <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${v.color || '#9ca3af'}33;color:${v.color || '#9ca3af'};font-weight:600">${v.label || '—'}</span>
+          <span title="${obj.hint.replace(/"/g,'&quot;')}" style="padding:2px 8px;border-radius:10px;font-size:10px;background:rgba(24,95,165,.12);color:#185FA5;font-weight:500;cursor:help">${obj.label}</span>
+          <strong style="font-size:13px">${c.name}</strong>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
-          <button onclick="campToggle('${c.id}','${c.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}')" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">${c.status === 'ACTIVE' ? '⏸ Pausar' : '▶ Activar'} campaña</button>
-          <button onclick="campBudget('${c.id}','${c.budget?.kind || ''}',${c.budget?.monto || 0})" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">💰 Presupuesto (${c.budget?.kind ? `${c.budget.kind}=€${c.budget.monto}` : 'sin'})</button>
-        </div>
-        ${c.adsets.map((s) => {
-          const si = s.insights || {};
-          const sv = s.verdict || {};
-          return `<div style="margin-left:1rem;padding:6px 8px;border-left:2px solid var(--border-3);margin-bottom:4px">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-              <span style="padding:1px 6px;border-radius:8px;font-size:9px;background:${s.effective_status === 'ACTIVE' ? 'rgba(99,153,34,.15)' : 'rgba(150,150,150,.15)'};color:${s.effective_status === 'ACTIVE' ? '#16a34a' : '#888'}">${s.effective_status}</span>
-              <span style="font-size:12px;font-weight:500">${s.name}</span>
-              <span style="padding:1px 6px;border-radius:8px;font-size:9px;background:${sv.color || '#9ca3af'}22;color:${sv.color || '#9ca3af'}">${sv.label?.replace(/[🟢🔵🟠🔴]\s*/, '') || ''}</span>
-              <span style="color:var(--text-2);font-size:10px">${s.n_ads} ads · ${s.budget?.kind ? `${s.budget.kind}=€${s.budget.monto}` : 'sin presupuesto'}</span>
-              <span style="margin-left:auto;font-size:11px">${eurFmt(si.spend)} · CTR ${si.ctr != null ? (si.ctr*100).toFixed(2)+'%' : '—'}</span>
-              <button onclick="adsetToggle('${s.id}','${s.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}')" style="padding:2px 8px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">${s.status === 'ACTIVE' ? '⏸' : '▶'}</button>
-            </div>
-            ${s.ads.length ? `<div style="margin-left:1.2rem;margin-top:4px">
-              ${s.ads.map((a) => {
-                const av = a.verdict || {};
-                return `<div style="display:flex;gap:6px;align-items:center;font-size:10px;color:var(--text-2);padding:2px 0">
-                  <span style="padding:1px 5px;border-radius:6px;font-size:9px;background:${av.color || '#9ca3af'}22;color:${av.color || '#9ca3af'}">${av.label?.replace(/[🟢🔵🟠🔴]\s*/, '') || ''}</span>
-                  ${a.name} · ${eurFmt(a.insights?.spend)} · CTR ${a.insights?.ctr != null ? (a.insights.ctr*100).toFixed(2)+'%' : '—'}
-                  <button onclick="adToggle('${a.id}','${a.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}')" style="margin-left:auto;padding:1px 6px;font-size:9px;border-radius:3px;cursor:pointer;border:.5px solid var(--border-3);background:transparent;color:var(--text-2)">${a.status === 'ACTIVE' ? '⏸' : '▶'}</button>
-                </div>`;
-              }).join('')}
-            </div>` : ''}
-          </div>`;
-        }).join('')}
+        ${previewCopy ? `<p style="font-size:11px;color:var(--text-2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(previewCopy||'').replace(/"/g,'&quot;')}">${(previewCopy||'').slice(0,90)}</p>` : ''}
       </div>
-    </details>`;
-  }).join('');
+      <div style="text-align:right">
+        <p style="font-size:11px;color:var(--text-2)" title="${budgetTip}">Presupuesto: ${fb ? `<strong style="color:var(--text)">${fb.text}</strong>` : '—'}${eb?.source === 'ABO' ? ' <span style="font-size:9px;color:var(--text-2)">(ABO)</span>' : ''}</p>
+        <p style="font-size:12px;color:#dc2626">Gastado: ${eurFmt(i.spend)}${progressHtml}</p>
+      </div>
+    </summary>
+    <div style="margin-top:8px;padding-top:8px;border-top:.5px dashed var(--border-3)">
+      <p style="font-size:11px;color:${v.color || 'var(--text-2)'};font-style:italic;margin-bottom:8px">${v.reason || ''}</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-bottom:8px;font-size:11px">
+        <div><span style="color:var(--text-2)">Alcance:</span> ${eur0(i.reach)}</div>
+        <div><span style="color:var(--text-2)">Imp:</span> ${eur0(i.impressions)}</div>
+        <div><span style="color:var(--text-2)">Frec:</span> ${i.frequency != null ? i.frequency.toFixed(2) : '—'}</div>
+        <div><span style="color:var(--text-2)">Clics:</span> ${eur0(i.clicks)}</div>
+        <div style="color:${ctrColor}"><span style="color:var(--text-2)">CTR:</span> ${i.ctr != null ? (i.ctr*100).toFixed(2)+'%' : '—'}</div>
+        <div style="color:${cpcColor}"><span style="color:var(--text-2)">CPC:</span> ${i.cpc != null ? '€'+i.cpc.toFixed(2) : '—'}</div>
+        <div><span style="color:var(--text-2)">CPM:</span> ${i.cpm != null ? '€'+i.cpm.toFixed(2) : '—'}</div>
+        <div><span style="color:var(--text-2)">Resultados:</span> ${i.results || 0}</div>
+        <div style="color:${cpaColor}"><span style="color:var(--text-2)">CPA:</span> ${i.cost_per_result != null ? '€'+i.cost_per_result.toFixed(2) : '—'}</div>
+        ${i.roas != null ? `<div><span style="color:var(--text-2)">ROAS:</span> ${i.roas.toFixed(2)}×</div>` : ''}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+        <button data-act="toggle-camp" data-id="${c.id}" data-newstatus="${c.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}" onclick="onActionClick(event)" style="padding:4px 12px;font-size:11px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">${c.status === 'ACTIVE' ? '⏸ Pausar' : '▶ Activar'} campaña</button>
+        ${eb?.level === 'campaign' ? `<button onclick="openBudgetModal('campaign','${c.id}','${eb.kind}',${eb.monto},${i.spend||0},'${(c.name||'').replace(/'/g,'')}')" style="padding:4px 12px;font-size:11px;border-radius:4px;cursor:pointer;border:.5px solid #185FA5;background:rgba(24,95,165,.10);color:#185FA5;font-weight:500">💰 ${v.kind === 'escalar' ? 'Subir presupuesto' : 'Cambiar presupuesto'}</button>`
+          : eb?.level === 'adset' ? `<span style="padding:4px 12px;font-size:11px;color:var(--text-2)">Presupuesto se gestiona por adset ↓</span>`
+          : '' }
+      </div>
+      ${c.adsets.map((s) => renderAdsetBlock(s)).join('')}
+    </div>
+  </details>`;
 }
 
-async function _toggleEntity(kind, id, status) {
-  try {
-    await api(`/api/v1/meta/${kind}/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) });
-    await loadAds(true);
-  } catch (e) { alert('Error: ' + e.message); }
+function renderAdsetBlock(s) {
+  const si = s.insights || {};
+  const sv = s.verdict || {};
+  const sb = formatBudget(s.budget);
+  let sProg = '';
+  if (s.budget?.kind === 'lifetime' && s.budget.monto > 0 && si.spend > 0) {
+    const pct = Math.min(100, (si.spend / s.budget.monto) * 100);
+    sProg = `<div class="bar" style="width:90px;display:inline-block;vertical-align:middle;margin-left:4px"><div style="width:${pct}%"></div></div>`;
+  }
+  return `<div style="margin-left:1rem;padding:8px 10px;border-left:2px solid var(--border-3);margin-bottom:6px;background:rgba(0,0,0,.02);border-radius:4px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+      <span style="padding:1px 6px;border-radius:8px;font-size:9px;background:${s.effective_status === 'ACTIVE' ? 'rgba(99,153,34,.15)' : 'rgba(150,150,150,.15)'};color:${s.effective_status === 'ACTIVE' ? '#16a34a' : '#888'}">${s.effective_status}</span>
+      <span style="font-size:12px;font-weight:500">${s.name}</span>
+      ${sv.label ? `<span style="padding:1px 6px;border-radius:8px;font-size:9px;background:${sv.color || '#9ca3af'}22;color:${sv.color || '#9ca3af'}">${sv.label.replace(/[🟢🔵🟠🔴]\s*/, '')}</span>` : ''}
+      <span style="color:var(--text-2);font-size:10px">${s.n_ads} ads${sb ? ' · ' + sb.text : ''}${sProg}</span>
+      <span style="margin-left:auto;font-size:11px">${eurFmt(si.spend)} · CTR ${si.ctr != null ? (si.ctr*100).toFixed(2)+'%' : '—'}</span>
+      <button data-act="toggle-adset" data-id="${s.id}" data-newstatus="${s.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}" onclick="onActionClick(event)" style="padding:2px 8px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)" title="${s.status === 'ACTIVE' ? 'Pausar' : 'Activar'} adset">${s.status === 'ACTIVE' ? '⏸' : '▶'}</button>
+      ${s.budget?.kind ? `<button onclick="openBudgetModal('adset','${s.id}','${s.budget.kind}',${s.budget.monto},${si.spend||0},'${(s.name||'').replace(/'/g,'')}')" style="padding:2px 8px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid #185FA5;background:transparent;color:#185FA5" title="Cambiar presupuesto del adset">💰</button>` : ''}
+    </div>
+    ${s.ads.length ? `<div style="margin-left:1.2rem">${s.ads.map(renderAdRow).join('')}</div>` : ''}
+  </div>`;
 }
-function campToggle(id, status)  { _toggleEntity('campaign', id, status); }
-function adsetToggle(id, status) { _toggleEntity('adset', id, status); }
-function adToggle(id, status)    { _toggleEntity('ad', id, status); }
 
-async function campBudget(id, kind, current) {
-  const nuevo = prompt(`Nuevo presupuesto en € (${kind || 'daily o lifetime'}). Actual: €${current}`, current);
-  if (nuevo == null) return;
-  const monto = Number(nuevo);
-  if (!Number.isFinite(monto) || monto <= 0) { alert('Monto inválido'); return; }
-  const body = kind === 'lifetime' ? { lifetime_budget: monto } : { daily_budget: monto };
-  try {
-    await api(`/api/v1/meta/campaign/${id}/budget`, { method: 'POST', body: JSON.stringify(body) });
-    await loadAds(true);
-  } catch (e) { alert('Error: ' + e.message); }
+function renderAdRow(a) {
+  const av = a.verdict || {};
+  const cr = a.creative || {};
+  const thumb = cr.thumbnail_url ? thumbProxy(cr.thumbnail_url) : null;
+  const cta = ctaLabel(cr.cta);
+  const copy = cr.body || cr.title || '';
+  const showCopy = (copy || '').slice(0, 140);
+  return `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:.5px dashed var(--border-3)">
+    ${thumb ? `<img src="${thumb}" alt="" loading="lazy" style="width:54px;height:54px;border-radius:4px;object-fit:cover;background:var(--bg);flex-shrink:0" onerror="this.style.display='none'">` : `<div style="width:54px;height:54px;border-radius:4px;background:var(--bg);flex-shrink:0"></div>`}
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">
+        ${av.label ? `<span style="padding:1px 5px;border-radius:6px;font-size:9px;background:${av.color || '#9ca3af'}22;color:${av.color || '#9ca3af'}">${av.label.replace(/[🟢🔵🟠🔴]\s*/, '')}</span>` : ''}
+        <span style="font-size:11px;font-weight:500">${a.name}</span>
+        <span style="font-size:10px;color:var(--text-2)">${eurFmt(a.insights?.spend)} · CTR ${a.insights?.ctr != null ? (a.insights.ctr*100).toFixed(2)+'%' : '—'}${a.insights?.results ? ' · ' + a.insights.results + ' resultados' : ''}</span>
+        ${cr.post_permalink ? `<a href="${cr.post_permalink}" target="_blank" rel="noopener" style="font-size:10px;color:#185FA5;text-decoration:none;margin-left:auto" title="Abrir publicación real en Meta">↗ Ver publicación</a>` : ''}
+        <button data-act="toggle-ad" data-id="${a.id}" data-newstatus="${a.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}" onclick="onActionClick(event)" style="padding:1px 6px;font-size:9px;border-radius:3px;cursor:pointer;border:.5px solid var(--border-3);background:transparent;color:var(--text-2)" title="${a.status === 'ACTIVE' ? 'Pausar' : 'Activar'} ad">${a.status === 'ACTIVE' ? '⏸' : '▶'}</button>
+      </div>
+      ${showCopy ? `<p style="font-size:11px;color:var(--text-2);line-height:1.3;margin:2px 0">${showCopy.replace(/[<>]/g, '')}${copy.length > 140 ? '…' : ''}</p>` : ''}
+      ${cta ? `<p style="font-size:10px;color:var(--text-2);margin-top:2px"><span style="padding:1px 6px;border-radius:4px;background:var(--bg-secondary)">CTA: ${cta}</span></p>` : ''}
+    </div>
+  </div>`;
 }
+
+// Handler centralizado para botones de acción — captura el elemento
+// del DOM y muestra spinner + toast.
+async function onActionClick(ev) {
+  const btn = ev.currentTarget;
+  const act = btn.dataset.act;
+  const id = btn.dataset.id;
+  const newStatus = btn.dataset.newstatus;
+  if (!act || !id) return;
+  const kindMap = { 'toggle-camp': 'campaign', 'toggle-adset': 'adset', 'toggle-ad': 'ad' };
+  const kind = kindMap[act];
+  if (!kind) return;
+  const verb = newStatus === 'PAUSED' ? 'Pausando' : 'Activando';
+  if (!confirm(`${verb} ${kind === 'campaign' ? 'la campaña' : kind === 'adset' ? 'el adset' : 'el ad'}. ¿Confirmás?`)) return;
+  setBtnLoading(btn, true, verb + '…');
+  try {
+    const r = await api(`/api/v1/meta/${kind}/${id}/status`, { method: 'POST', body: JSON.stringify({ status: newStatus }) });
+    if (r.ok) {
+      toast(`${kind === 'campaign' ? 'Campaña' : kind === 'adset' ? 'Adset' : 'Ad'} ${newStatus === 'PAUSED' ? 'pausad' : 'activad'}${kind === 'adset' || kind === 'ad' ? 'o' : 'a'} ✓`, 'ok');
+      await loadAds(true);
+    } else {
+      toast('No se pudo: ' + (r.error || r.message || 'error desconocido'), 'err', 6000);
+    }
+  } catch (e) {
+    toast('Error: ' + e.message, 'err', 6000);
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+// ─── Modal "Subir presupuesto" ───────────────────────────────────────
+function openBudgetModal(kind, id, budgetKind, currentMonto, spent, name) {
+  if (state.config && !state.config.env_set?.META_USER_TOKEN && !state.config.tokens?.meta_user_token?.present) {
+    toast('Falta token de Marketing API. Cargalo en Settings.', 'err', 6000);
+    return;
+  }
+  const current = Number(currentMonto) || 0;
+  const sugerido = Math.max(1, Math.round(current * 1.25));
+  const minLifetime = budgetKind === 'lifetime' && spent > 0 ? Math.ceil(spent + 1) : null;
+  // Construir modal
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-bg';
+  wrap.id = '_budget-modal';
+  wrap.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>💰 ${current === 0 ? 'Configurar' : 'Subir'} presupuesto ${budgetKind === 'lifetime' ? 'total' : 'diario'}</h3>
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem"><strong>${kind === 'campaign' ? 'Campaña' : 'Adset'}:</strong> ${name || id}</p>
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Actual: <strong style="color:var(--text)">€${current.toFixed(2)}</strong>${spent > 0 ? ` · gastado: €${spent.toFixed(2)}` : ''}</p>
+      <div class="learning-warn">
+        ⚠️ <strong>Consejo del media buyer:</strong> Subí de a poco (20-30%). Duplicar el presupuesto de golpe puede resetear la <em>fase de aprendizaje</em> del anuncio y empeorar el rendimiento.
+      </div>
+      <p style="font-size:11px;color:var(--text-2);margin:8px 0 4px">Sugerencias rápidas (vs actual €${current.toFixed(2)}):</p>
+      <div class="preset-row">
+        <button class="preset-btn"    onclick="_budgetPreset(20)">+20% (€${(current*1.2).toFixed(2)})</button>
+        <button class="preset-btn on" onclick="_budgetPreset(25)">+25% (€${(current*1.25).toFixed(2)})</button>
+        <button class="preset-btn"    onclick="_budgetPreset(30)">+30% (€${(current*1.3).toFixed(2)})</button>
+        <button class="preset-btn"    onclick="_budgetPreset(50)">+50% (€${(current*1.5).toFixed(2)})</button>
+      </div>
+      <p style="font-size:11px;color:var(--text-2);margin:8px 0 4px">O escribí un monto manual (€):</p>
+      <input type="number" id="_budget-input" value="${sugerido.toFixed(2)}" step="0.01" min="${minLifetime || 1}" style="width:100%;padding:8px;font-size:13px;border:.5px solid var(--border-2);border-radius:var(--r-md);background:var(--bg-secondary);color:var(--text)">
+      ${minLifetime ? `<p style="font-size:10px;color:#d97706;margin-top:4px">Mínimo €${minLifetime} (debe ser mayor al gasto ya realizado).</p>` : ''}
+      <p id="_budget-err" style="font-size:11px;color:#dc2626;min-height:14px;margin-top:6px"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:.75rem">
+        <button class="btn-secondary" onclick="closeBudgetModal()" style="padding:6px 14px;font-size:12px;border-radius:var(--r-md);cursor:pointer">Cancelar</button>
+        <button id="_budget-save" class="btn-primary" onclick="saveBudgetModal('${kind}','${id}','${budgetKind}')" style="padding:6px 14px;font-size:12px;border-radius:var(--r-md);cursor:pointer">Aplicar</button>
+      </div>
+    </div>`;
+  wrap.onclick = closeBudgetModal;
+  document.body.appendChild(wrap);
+  state._budgetModal = { kind, id, budgetKind, current, spent };
+}
+function _budgetPreset(pct) {
+  const m = state._budgetModal;
+  if (!m) return;
+  const v = (m.current * (1 + pct / 100)).toFixed(2);
+  $('_budget-input').value = v;
+  document.querySelectorAll('#_budget-modal .preset-btn').forEach((b) => b.classList.remove('on'));
+  // marcar el que matchea
+  document.querySelectorAll('#_budget-modal .preset-btn').forEach((b) => {
+    if (b.textContent.includes(`+${pct}%`)) b.classList.add('on');
+  });
+}
+function closeBudgetModal() {
+  const el = $('_budget-modal'); if (el) el.remove();
+  state._budgetModal = null;
+}
+async function saveBudgetModal(kind, id, budgetKind) {
+  const input = $('_budget-input');
+  const errEl = $('_budget-err');
+  const btn = $('_budget-save');
+  const m = state._budgetModal;
+  const monto = Number(input.value);
+  errEl.textContent = '';
+  if (!Number.isFinite(monto) || monto <= 0) { errEl.textContent = 'Monto inválido.'; return; }
+  if (budgetKind === 'lifetime' && m.spent > 0 && monto <= m.spent) {
+    errEl.textContent = `El presupuesto total (€${monto.toFixed(2)}) debe ser mayor al gasto ya realizado (€${m.spent.toFixed(2)}).`;
+    return;
+  }
+  const body = budgetKind === 'lifetime' ? { lifetime_budget: monto } : { daily_budget: monto };
+  setBtnLoading(btn, true, 'Aplicando…');
+  try {
+    const r = await api(`/api/v1/meta/${kind}/${id}/budget`, { method: 'POST', body: JSON.stringify(body) });
+    if (r.ok) {
+      closeBudgetModal();
+      toast(`Presupuesto actualizado a €${monto.toFixed(2)} ✓`, 'ok');
+      await loadAds(true);
+    } else {
+      errEl.textContent = r.error || r.message || 'No se pudo actualizar.';
+    }
+  } catch (e) {
+    errEl.textContent = e.message;
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+// Aliases legacy para compat con cualquier handler suelto.
+function campToggle(id, status)  { /* deprecado — usar onActionClick */ }
+function adsetToggle(id, status) { /* idem */ }
+function adToggle(id, status)    { /* idem */ }
+function campBudget()            { /* idem — reemplazado por openBudgetModal */ }
 
 // ─── F3: AI analysis ─────────────────────────────────────────────────
 async function runAi() {
@@ -657,6 +890,11 @@ window.setMainTab = setMainTab;
 window.setIgPeriod = setIgPeriod;
 window.setIgSort = setIgSort;
 window.setAdsStatusTab = setAdsStatusTab;
+window.onActionClick = onActionClick;
+window.openBudgetModal = openBudgetModal;
+window.closeBudgetModal = closeBudgetModal;
+window.saveBudgetModal = saveBudgetModal;
+window._budgetPreset = _budgetPreset;
 window.probeTok = probeTok;
 window.saveTok = saveTok;
 window.clearTok = clearTok;

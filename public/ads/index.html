@@ -32,9 +32,36 @@
   .btn-primary{background:#185FA5;color:#fff;border:none}
   .btn-secondary{background:transparent;color:var(--text);border:.5px solid var(--border-2)}
   .btn-danger{background:transparent;color:#dc2626;border:.5px solid #dc2626}
+  /* Toasts (esquina inferior derecha) */
+  .toast-stack{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;z-index:9999;pointer-events:none}
+  .toast{background:var(--bg-primary);border:.5px solid var(--border-2);border-radius:var(--r-md);padding:10px 14px;font-size:12px;color:var(--text);box-shadow:0 6px 18px rgba(0,0,0,.18);pointer-events:auto;min-width:220px;animation:slidein .25s ease}
+  .toast.ok{border-left:3px solid #16a34a}
+  .toast.err{border-left:3px solid #dc2626}
+  .toast.info{border-left:3px solid #185FA5}
+  @keyframes slidein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  /* Modal */
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:9000;padding:1rem}
+  .modal{background:var(--bg-primary);border:.5px solid var(--border-2);border-radius:var(--r-lg);max-width:480px;width:100%;padding:1.25rem;color:var(--text)}
+  .modal h3{font-size:15px;font-weight:600;margin-bottom:.75rem}
+  .preset-row{display:flex;gap:6px;flex-wrap:wrap;margin:.5rem 0}
+  .preset-btn{padding:5px 12px;font-size:11px;border:.5px solid var(--border-2);border-radius:var(--r-md);background:transparent;color:var(--text);cursor:pointer}
+  .preset-btn.on{background:#185FA5;color:#fff;border-color:#185FA5}
+  .learning-warn{background:rgba(217,119,6,.12);border-left:3px solid #d97706;padding:8px 10px;border-radius:4px;font-size:11px;color:var(--text);margin:.5rem 0;line-height:1.45}
+  /* Spinner inline para botones */
+  .spin{display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:4px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  /* Creativo en lista */
+  .creative-thumb{width:42px;height:42px;border-radius:6px;object-fit:cover;background:var(--bg-secondary);flex-shrink:0}
+  .creative-thumb-lg{width:100%;max-width:280px;border-radius:8px;background:var(--bg-secondary)}
+  /* Barra de progreso budget */
+  .bar{height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden;margin-top:4px}
+  .bar > div{height:100%;background:linear-gradient(90deg,#16a34a,#d97706 80%,#dc2626 100%)}
 </style>
 </head>
 <body>
+
+<!-- Toast stack -->
+<div class="toast-stack" id="toast-stack"></div>
 
 <!-- TOPBAR -->
 <div class="topbar">
