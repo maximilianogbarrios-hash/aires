@@ -38,40 +38,76 @@ router.get('/glossary', (req, res) => {
   res.json({ ok: true, ...glossary.all() });
 });
 
-// ─── Proxy de miniaturas de Instagram ────────────────────────────────
-// scontent.cdninstagram.com bloquea hotlink desde otros dominios. El
-// browser nunca puede cargar `media_url`/`thumbnail_url` directo. Este
-// proxy hace el fetch server-side y stream-ea al cliente, con cache 1h.
+// ─── Proxy de miniaturas de Instagram / Facebook Ads ─────────────────
+// scontent.cdninstagram.com / *.fbcdn.net bloquean hotlink desde otros
+// dominios. El browser nunca puede cargar media_url/thumbnail_url
+// directo. Este proxy hace el fetch server-side y stream-ea con cache 1h.
+//
+// Whitelist por sufijo de hostname (NO regex laxa — evita SSRF):
+//   - cdninstagram.com (IG orgánico)
+//   - fbcdn.net (creativos de ads + Facebook CDN, incluye
+//     scontent-*.xx.fbcdn.net y external-*.xx.fbcdn.net)
 // Sin token aquí — las URLs ya vienen firmadas por Meta. Solo el rol
 // (meta_ads_view) gatea el acceso.
+const _THUMB_ALLOWED_SUFFIXES = ['.cdninstagram.com', '.fbcdn.net', '.facebook.com'];
+function _isAllowedThumbHost(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    return _THUMB_ALLOWED_SUFFIXES.some((s) => host === s.slice(1) || host.endsWith(s));
+  } catch { return false; }
+}
+// Placeholder SVG 1×1 gris para fallback silencioso (mejor que broken image).
+const _PLACEHOLDER_SVG = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" fill="#e7e5e4"/><text x="50%" y="55%" text-anchor="middle" font-family="sans-serif" font-size="9" fill="#a8a29e">sin img</text></svg>',
+  'utf8'
+);
+function _servePlaceholder(res, reason) {
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  if (reason) res.setHeader('X-Proxy-Fallback', reason);
+  res.end(_PLACEHOLDER_SVG);
+}
+
 router.get('/media-thumb', async (req, res) => {
   try {
     const url = String(req.query.url || '').trim();
-    if (!url) return res.status(400).send('url requerida');
-    // Whitelist: solo dominios oficiales de Meta para evitar SSRF.
-    if (!/^https:\/\/(scontent[a-z0-9-]*\.cdninstagram\.com|scontent[a-z0-9-]*\.xx\.fbcdn\.net|instagram\.[a-z]+\.fna\.fbcdn\.net|.*\.cdninstagram\.com|.*\.fbcdn\.net)\//i.test(url)) {
-      return res.status(400).send('dominio no permitido');
+    if (!url) return _servePlaceholder(res, 'no-url');
+    if (!_isAllowedThumbHost(url)) {
+      console.warn('[meta.media-thumb] host bloqueado:', url.slice(0, 120));
+      return _servePlaceholder(res, 'host-not-allowed');
     }
     const cacheKey = 'thumb:' + Buffer.from(url).toString('base64').slice(0, 200);
-    const cached = await metaCache.get(cacheKey, 'binary');
+    const cached = await metaCache.get(cacheKey, 'binary').catch(() => null);
     if (cached?.buffer) {
       res.setHeader('Content-Type', cached.content_type);
       res.setHeader('Cache-Control', 'public, max-age=3600');
       res.setHeader('X-Proxy-Cache', 'HIT');
       return res.end(cached.buffer);
     }
-    const r = await fetch(url);
-    if (!r.ok) return res.status(r.status).send('upstream error');
+    let r;
+    try {
+      r = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; AiresAdsProxy/1.0)' } });
+    } catch (e) {
+      console.warn('[meta.media-thumb] fetch fail:', e.message, 'url=', url.slice(0, 120));
+      return _servePlaceholder(res, 'fetch-error');
+    }
+    if (!r.ok) {
+      console.warn('[meta.media-thumb] upstream', r.status, 'url=', url.slice(0, 120));
+      return _servePlaceholder(res, 'upstream-' + r.status);
+    }
     const contentType = r.headers.get('content-type') || 'image/jpeg';
     const buf = Buffer.from(await r.arrayBuffer());
-    await metaCache.putBinary(cacheKey, buf, contentType, 3600);
+    if (buf.length === 0) return _servePlaceholder(res, 'empty-body');
+    await metaCache.putBinary(cacheKey, buf, contentType, 3600).catch(() => {});
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.setHeader('X-Proxy-Cache', 'MISS');
     res.end(buf);
   } catch (e) {
-    console.error('[meta.media-thumb]', e.message);
-    res.status(500).send('proxy error');
+    console.error('[meta.media-thumb] internal:', e.message);
+    _servePlaceholder(res, 'internal');
   }
 });
 

@@ -542,17 +542,19 @@ function renderCampaignCard(c, avg) {
     progressHtml = `<div class="bar" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px" title="${i.spend.toFixed(2)} de €${eb.monto.toFixed(2)} (${pct.toFixed(0)}%)"><div style="width:${pct}%"></div></div>`;
   }
 
-  // Mini-resumen del primer ad (mostrar QUÉ se promociona).
+  // Mini-resumen del primer ad (mostrar QUÉ se promociona). NO usar
+  // `title` como preview — viene como "instagram.com" en posts
+  // boosted. Usar body real o caption del IG media; si no, nada.
   const primaryThumb = c.primary_thumbnail ? thumbProxy(c.primary_thumbnail) : null;
   const firstAdCreative = (() => {
     for (const s of c.adsets || []) {
       for (const a of s.ads || []) {
-        if (a.creative?.body || a.creative?.title || a.creative?.thumbnail_url) return a.creative;
+        if (a.creative?.body || a.creative?.ig_caption || a.creative?.thumbnail_url) return a.creative;
       }
     }
     return null;
   })();
-  const previewCopy = firstAdCreative?.body || firstAdCreative?.title || '';
+  const previewCopy = firstAdCreative?.body || firstAdCreative?.ig_caption || '';
 
   // Tooltip presupuesto.
   const budgetTip = 'Presupuesto diario = lo máximo que Meta puede gastar por día. Presupuesto total (lifetime) = lo máximo total para toda la campaña.';
@@ -625,10 +627,13 @@ function renderAdsetBlock(s) {
 function renderAdRow(a) {
   const av = a.verdict || {};
   const cr = a.creative || {};
-  const thumb = cr.thumbnail_url ? thumbProxy(cr.thumbnail_url) : null;
+  // Thumbnail: thumbnail_url o image_url, ambos pasan por proxy.
+  const thumb = cr.thumbnail_url ? thumbProxy(cr.thumbnail_url) : (cr.image_url ? thumbProxy(cr.image_url) : null);
   const cta = ctaLabel(cr.cta);
-  const copy = cr.body || cr.title || '';
-  const showCopy = (copy || '').slice(0, 140);
+  // Copy real: body (creative diseñado) o ig_caption (post boosted).
+  // NUNCA usar title — viene "instagram.com" en boosted.
+  const copy = cr.body || cr.ig_caption || '';
+  const showCopy = (copy || '').slice(0, 180);
   return `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:.5px dashed var(--border-3)">
     ${thumb ? `<img src="${thumb}" alt="" loading="lazy" style="width:54px;height:54px;border-radius:4px;object-fit:cover;background:var(--bg);flex-shrink:0" onerror="this.style.display='none'">` : `<div style="width:54px;height:54px;border-radius:4px;background:var(--bg);flex-shrink:0"></div>`}
     <div style="flex:1;min-width:0">
