@@ -174,6 +174,70 @@ router.get('/_debug/ads', async (req, res) => {
     const adsByAdset = all.reduce((m, a) => { m[a.adset_id || 'NO_ADSET_ID'] = (m[a.adset_id || 'NO_ADSET_ID'] || 0) + 1; return m; }, {});
     const adsByCamp  = all.reduce((m, a) => { m[a.campaign_id || 'NO_CAMP_ID'] = (m[a.campaign_id || 'NO_CAMP_ID'] || 0) + 1; return m; }, {});
     console.log('[meta._debug/ads] count=' + all.length + ' pages=' + pages + ' token=' + tokenSource);
+
+    // sample_ad_keys: las keys reales del primer ad — confirma si
+    // adset_id/campaign_id llegan planos o anidados. Sin esto adivinamos.
+    const sampleAdKeys = all.length > 0 ? Object.keys(all[0]).sort() : [];
+    const firstAdRaw = all.length > 0 ? all[0] : null;
+
+    // GROUPING CHECK — ejecuta el agrupado REAL del panel y verifica
+    // contra los IDs determinísticos del prompt.
+    const TARGET_CAMP = '6988700632040';
+    const TARGET_ADSET = '6988700632072';
+    const TARGET_AD = '6988700711672';
+    let groupingCheck;
+    try {
+      const { buildAdsDashboard } = require('../lib/meta/ads');
+      const dash = await buildAdsDashboard({ refresh: true });
+      if (!dash.ok) {
+        groupingCheck = { ok: false, status: dash.status, error: dash.error || dash.message };
+      } else {
+        const camp = (dash.campaigns || []).find((c) => String(c.id) === TARGET_CAMP);
+        if (!camp) {
+          groupingCheck = {
+            ok: false,
+            cache_version: 'ads_dashboard:v3',
+            target_campaign: TARGET_CAMP,
+            found: false,
+            total_campaigns_in_dashboard: (dash.campaigns || []).length,
+            campaign_ids_sample: (dash.campaigns || []).slice(0, 5).map((c) => c.id),
+          };
+        } else {
+          groupingCheck = {
+            ok: true,
+            cache_version: 'ads_dashboard:v3',
+            campaign_6988700632040: {
+              found: true,
+              n_ads: camp.n_ads,
+              n_adsets: camp.n_adsets,
+              primary_thumbnail: camp.primary_thumbnail,
+              ads: (camp.ads || []).map((a) => ({
+                id: a.id,
+                name: a.name,
+                effective_status: a.effective_status,
+                adset_id: a.adset_id,
+                has_thumbnail: !!(a.creative?.thumbnail_url || a.creative?.image_url),
+                permalink: a.creative?.post_permalink || null,
+              })),
+              adsets: (camp.adsets || []).map((s) => ({
+                id: s.id, name: s.name, n_ads: s.n_ads,
+                effective_status: s.effective_status,
+                is_ghost: !!s._ghost,
+              })),
+            },
+            asserts: {
+              campaign_has_at_least_1_ad: camp.n_ads >= 1,
+              contains_target_ad: (camp.ads || []).some((a) => a.id === TARGET_AD),
+              target_ad_has_thumbnail: (camp.ads || []).some((a) => a.id === TARGET_AD && !!(a.creative?.thumbnail_url || a.creative?.image_url)),
+              target_adset_present_with_ads: (camp.adsets || []).some((s) => s.id === TARGET_ADSET && s.n_ads >= 1),
+            },
+          };
+        }
+      }
+    } catch (e) {
+      groupingCheck = { ok: false, exception: e.message };
+    }
+
     res.json({
       ok: true,
       account_id: accId,
@@ -185,7 +249,13 @@ router.get('/_debug/ads', async (req, res) => {
       count_by_effective_status: countByStatus,
       distinct_adsets_referenced: Object.keys(adsByAdset).length,
       distinct_campaigns_referenced: Object.keys(adsByCamp).length,
+      sample_ad_keys: sampleAdKeys,
+      first_ad_adset_id_value: firstAdRaw?.adset_id ?? null,
+      first_ad_campaign_id_value: firstAdRaw?.campaign_id ?? null,
+      first_ad_has_nested_adset: !!firstAdRaw?.adset,
+      first_ad_has_nested_campaign: !!firstAdRaw?.campaign,
       sample,
+      grouping_check: groupingCheck,
       errors,
     });
   } catch (e) {
