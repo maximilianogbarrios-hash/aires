@@ -131,13 +131,13 @@ router.get('/_debug/ads', async (req, res) => {
     // Query EXACTA del prompt — la confirmada en Graph Explorer.
     // Primera página con limit:50 + sample.
     const fields = 'name,effective_status,adset_id,campaign_id,creative{thumbnail_url,image_url,body,title,effective_instagram_media_id,instagram_permalink_url,id}';
-    const r = await graphGet(`${accId}/ads`, { fields, limit: 50 }, token);
+    const r = await graphGet(`${accId}/ads`, { fields, limit: 100 }, token);
     const errors = [];
     if (!r.ok) errors.push({ stage: 'first_page', status: r.status, message: r.json?.error?.message || `HTTP ${r.status}` });
     let all = Array.isArray(r.json?.data) ? r.json.data : [];
     let nextUrl = r.json?.paging?.next || null;
     let pages = r.ok ? 1 : 0;
-    const maxPages = 5;
+    const maxPages = 20; // 20 × 100 = 2000 ads max en el debug
     while (nextUrl && pages < maxPages) {
       try {
         const nr = await fetch(nextUrl);

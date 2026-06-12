@@ -542,15 +542,14 @@ function renderCampaignCard(c, avg) {
     progressHtml = `<div class="bar" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px" title="${i.spend.toFixed(2)} de €${eb.monto.toFixed(2)} (${pct.toFixed(0)}%)"><div style="width:${pct}%"></div></div>`;
   }
 
-  // Mini-resumen del primer ad (mostrar QUÉ se promociona). NO usar
-  // `title` como preview — viene como "instagram.com" en posts
-  // boosted. Usar body real o caption del IG media; si no, nada.
+  // Mini-resumen del primer ad (mostrar QUÉ se promociona). Usamos c.ads
+  // (flat de TODOS los ads de la campaña) — no recorre adsets que puedan
+  // estar vacíos por el agrupamiento. NO usar `title` como preview —
+  // viene "instagram.com" en posts boosted.
   const primaryThumb = c.primary_thumbnail ? thumbProxy(c.primary_thumbnail) : null;
   const firstAdCreative = (() => {
-    for (const s of c.adsets || []) {
-      for (const a of s.ads || []) {
-        if (a.creative?.body || a.creative?.ig_caption || a.creative?.thumbnail_url) return a.creative;
-      }
+    for (const a of c.ads || []) {
+      if (a.creative?.body || a.creative?.ig_caption || a.creative?.thumbnail_url || a.creative?.image_url) return a.creative;
     }
     return null;
   })();
@@ -568,6 +567,7 @@ function renderCampaignCard(c, avg) {
           <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${v.color || '#9ca3af'}33;color:${v.color || '#9ca3af'};font-weight:600">${v.label || '—'}</span>
           <span title="${obj.hint.replace(/"/g,'&quot;')}" style="padding:2px 8px;border-radius:10px;font-size:10px;background:rgba(24,95,165,.12);color:#185FA5;font-weight:500;cursor:help">${obj.label}</span>
           <strong style="font-size:13px">${c.name}</strong>
+          <span style="font-size:10px;color:var(--text-2)">${c.n_ads || 0} ${(c.n_ads === 1) ? 'anuncio' : 'anuncios'}</span>
         </div>
         ${previewCopy ? `<p style="font-size:11px;color:var(--text-2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(previewCopy||'').replace(/"/g,'&quot;')}">${(previewCopy||'').slice(0,90)}</p>` : ''}
       </div>
@@ -597,6 +597,21 @@ function renderCampaignCard(c, avg) {
           : '' }
       </div>
       ${c.adsets.map((s) => renderAdsetBlock(s)).join('')}
+      ${(() => {
+        // Si el árbol de adsets no expone ningún ad pero la campaña SÍ tiene
+        // ads (los ghost adsets fallan, o todos los adsets fueron archivados),
+        // renderizamos los ads del flat directamente para que NUNCA queden
+        // invisibles.
+        const adsInTree = (c.adsets || []).reduce((n, s) => n + (s.ads?.length || 0), 0);
+        const flat = c.ads || [];
+        if (adsInTree === 0 && flat.length > 0) {
+          return `<div style="margin-top:8px;padding:8px;border:.5px dashed var(--border-3);border-radius:var(--r-md);background:rgba(0,0,0,.02)">
+            <p style="font-size:11px;color:var(--text-2);margin-bottom:6px">Anuncios de esta campaña (agrupados en flat — los adsets pueden estar archivados):</p>
+            ${flat.map(renderAdRow).join('')}
+          </div>`;
+        }
+        return '';
+      })()}
     </div>
   </details>`;
 }
