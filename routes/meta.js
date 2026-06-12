@@ -111,6 +111,89 @@ router.get('/media-thumb', async (req, res) => {
   }
 });
 
+// ─── DEBUG: traer los ads crudos para diagnosticar 0-ads bug ─────────
+// Llama la query EXACTA confirmada en Graph Explorer y reporta qué
+// vuelve del server (token usado, count, sample, errores). NO es un
+// endpoint normal — solo para diagnosticar. Role-gated igual que el
+// resto del módulo.
+router.get('/_debug/ads', async (req, res) => {
+  try {
+    const cfg = require('../lib/meta/client').getMarketingConfig();
+    if (cfg.missing.length > 0) {
+      return res.json({ ok: false, stage: 'env', missing: cfg.missing });
+    }
+    const accId = cfg.values.META_AD_ACCOUNT_ID;
+    const { resolveMarketingToken, graphGet } = require('../lib/meta/client');
+    const { token, source: tokenSource } = await resolveMarketingToken();
+    if (!token) {
+      return res.json({ ok: false, stage: 'token', message: 'sin token' });
+    }
+    // Query EXACTA del prompt — la confirmada en Graph Explorer.
+    // Primera página con limit:50 + sample.
+    const fields = 'name,effective_status,adset_id,campaign_id,creative{thumbnail_url,image_url,body,title,effective_instagram_media_id,instagram_permalink_url,id}';
+    const r = await graphGet(`${accId}/ads`, { fields, limit: 50 }, token);
+    const errors = [];
+    if (!r.ok) errors.push({ stage: 'first_page', status: r.status, message: r.json?.error?.message || `HTTP ${r.status}` });
+    let all = Array.isArray(r.json?.data) ? r.json.data : [];
+    let nextUrl = r.json?.paging?.next || null;
+    let pages = r.ok ? 1 : 0;
+    const maxPages = 5;
+    while (nextUrl && pages < maxPages) {
+      try {
+        const nr = await fetch(nextUrl);
+        if (!nr.ok) { errors.push({ stage: 'pagination', page: pages + 1, status: nr.status }); break; }
+        const nj = await nr.json();
+        if (nj?.error) { errors.push({ stage: 'pagination', page: pages + 1, message: nj.error.message }); break; }
+        if (Array.isArray(nj?.data)) all.push(...nj.data);
+        nextUrl = nj?.paging?.next || null;
+        pages++;
+      } catch (e) { errors.push({ stage: 'pagination', page: pages + 1, message: e.message }); break; }
+    }
+    const truncated = !!nextUrl;
+    const sample = all.slice(0, 5).map((a) => {
+      const cr = a.creative || null;
+      const thumb = cr?.thumbnail_url || cr?.image_url || null;
+      return {
+        id: a.id, name: a.name, effective_status: a.effective_status,
+        adset_id: a.adset_id, campaign_id: a.campaign_id,
+        creative: cr ? {
+          id: cr.id,
+          thumbnail_url: cr.thumbnail_url,
+          image_url: cr.image_url,
+          body: cr.body,
+          title: cr.title,
+          effective_instagram_media_id: cr.effective_instagram_media_id,
+          instagram_permalink_url: cr.instagram_permalink_url,
+        } : null,
+        // URL proxyada para que el user pueda abrirla y ver si la imagen carga.
+        thumbnail_proxied: thumb ? '/api/v1/meta/media-thumb?url=' + encodeURIComponent(thumb) : null,
+        thumbnail_raw: thumb,
+      };
+    });
+    const countByStatus = all.reduce((m, a) => { m[a.effective_status || 'UNKNOWN'] = (m[a.effective_status || 'UNKNOWN'] || 0) + 1; return m; }, {});
+    const adsByAdset = all.reduce((m, a) => { m[a.adset_id || 'NO_ADSET_ID'] = (m[a.adset_id || 'NO_ADSET_ID'] || 0) + 1; return m; }, {});
+    const adsByCamp  = all.reduce((m, a) => { m[a.campaign_id || 'NO_CAMP_ID'] = (m[a.campaign_id || 'NO_CAMP_ID'] || 0) + 1; return m; }, {});
+    console.log('[meta._debug/ads] count=' + all.length + ' pages=' + pages + ' token=' + tokenSource);
+    res.json({
+      ok: true,
+      account_id: accId,
+      token_source: tokenSource,
+      token_last6: token.slice(-6),
+      pages_fetched: pages,
+      truncated,
+      count: all.length,
+      count_by_effective_status: countByStatus,
+      distinct_adsets_referenced: Object.keys(adsByAdset).length,
+      distinct_campaigns_referenced: Object.keys(adsByCamp).length,
+      sample,
+      errors,
+    });
+  } catch (e) {
+    console.error('[meta._debug/ads]', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ─── Estado de configuración ──────────────────────────────────────────
 // Devuelve qué env vars faltan + estado del token. El frontend lo usa
 // para decidir entre mostrar el dashboard o un panel "Configurá las
