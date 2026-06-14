@@ -128,6 +128,16 @@ function thumbProxy(url) {
   if (!url) return '';
   return '/api/v1/meta/media-thumb?url=' + encodeURIComponent(url);
 }
+// Escalera de imagen para una campaña: thumbnail directo del creative
+// (primary_thumbnail ya resuelve fbcdn → ig_thumbnail en el backend),
+// si no hay nada → string vacío (el render muestra placeholder con
+// link a Instagram).
+function campThumb(c) {
+  return c.primary_thumbnail ? thumbProxy(c.primary_thumbnail) : '';
+}
+function adThumb(a) {
+  return a.thumbnail_resolved ? thumbProxy(a.thumbnail_resolved) : '';
+}
 // Renderizador de markdown ligero (headings + bold + listas + saltos)
 // usado para el análisis IA. Escapa HTML primero.
 function renderMarkdownLight(md) {
@@ -491,17 +501,52 @@ function _colorVsAvg(val, avg, lowIsGood = false) {
 function renderAdsRecommendations(d) {
   const top = d.recommendations?.top || [];
   const bot = d.recommendations?.bottom || [];
+  // Cada recomendación: miniatura + displayName (no truncar) + presupuesto
+  // + gastado + motivo. Click → scroll a la campaña + abre el details.
   const renderRow = (c) => {
     const i = c.insights || {};
     const v = c.verdict || {};
-    return `<div style="padding:6px 0;border-bottom:.5px dashed var(--border-3)">
-      <p style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.name}</p>
-      <p style="font-size:10px;color:var(--text-2);margin:2px 0">${eurFmt(i.spend)} gastados · CTR ${i.ctr != null ? (i.ctr*100).toFixed(2)+'%' : '—'} · CPC ${i.cpc != null ? '€'+i.cpc.toFixed(2) : '—'}</p>
-      <p style="font-size:10px;color:${v.color || 'var(--text-2)'};font-style:italic">${v.reason || ''}</p>
+    const eb = c.effective_budget;
+    const fb = formatBudget(eb);
+    const t = campThumb(c);
+    const thumbHtml = t
+      ? `<img src="${t}" alt="" loading="lazy" style="width:48px;height:48px;border-radius:4px;object-fit:cover;background:var(--bg);flex-shrink:0" onerror="this.style.display='none'">`
+      : (c.primary_permalink
+          ? `<a href="${c.primary_permalink}" target="_blank" rel="noopener" style="width:48px;height:48px;border-radius:4px;background:var(--bg);flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#185FA5;font-size:9px;text-decoration:none" title="Ver en Instagram">↗ IG</a>`
+          : `<div style="width:48px;height:48px;border-radius:4px;background:var(--bg);flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--text-2);font-size:9px">sin img</div>`);
+    const displayName = (c.display_name || c.name || '').replace(/[<>]/g, '');
+    return `<div onclick="scrollToCampaign('${c.id}')" style="display:flex;gap:8px;padding:8px 0;border-bottom:.5px dashed var(--border-3);cursor:pointer;align-items:flex-start" title="Click para abrir esta campaña en la lista">
+      ${thumbHtml}
+      <div style="flex:1;min-width:0">
+        <p style="font-size:12px;font-weight:500;line-height:1.3;word-break:break-word">${displayName}</p>
+        <p style="font-size:10px;color:var(--text-2);margin:2px 0">${fb ? 'Presup. <strong style="color:var(--text)">'+fb.text+'</strong> · ' : ''}${eurFmt(i.spend)} gastados · CTR ${i.ctr != null ? (i.ctr*100).toFixed(2)+'%' : '—'}${i.cpc != null ? ' · CPC €'+i.cpc.toFixed(2) : ''}</p>
+        <p style="font-size:11px;color:${v.color || 'var(--text-2)'};font-style:italic;line-height:1.3">${v.reason || ''}</p>
+      </div>
     </div>`;
   };
   $('ads-top-list').innerHTML = top.length ? top.map(renderRow).join('') : `<p style="font-size:11px;color:var(--text-2);padding:1rem">Sin campañas para escalar todavía. ${d.groups?.active?.count ? 'Las activas están cerca del promedio.' : 'Activá alguna primero.'}</p>`;
   $('ads-bottom-list').innerHTML = bot.length ? bot.map(renderRow).join('') : `<p style="font-size:11px;color:var(--text-2);padding:1rem">Sin campañas para pausar/optimizar entre las activas. 👍</p>`;
+}
+
+// Click en una recomendación → scrollea + abre el <details> de la campaña.
+function scrollToCampaign(id) {
+  // Asegurar que estamos en la sub-pestaña que contiene la campaña.
+  // Si no la encontramos en la pestaña actual, cambiar a 'active' que es
+  // donde están las recomendaciones (todas activas).
+  let el = document.getElementById('camp-' + id);
+  if (!el && state.adsStatusTab !== 'active') {
+    setAdsStatusTab('active');
+    setTimeout(() => scrollToCampaign(id), 50);
+    return;
+  }
+  if (!el) return;
+  el.open = true;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Flash para guiar la atención.
+  el.style.transition = 'background-color .25s';
+  const orig = el.style.background;
+  el.style.background = 'rgba(24,95,165,.18)';
+  setTimeout(() => { el.style.background = orig || 'var(--bg-secondary)'; }, 1000);
 }
 
 function setAdsStatusTab(name) {
@@ -542,14 +587,17 @@ function renderCampaignCard(c, avg) {
     progressHtml = `<div class="bar" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px" title="${i.spend.toFixed(2)} de €${eb.monto.toFixed(2)} (${pct.toFixed(0)}%)"><div style="width:${pct}%"></div></div>`;
   }
 
-  // Mini-resumen del primer ad (mostrar QUÉ se promociona). Usamos c.ads
-  // (flat de TODOS los ads de la campaña) — no recorre adsets que puedan
-  // estar vacíos por el agrupamiento. NO usar `title` como preview —
-  // viene "instagram.com" en posts boosted.
-  const primaryThumb = c.primary_thumbnail ? thumbProxy(c.primary_thumbnail) : null;
+  // Identidad robusta de la campaña (computada por backend):
+  //   display_name = "Publicación de Instagram: X" → "X", o primera línea
+  //                  del caption del IG asociado, o body del creative.
+  //   primary_thumbnail = thumb fbcdn → ig_thumbnail (escalera backend).
+  //   primary_permalink = link al post real de IG.
+  //   ads_manager_url   = escape-hatch al panel de Meta.
+  const primaryThumb = campThumb(c);
+  const displayName = c.display_name || c.name || '(sin nombre)';
   const firstAdCreative = (() => {
     for (const a of c.ads || []) {
-      if (a.creative?.body || a.creative?.ig_caption || a.creative?.thumbnail_url || a.creative?.image_url) return a.creative;
+      if (a.creative?.body || a.creative?.ig_caption) return a.creative;
     }
     return null;
   })();
@@ -558,20 +606,37 @@ function renderCampaignCard(c, avg) {
   // Tooltip presupuesto.
   const budgetTip = 'Presupuesto diario = lo máximo que Meta puede gastar por día. Presupuesto total (lifetime) = lo máximo total para toda la campaña.';
 
-  return `<details style="border:.5px solid var(--border-3);border-radius:var(--r-md);padding:.5rem .75rem;margin-bottom:6px;background:var(--bg-secondary)">
-    <summary style="cursor:pointer;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      ${primaryThumb ? `<img src="${primaryThumb}" class="creative-thumb" alt="" loading="lazy" onerror="this.style.display='none'">` : `<div class="creative-thumb" style="display:flex;align-items:center;justify-content:center;color:var(--text-2);font-size:9px">sin imagen</div>`}
+  // Placeholder con link directo a IG si la miniatura no resolvió por
+  // ninguna vía — el dueño nunca queda sin identificar la campaña.
+  const thumbHtml = primaryThumb
+    ? `<img src="${primaryThumb}" class="creative-thumb" alt="" loading="lazy" onerror="this.style.display='none'">`
+    : (c.primary_permalink
+        ? `<a href="${c.primary_permalink}" target="_blank" rel="noopener" class="creative-thumb" style="display:flex;align-items:center;justify-content:center;color:#185FA5;font-size:9px;text-decoration:none;text-align:center" title="Ver post en Instagram">↗ IG</a>`
+        : `<div class="creative-thumb" style="display:flex;align-items:center;justify-content:center;color:var(--text-2);font-size:9px">sin img</div>`);
+
+  // Identidad anchor ID para click-to-scroll desde recomendaciones.
+  const anchorId = 'camp-' + c.id;
+
+  return `<details id="${anchorId}" style="border:.5px solid var(--border-3);border-radius:var(--r-md);padding:.5rem .75rem;margin-bottom:6px;background:var(--bg-secondary)">
+    <summary style="cursor:pointer;display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
+      ${thumbHtml}
       <div style="flex:1;min-width:200px">
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px">
           <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${statusBg};color:${statusColor};font-weight:500">${c.effective_status}</span>
           <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${v.color || '#9ca3af'}33;color:${v.color || '#9ca3af'};font-weight:600">${v.label || '—'}</span>
           <span title="${obj.hint.replace(/"/g,'&quot;')}" style="padding:2px 8px;border-radius:10px;font-size:10px;background:rgba(24,95,165,.12);color:#185FA5;font-weight:500;cursor:help">${obj.label}</span>
-          <strong style="font-size:13px">${c.name}</strong>
           <span style="font-size:10px;color:var(--text-2)">${c.n_ads || 0} ${(c.n_ads === 1) ? 'anuncio' : 'anuncios'}</span>
         </div>
-        ${previewCopy ? `<p style="font-size:11px;color:var(--text-2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(previewCopy||'').replace(/"/g,'&quot;')}">${(previewCopy||'').slice(0,90)}</p>` : ''}
+        <!-- displayName SIN truncar (wrap libre) — el dueño necesita identificar la campaña. -->
+        <strong style="font-size:13px;display:block;line-height:1.3;word-break:break-word">${(displayName||'').replace(/[<>]/g,'')}</strong>
+        ${previewCopy ? `<p style="font-size:11px;color:var(--text-2);margin-top:2px;line-height:1.3" title="${(previewCopy||'').replace(/"/g,'&quot;')}">${(previewCopy||'').replace(/[<>]/g,'').slice(0,140)}${previewCopy.length>140?'…':''}</p>` : ''}
+        <!-- Escape-hatch SIEMPRE visibles: el dueño nunca queda atrapado. -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;font-size:10px">
+          ${c.primary_permalink ? `<a href="${c.primary_permalink}" target="_blank" rel="noopener" style="color:#185FA5;text-decoration:none" title="Ver el post en Instagram">↗ Ver en Instagram</a>` : ''}
+          ${c.ads_manager_url ? `<a href="${c.ads_manager_url}" target="_blank" rel="noopener" style="color:#185FA5;text-decoration:none" title="Abrir esta campaña en Meta Ads Manager">↗ Meta Ads Manager</a>` : ''}
+        </div>
       </div>
-      <div style="text-align:right">
+      <div style="text-align:right;min-width:170px">
         <p style="font-size:11px;color:var(--text-2)" title="${budgetTip}">Presupuesto: ${fb ? `<strong style="color:var(--text)">${fb.text}</strong>` : '—'}${eb?.source === 'ABO' ? ' <span style="font-size:9px;color:var(--text-2)">(ABO)</span>' : ''}</p>
         <p style="font-size:12px;color:#dc2626">Gastado: ${eurFmt(i.spend)}${progressHtml}</p>
       </div>
@@ -642,24 +707,32 @@ function renderAdsetBlock(s) {
 function renderAdRow(a) {
   const av = a.verdict || {};
   const cr = a.creative || {};
-  // Thumbnail: thumbnail_url o image_url, ambos pasan por proxy.
-  const thumb = cr.thumbnail_url ? thumbProxy(cr.thumbnail_url) : (cr.image_url ? thumbProxy(cr.image_url) : null);
+  // Thumbnail con escalera: backend resolvió thumbnail_resolved
+  // (creative.thumbnail_url || image_url || ig_thumbnail).
+  const thumb = adThumb(a);
   const cta = ctaLabel(cr.cta);
   // Copy real: body (creative diseñado) o ig_caption (post boosted).
   // NUNCA usar title — viene "instagram.com" en boosted.
   const copy = cr.body || cr.ig_caption || '';
-  const showCopy = (copy || '').slice(0, 180);
+  const showCopy = (copy || '').slice(0, 220);
+  const adName = a.display_name || a.name || '';
+  // Placeholder con link IG si no hay thumbnail.
+  const thumbHtml = thumb
+    ? `<img src="${thumb}" alt="" loading="lazy" style="width:54px;height:54px;border-radius:4px;object-fit:cover;background:var(--bg);flex-shrink:0" onerror="this.style.display='none'">`
+    : (cr.post_permalink
+        ? `<a href="${cr.post_permalink}" target="_blank" rel="noopener" style="width:54px;height:54px;border-radius:4px;background:var(--bg);flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#185FA5;font-size:10px;text-decoration:none" title="Ver post en Instagram">↗ IG</a>`
+        : `<div style="width:54px;height:54px;border-radius:4px;background:var(--bg);flex-shrink:0"></div>`);
   return `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:.5px dashed var(--border-3)">
-    ${thumb ? `<img src="${thumb}" alt="" loading="lazy" style="width:54px;height:54px;border-radius:4px;object-fit:cover;background:var(--bg);flex-shrink:0" onerror="this.style.display='none'">` : `<div style="width:54px;height:54px;border-radius:4px;background:var(--bg);flex-shrink:0"></div>`}
+    ${thumbHtml}
     <div style="flex:1;min-width:0">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">
         ${av.label ? `<span style="padding:1px 5px;border-radius:6px;font-size:9px;background:${av.color || '#9ca3af'}22;color:${av.color || '#9ca3af'}">${av.label.replace(/[🟢🔵🟠🔴]\s*/, '')}</span>` : ''}
-        <span style="font-size:11px;font-weight:500">${a.name}</span>
+        <span style="font-size:11px;font-weight:500;word-break:break-word">${(adName||'').replace(/[<>]/g,'')}</span>
         <span style="font-size:10px;color:var(--text-2)">${eurFmt(a.insights?.spend)} · CTR ${a.insights?.ctr != null ? (a.insights.ctr*100).toFixed(2)+'%' : '—'}${a.insights?.results ? ' · ' + a.insights.results + ' resultados' : ''}</span>
-        ${cr.post_permalink ? `<a href="${cr.post_permalink}" target="_blank" rel="noopener" style="font-size:10px;color:#185FA5;text-decoration:none;margin-left:auto" title="Abrir publicación real en Meta">↗ Ver publicación</a>` : ''}
+        ${cr.post_permalink ? `<a href="${cr.post_permalink}" target="_blank" rel="noopener" style="font-size:10px;color:#185FA5;text-decoration:none;margin-left:auto" title="Abrir publicación real en Instagram/Meta">↗ Ver publicación</a>` : ''}
         <button data-act="toggle-ad" data-id="${a.id}" data-newstatus="${a.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}" onclick="onActionClick(event)" style="padding:1px 6px;font-size:9px;border-radius:3px;cursor:pointer;border:.5px solid var(--border-3);background:transparent;color:var(--text-2)" title="${a.status === 'ACTIVE' ? 'Pausar' : 'Activar'} ad">${a.status === 'ACTIVE' ? '⏸' : '▶'}</button>
       </div>
-      ${showCopy ? `<p style="font-size:11px;color:var(--text-2);line-height:1.3;margin:2px 0">${showCopy.replace(/[<>]/g, '')}${copy.length > 140 ? '…' : ''}</p>` : ''}
+      ${showCopy ? `<p style="font-size:11px;color:var(--text-2);line-height:1.35;margin:2px 0;word-break:break-word">${showCopy.replace(/[<>]/g, '')}${copy.length > 220 ? '…' : ''}</p>` : ''}
       ${cta ? `<p style="font-size:10px;color:var(--text-2);margin-top:2px"><span style="padding:1px 6px;border-radius:4px;background:var(--bg-secondary)">CTA: ${cta}</span></p>` : ''}
     </div>
   </div>`;
@@ -703,6 +776,29 @@ function openBudgetModal(kind, id, budgetKind, currentMonto, spent, name) {
   const current = Number(currentMonto) || 0;
   const sugerido = Math.max(1, Math.round(current * 1.25));
   const minLifetime = budgetKind === 'lifetime' && spent > 0 ? Math.ceil(spent + 1) : null;
+  // Resolver displayName + miniatura para que el dueño confirme sobre QUÉ actúa.
+  // Si es campaign, buscar en state.ads.campaigns. Si es adset, buscar dentro
+  // de su campaña.
+  let displayName = name || id;
+  let modalThumb = '';
+  let permalink = null;
+  const camps = state.ads?.campaigns || [];
+  if (kind === 'campaign') {
+    const c = camps.find((x) => String(x.id) === String(id));
+    if (c) { displayName = c.display_name || c.name || id; modalThumb = campThumb(c); permalink = c.primary_permalink; }
+  } else {
+    for (const c of camps) {
+      const s = (c.adsets || []).find((x) => String(x.id) === String(id));
+      if (s) {
+        displayName = (c.display_name || c.name || '') + ' › ' + (s.name || id);
+        modalThumb = campThumb(c); permalink = c.primary_permalink;
+        break;
+      }
+    }
+  }
+  const thumbBlock = modalThumb
+    ? `<img src="${modalThumb}" alt="" style="width:48px;height:48px;border-radius:4px;object-fit:cover;background:var(--bg);flex-shrink:0">`
+    : (permalink ? `<a href="${permalink}" target="_blank" rel="noopener" style="width:48px;height:48px;border-radius:4px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:#185FA5;font-size:10px;text-decoration:none">↗ IG</a>` : '');
   // Construir modal
   const wrap = document.createElement('div');
   wrap.className = 'modal-bg';
@@ -710,7 +806,14 @@ function openBudgetModal(kind, id, budgetKind, currentMonto, spent, name) {
   wrap.innerHTML = `
     <div class="modal" onclick="event.stopPropagation()">
       <h3>💰 ${current === 0 ? 'Configurar' : 'Subir'} presupuesto ${budgetKind === 'lifetime' ? 'total' : 'diario'}</h3>
-      <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem"><strong>${kind === 'campaign' ? 'Campaña' : 'Adset'}:</strong> ${name || id}</p>
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:8px;background:var(--bg-secondary);border-radius:var(--r-md);margin-bottom:.75rem">
+        ${thumbBlock}
+        <div style="flex:1;min-width:0">
+          <p style="font-size:10px;color:var(--text-2);text-transform:uppercase;letter-spacing:.5px">${kind === 'campaign' ? 'Campaña' : 'Adset'}</p>
+          <p style="font-size:13px;font-weight:500;line-height:1.3;word-break:break-word">${(displayName||'').replace(/[<>]/g,'')}</p>
+          ${permalink ? `<a href="${permalink}" target="_blank" rel="noopener" style="font-size:10px;color:#185FA5;text-decoration:none">↗ Ver en Instagram</a>` : ''}
+        </div>
+      </div>
       <p style="font-size:11px;color:var(--text-2);margin-bottom:.5rem">Actual: <strong style="color:var(--text)">€${current.toFixed(2)}</strong>${spent > 0 ? ` · gastado: €${spent.toFixed(2)}` : ''}</p>
       <div class="learning-warn">
         ⚠️ <strong>Consejo del media buyer:</strong> Subí de a poco (20-30%). Duplicar el presupuesto de golpe puede resetear la <em>fase de aprendizaje</em> del anuncio y empeorar el rendimiento.
@@ -910,6 +1013,7 @@ window.setMainTab = setMainTab;
 window.setIgPeriod = setIgPeriod;
 window.setIgSort = setIgSort;
 window.setAdsStatusTab = setAdsStatusTab;
+window.scrollToCampaign = scrollToCampaign;
 window.onActionClick = onActionClick;
 window.openBudgetModal = openBudgetModal;
 window.closeBudgetModal = closeBudgetModal;

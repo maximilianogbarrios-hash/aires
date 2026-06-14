@@ -62,6 +62,34 @@ const TARGET_AD    = '6988700711672';
     process.exit(1);
   }
 
-  console.log(`\n✅ ${pass}/${asserts.length} asserts pasaron — fix OK`);
+  // BONUS — mostrar 3 campañas distintas con display_name + imagen resuelta
+  // para que el reporte del prompt incluya ejemplos reales.
+  console.log('\n--- IDENTIDAD (3 campañas ejemplo) ---');
+  const sample3 = (dash.campaigns || [])
+    .filter((c) => c.insights?.spend > 0 || c.effective_status === 'ACTIVE')
+    .slice(0, 3);
+  for (const c of sample3) {
+    const thumbStatus = c.primary_thumbnail ? '✓ resolved (' + c.primary_thumbnail.slice(0, 50) + '…)'
+                      : c.primary_permalink ? '↗ fallback IG link only'
+                      : '✗ ninguna';
+    console.log(`· id=${c.id}`);
+    console.log(`  display_name: "${c.display_name}"`);
+    console.log(`  raw name:     "${c.name}"`);
+    console.log(`  thumbnail:    ${thumbStatus}`);
+    console.log(`  permalink:    ${c.primary_permalink || '(no)'}`);
+    console.log(`  ads_manager:  ${c.ads_manager_url || '(no)'}`);
+    console.log(`  n_ads=${c.n_ads} effective_status=${c.effective_status}`);
+  }
+  // Assert extra: display_name de la campaña target debe ser distinto
+  // del genérico "Publicación de Instagram".
+  const targetDisplay = camp.display_name || '';
+  const isGeneric = /^Publicaci[oó]n de Instagram$/i.test(targetDisplay);
+  if (isGeneric) {
+    console.error('\n⚠️  display_name de target sigue genérico ("' + targetDisplay + '") — fallback al caption no funcionó.');
+  } else {
+    console.log(`\n✓ display_name distinto del genérico: "${targetDisplay}"`);
+  }
+
+  console.log(`\n✅ ${pass}/${asserts.length} asserts core pasaron — fix OK`);
   process.exit(0);
 })().catch((e) => { console.error('💥', e); process.exit(1); });

@@ -203,20 +203,39 @@ router.get('/_debug/ads', async (req, res) => {
             campaign_ids_sample: (dash.campaigns || []).slice(0, 5).map((c) => c.id),
           };
         } else {
+          // Bonus: 3 campañas ejemplo con identidad para validar display_name + escalera.
+          const identitySample = (dash.campaigns || [])
+            .filter((c) => c.insights?.spend > 0 || c.effective_status === 'ACTIVE')
+            .slice(0, 3).map((c) => ({
+              id: c.id,
+              display_name: c.display_name,
+              raw_name: c.name,
+              primary_thumbnail: c.primary_thumbnail,
+              primary_permalink: c.primary_permalink,
+              ads_manager_url: c.ads_manager_url,
+              n_ads: c.n_ads,
+              effective_status: c.effective_status,
+            }));
           groupingCheck = {
             ok: true,
-            cache_version: 'ads_dashboard:v3',
+            cache_version: 'ads_dashboard:v4',
             campaign_6988700632040: {
               found: true,
+              display_name: camp.display_name,
+              raw_name: camp.name,
               n_ads: camp.n_ads,
               n_adsets: camp.n_adsets,
               primary_thumbnail: camp.primary_thumbnail,
+              primary_permalink: camp.primary_permalink,
+              ads_manager_url: camp.ads_manager_url,
               ads: (camp.ads || []).map((a) => ({
                 id: a.id,
-                name: a.name,
+                display_name: a.display_name,
+                raw_name: a.name,
                 effective_status: a.effective_status,
                 adset_id: a.adset_id,
-                has_thumbnail: !!(a.creative?.thumbnail_url || a.creative?.image_url),
+                thumbnail_resolved: a.thumbnail_resolved,
+                has_thumbnail: !!a.thumbnail_resolved,
                 permalink: a.creative?.post_permalink || null,
               })),
               adsets: (camp.adsets || []).map((s) => ({
@@ -225,11 +244,13 @@ router.get('/_debug/ads', async (req, res) => {
                 is_ghost: !!s._ghost,
               })),
             },
+            identity_sample_3: identitySample,
             asserts: {
               campaign_has_at_least_1_ad: camp.n_ads >= 1,
               contains_target_ad: (camp.ads || []).some((a) => a.id === TARGET_AD),
-              target_ad_has_thumbnail: (camp.ads || []).some((a) => a.id === TARGET_AD && !!(a.creative?.thumbnail_url || a.creative?.image_url)),
+              target_ad_has_thumbnail: (camp.ads || []).some((a) => a.id === TARGET_AD && !!a.thumbnail_resolved),
               target_adset_present_with_ads: (camp.adsets || []).some((s) => s.id === TARGET_ADSET && s.n_ads >= 1),
+              display_name_not_generic: !!camp.display_name && !/^Publicaci[oó]n de Instagram$/i.test(camp.display_name),
             },
           };
         }
