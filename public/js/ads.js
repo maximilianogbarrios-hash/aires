@@ -512,15 +512,25 @@ function renderAdsRecommendations(d) {
     const thumbHtml = t
       ? `<img src="${t}" alt="" loading="lazy" style="width:48px;height:48px;border-radius:4px;object-fit:cover;background:var(--bg);flex-shrink:0" onerror="this.style.display='none'">`
       : (c.primary_permalink
-          ? `<a href="${c.primary_permalink}" target="_blank" rel="noopener" style="width:48px;height:48px;border-radius:4px;background:var(--bg);flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#185FA5;font-size:9px;text-decoration:none" title="Ver en Instagram">↗ IG</a>`
+          ? `<a href="${c.primary_permalink}" target="_blank" rel="noopener" style="width:48px;height:48px;border-radius:4px;background:var(--bg);flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#185FA5;font-size:9px;text-decoration:none" title="Ver en Instagram" onclick="event.stopPropagation()">↗ IG</a>`
           : `<div style="width:48px;height:48px;border-radius:4px;background:var(--bg);flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--text-2);font-size:9px">sin img</div>`);
     const displayName = (c.display_name || c.name || '').replace(/[<>]/g, '');
+    // Indicador delivery real (entregando vs solo "marcada activa").
+    const deliveryBadge = c.is_delivering
+      ? '<span style="padding:1px 6px;border-radius:6px;font-size:9px;background:rgba(99,153,34,.15);color:#16a34a;font-weight:500">entregando</span>'
+      : '<span style="padding:1px 6px;border-radius:6px;font-size:9px;background:rgba(217,119,6,.15);color:#d97706;font-weight:500">no entrega</span>';
+    const shortId = String(c.id).slice(-6);
     return `<div onclick="scrollToCampaign('${c.id}')" style="display:flex;gap:8px;padding:8px 0;border-bottom:.5px dashed var(--border-3);cursor:pointer;align-items:flex-start" title="Click para abrir esta campaña en la lista">
       ${thumbHtml}
       <div style="flex:1;min-width:0">
-        <p style="font-size:12px;font-weight:500;line-height:1.3;word-break:break-word">${displayName}</p>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          ${deliveryBadge}
+          <span style="font-family:monospace;font-size:10px;color:var(--text-2)" title="ID completo: ${c.id}">#${shortId}</span>
+        </div>
+        <p style="font-size:12px;font-weight:500;line-height:1.3;word-break:break-word;margin-top:2px">${displayName}</p>
         <p style="font-size:10px;color:var(--text-2);margin:2px 0">${fb ? 'Presup. <strong style="color:var(--text)">'+fb.text+'</strong> · ' : ''}${eurFmt(i.spend)} gastados · CTR ${i.ctr != null ? (i.ctr*100).toFixed(2)+'%' : '—'}${i.cpc != null ? ' · CPC €'+i.cpc.toFixed(2) : ''}</p>
         <p style="font-size:11px;color:${v.color || 'var(--text-2)'};font-style:italic;line-height:1.3">${v.reason || ''}</p>
+        ${c.ads_manager_url ? `<a href="${c.ads_manager_url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:10px;color:#185FA5;text-decoration:none;display:inline-block;margin-top:3px">↗ Abrir esta campaña en Ads Manager</a>` : ''}
       </div>
     </div>`;
   };

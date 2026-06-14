@@ -111,6 +111,83 @@ router.get('/media-thumb', async (req, res) => {
   }
 });
 
+// ─── DEBUG: confirma EXACTAMENTE qué sirve /api/v1/meta/ads ──────────
+// Llama internamente a buildAdsDashboard (la MISMA función del endpoint
+// real) y devuelve un resumen del payload SERVIDO: campos clave, conteo
+// activas reales (entregando), 1 campaña completa con display_name +
+// primary_thumbnail + n_ads, etc. El user lo abre logueado para
+// confirmar que el panel ya recibe los datos correctos.
+router.get('/_debug/served', async (req, res) => {
+  try {
+    const { buildAdsDashboard, invalidateAdsCache } = require('../lib/meta/ads');
+    if (String(req.query.fresh || '') === '1') invalidateAdsCache();
+    const t0 = Date.now();
+    const dash = await buildAdsDashboard({ refresh: String(req.query.refresh || '') === '1' });
+    const tMs = Date.now() - t0;
+    if (!dash.ok) return res.json({ ok: false, dash });
+    // Asserts sobre el shape REAL servido.
+    const camps = dash.campaigns || [];
+    const withDisplayName = camps.filter((c) => c.display_name && !/^Publicaci[oó]n de Instagram$/i.test(c.display_name));
+    const withThumb = camps.filter((c) => c.primary_thumbnail);
+    const withAds = camps.filter((c) => (c.n_ads || 0) > 0);
+    const delivering = camps.filter((c) => c.is_delivering);
+    // Buscar una campaña con identidad rica para sample.
+    const sampleCamp = camps.find((c) => c.is_delivering && c.primary_thumbnail && c.n_ads > 0)
+                    || camps.find((c) => c.primary_thumbnail && c.n_ads > 0)
+                    || camps.find((c) => c.n_ads > 0)
+                    || camps[0]
+                    || null;
+    res.json({
+      ok: true,
+      cache_status: dash.cached ? `HIT (${dash.cache_source}, age=${dash.cache_age_sec}s)` : 'MISS (fresh fetch)',
+      build_ms: tMs,
+      cache_key_version: 'v5',
+      counts: {
+        total_campaigns: camps.length,
+        delivering_now: delivering.length,
+        marked_active_status: camps.filter((c) => c.effective_status === 'ACTIVE').length,
+        with_display_name_non_generic: withDisplayName.length,
+        with_primary_thumbnail: withThumb.length,
+        with_at_least_1_ad: withAds.length,
+        with_zero_ads: camps.length - withAds.length,
+      },
+      asserts_served_shape: {
+        at_least_one_display_name_non_generic: withDisplayName.length > 0,
+        at_least_one_primary_thumbnail: withThumb.length > 0,
+        at_least_one_campaign_with_ads: withAds.length > 0,
+        delivering_count_realistic: delivering.length <= 10, // Meta reporta ~1; 10 es margen
+      },
+      sample_campaign: sampleCamp ? {
+        id: sampleCamp.id,
+        display_name: sampleCamp.display_name,
+        raw_name: sampleCamp.name,
+        effective_status: sampleCamp.effective_status,
+        is_delivering: sampleCamp.is_delivering,
+        primary_thumbnail: sampleCamp.primary_thumbnail,
+        primary_thumbnail_proxied: sampleCamp.primary_thumbnail ? ('/api/v1/meta/media-thumb?url=' + encodeURIComponent(sampleCamp.primary_thumbnail)) : null,
+        primary_permalink: sampleCamp.primary_permalink,
+        ads_manager_url: sampleCamp.ads_manager_url,
+        n_ads: sampleCamp.n_ads,
+        spend_30d: sampleCamp.insights?.spend,
+        first_ad: sampleCamp.ads?.[0] ? {
+          id: sampleCamp.ads[0].id,
+          display_name: sampleCamp.ads[0].display_name,
+          thumbnail_resolved: sampleCamp.ads[0].thumbnail_resolved,
+          has_body: !!sampleCamp.ads[0].creative?.body,
+          has_ig_caption: !!sampleCamp.ads[0].creative?.ig_caption,
+        } : null,
+      } : null,
+      recommendations_count: {
+        top: dash.recommendations?.top?.length || 0,
+        bottom: dash.recommendations?.bottom?.length || 0,
+      },
+    });
+  } catch (e) {
+    console.error('[meta._debug/served]', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ─── DEBUG: traer los ads crudos para diagnosticar 0-ads bug ─────────
 // Llama la query EXACTA confirmada en Graph Explorer y reporta qué
 // vuelve del server (token usado, count, sample, errores). NO es un
