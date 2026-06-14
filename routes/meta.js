@@ -207,26 +207,14 @@ router.get('/_debug/ads', async (req, res) => {
     }
     // Query EXACTA del prompt — la confirmada en Graph Explorer.
     // Primera página con limit:50 + sample.
-    const fields = 'name,effective_status,adset_id,campaign_id,creative{thumbnail_url,image_url,body,title,effective_instagram_media_id,instagram_permalink_url,id}';
-    const r = await graphGet(`${accId}/ads`, { fields, limit: 100 }, token);
-    const errors = [];
-    if (!r.ok) errors.push({ stage: 'first_page', status: r.status, message: r.json?.error?.message || `HTTP ${r.status}` });
-    let all = Array.isArray(r.json?.data) ? r.json.data : [];
-    let nextUrl = r.json?.paging?.next || null;
-    let pages = r.ok ? 1 : 0;
-    const maxPages = 20; // 20 × 100 = 2000 ads max en el debug
-    while (nextUrl && pages < maxPages) {
-      try {
-        const nr = await fetch(nextUrl);
-        if (!nr.ok) { errors.push({ stage: 'pagination', page: pages + 1, status: nr.status }); break; }
-        const nj = await nr.json();
-        if (nj?.error) { errors.push({ stage: 'pagination', page: pages + 1, message: nj.error.message }); break; }
-        if (Array.isArray(nj?.data)) all.push(...nj.data);
-        nextUrl = nj?.paging?.next || null;
-        pages++;
-      } catch (e) { errors.push({ stage: 'pagination', page: pages + 1, message: e.message }); break; }
-    }
-    const truncated = !!nextUrl;
+    // ÚNICA fuente de verdad: la misma función que usa buildAdsDashboard.
+    // Sin más divergencia entre /_debug/ads y el endpoint real.
+    const { fetchAdsForJoin } = require('../lib/meta/ads');
+    const adsRes = await fetchAdsForJoin(accId, token);
+    const errors = (adsRes.errors || []).map((e) => ({ stage: 'fetch', ...e }));
+    const all = adsRes.data || [];
+    const pages = adsRes.pages || 0;
+    const truncated = !!adsRes.truncated;
     const sample = all.slice(0, 5).map((a) => {
       const cr = a.creative || null;
       const thumb = cr?.thumbnail_url || cr?.image_url || null;
