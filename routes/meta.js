@@ -500,6 +500,50 @@ function _makeDailySpendEndpoint(level) {
     }
   };
 }
+// Búsqueda de geo-locations para autocomplete (Parte 5).
+router.get('/geo-search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (!q || q.length < 2) return res.json({ ok: true, results: [] });
+    const type = String(req.query.type || 'city');
+    const r = await targetingMod.searchGeoLocation(q, type);
+    res.json(r);
+  } catch (e) {
+    console.error('[meta.geo-search]', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Editor acotado de targeting — Parte 5. Admin-only por requirePerm.
+function _wrapTargetingMutation(fn) {
+  return async (req, res) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      if (!/^[0-9_a-zA-Z]+$/.test(id)) return res.status(400).json({ ok: false, error: 'id inválido' });
+      const r = await fn(id, req.body || {});
+      if (!r.ok) return res.status(r.status === 'no_token' ? 503 : 400).json(r);
+      res.json(r);
+    } catch (e) {
+      console.error('[meta.adset.targeting.edit]', e);
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  };
+}
+router.post('/adset/:id/targeting/radius', express.json(), requirePerm('meta_ads_admin'),
+  _wrapTargetingMutation((id, body) => targetingMod.setRadius(id, parseInt(body.index, 10) || 0, body.radius_km)));
+router.post('/adset/:id/targeting/age', express.json(), requirePerm('meta_ads_admin'),
+  _wrapTargetingMutation((id, body) => targetingMod.setAge(id, body.age_min, body.age_max)));
+router.post('/adset/:id/targeting/genders', express.json(), requirePerm('meta_ads_admin'),
+  _wrapTargetingMutation((id, body) => targetingMod.setGenders(id, body.kind)));
+router.post('/adset/:id/targeting/city/add', express.json(), requirePerm('meta_ads_admin'),
+  _wrapTargetingMutation((id, body) => targetingMod.addCity(id, body.key, body.name, body.region, body.country || 'ES')));
+router.post('/adset/:id/targeting/city/remove', express.json(), requirePerm('meta_ads_admin'),
+  _wrapTargetingMutation((id, body) => targetingMod.removeCity(id, body.key)));
+router.post('/adset/:id/targeting/region/add', express.json(), requirePerm('meta_ads_admin'),
+  _wrapTargetingMutation((id, body) => targetingMod.addRegion(id, body.key, body.name, body.country || 'ES')));
+router.post('/adset/:id/targeting/region/remove', express.json(), requirePerm('meta_ads_admin'),
+  _wrapTargetingMutation((id, body) => targetingMod.removeRegion(id, body.key)));
+
 // IA — Análisis de segmentación por adset — Parte 4.
 router.get('/adset/:id/ai-segmentation', async (req, res) => {
   try {

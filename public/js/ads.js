@@ -816,7 +816,14 @@ async function loadAdsetTargeting(adsetId) {
     }
     wrap.dataset.loaded = '1';
     const aiEnabled = state.config?.ai_enabled;
-    wrap.innerHTML = _renderTargetingSummary(r.summary) +
+    const adminLike = !!state.config?.env_set?.META_USER_TOKEN || !!state.config?.tokens?.meta_user_token?.present;
+    const editBtn = adminLike
+      ? `<button onclick="openTargetingEditor('${adsetId}')" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid #185FA5;background:rgba(24,95,165,.08);color:#185FA5;margin-left:auto">✏ Editar segmentación</button>`
+      : '';
+    wrap.innerHTML = `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">
+        <span style="font-size:11px;color:var(--text-2)">Adset: ${(r.name || adsetId).replace(/[<>]/g,'')}</span>
+        ${editBtn}
+      </div>` + _renderTargetingSummary(r.summary) +
       `<div style="margin-top:10px;padding-top:8px;border-top:.5px dashed var(--border-3)">
         <details onclick="if(this.open) loadRegionPerf('${adsetId}')">
           <summary style="cursor:pointer;font-size:11px;font-weight:500;color:#185FA5;list-style:none">📊 Rendimiento por región/provincia</summary>
@@ -832,6 +839,212 @@ async function loadAdsetTargeting(adsetId) {
       </div>`;
   } catch (e) {
     wrap.innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  }
+}
+
+// ─── Parte 5: editor acotado de targeting ───────────────────────────
+async function openTargetingEditor(adsetId) {
+  // Refetch targeting fresco para el preview "antes".
+  let t;
+  try {
+    t = await api(`/api/v1/meta/adset/${adsetId}/targeting`);
+  } catch (e) { toast('Error: ' + e.message, 'err'); return; }
+  if (!t.ok) { toast('No se pudo cargar el targeting actual: ' + (t.error || t.status), 'err'); return; }
+  const s = t.summary || {};
+  const customs = s.location?.custom_locations || [];
+  const cities = s.location?.cities || [];
+  const regions = s.location?.regions || [];
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-bg';
+  wrap.id = '_targ-modal';
+  wrap.onclick = () => closeTargModal();
+  wrap.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:560px">
+      <h3>✏ Editar segmentación del adset</h3>
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:8px">${(t.name || adsetId).replace(/[<>]/g,'')}</p>
+      <div class="learning-warn">
+        ⚠️ <strong>Cambiar la segmentación reinicia la fase de aprendizaje</strong> del adset. Hacé cambios significativos de a uno y dale unos días para juntar datos. Para cambios grandes (varias ciudades, intereses), preferí editar directo en Meta Ads Manager.
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin:8px 0;border-bottom:.5px solid var(--border-3);padding-bottom:4px">
+        <button class="targ-tab on" data-tab="radius" onclick="_setTargTab('radius')">Radio</button>
+        <button class="targ-tab" data-tab="age" onclick="_setTargTab('age')">Edad</button>
+        <button class="targ-tab" data-tab="gender" onclick="_setTargTab('gender')">Género</button>
+        <button class="targ-tab" data-tab="cities" onclick="_setTargTab('cities')">Ciudades</button>
+        <button class="targ-tab" data-tab="regions" onclick="_setTargTab('regions')">Regiones</button>
+      </div>
+      <div id="_targ-panel">${_targEditorPanels(adsetId, s, customs, cities, regions, 'radius')}</div>
+      <p id="_targ-result" style="font-size:11px;min-height:14px;margin-top:8px;color:var(--text-2)"></p>
+      <div style="display:flex;justify-content:flex-end;margin-top:.5rem">
+        <button class="btn-secondary" onclick="closeTargModal()" style="padding:6px 14px;font-size:12px;border-radius:var(--r-md);cursor:pointer">Cerrar</button>
+        <a href="https://adsmanager.facebook.com/adsmanager/manage/adsets/edit?adset_ids=${adsetId}" target="_blank" rel="noopener" style="margin-left:8px;padding:6px 14px;font-size:12px;border-radius:var(--r-md);background:transparent;color:#185FA5;text-decoration:none;border:.5px solid #185FA5">↗ Abrir en Ads Manager</a>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+  // Estilo de tabs
+  document.querySelectorAll('.targ-tab').forEach((b) => {
+    b.style.cssText = 'padding:4px 10px;font-size:11px;border:.5px solid var(--border-2);border-radius:4px;background:transparent;color:var(--text);cursor:pointer';
+    if (b.classList.contains('on')) { b.style.background = '#185FA5'; b.style.color = '#fff'; }
+  });
+  state._targEditor = { adsetId, summary: s };
+}
+function closeTargModal() {
+  const el = document.getElementById('_targ-modal');
+  if (el) el.remove();
+  state._targEditor = null;
+}
+function _setTargTab(tab) {
+  document.querySelectorAll('.targ-tab').forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.style.background = on ? '#185FA5' : 'transparent';
+    b.style.color = on ? '#fff' : 'var(--text)';
+  });
+  const m = state._targEditor;
+  if (!m) return;
+  const s = m.summary;
+  document.getElementById('_targ-panel').innerHTML = _targEditorPanels(m.adsetId, s, s.location?.custom_locations || [], s.location?.cities || [], s.location?.regions || [], tab);
+}
+function _targEditorPanels(adsetId, s, customs, cities, regions, active) {
+  const fmtNum = (v) => v == null ? '' : String(v);
+  if (active === 'radius') {
+    if (!customs.length) return '<p style="font-size:11px;color:var(--text-2);padding:1rem 0">El adset no tiene radios custom (no apunta a un punto + km). Las ciudades pueden tener su propio radio — editalas en la tab Ciudades.</p>';
+    return customs.map((c, i) => `
+      <div style="margin-bottom:10px;padding:8px;background:var(--bg-secondary);border-radius:6px">
+        <p style="font-size:11px;color:var(--text-2)">Punto: ${(c.name||'').replace(/[<>]/g,'')}</p>
+        <p style="font-size:11px;margin:4px 0">Radio actual: <strong>${c.radius} ${c.unit === 'mile' ? 'mi' : 'km'}</strong></p>
+        <div style="display:flex;gap:4px;align-items:center">
+          <label style="font-size:10px">Nuevo radio (km, 1-80):</label>
+          <input type="number" id="_targ-radius-${i}" value="${c.radius}" min="1" max="80" step="1" style="width:60px;padding:3px 5px;border:.5px solid var(--border-2);border-radius:3px;background:var(--bg);color:var(--text);font-size:11px">
+          <button onclick="_applyTargetingOp('radius', ${i})" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:none;background:#185FA5;color:#fff">Aplicar</button>
+        </div>
+      </div>`).join('');
+  }
+  if (active === 'age') {
+    return `<div style="padding:8px;background:var(--bg-secondary);border-radius:6px">
+      <p style="font-size:11px;margin-bottom:6px">Actual: <strong>${fmtNum(s.age_min) || '—'}–${fmtNum(s.age_max) || '—'}</strong></p>
+      <div style="display:flex;gap:6px;align-items:center">
+        <label style="font-size:10px">Edad mín (13-65):</label>
+        <input type="number" id="_targ-age-min" value="${fmtNum(s.age_min) || 18}" min="13" max="65" style="width:55px;padding:3px 5px;border:.5px solid var(--border-2);border-radius:3px;background:var(--bg);color:var(--text);font-size:11px">
+        <label style="font-size:10px">máx:</label>
+        <input type="number" id="_targ-age-max" value="${fmtNum(s.age_max) || 65}" min="13" max="65" style="width:55px;padding:3px 5px;border:.5px solid var(--border-2);border-radius:3px;background:var(--bg);color:var(--text);font-size:11px">
+        <button onclick="_applyTargetingOp('age')" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:none;background:#185FA5;color:#fff;margin-left:auto">Aplicar</button>
+      </div>
+    </div>`;
+  }
+  if (active === 'gender') {
+    return `<div style="padding:8px;background:var(--bg-secondary);border-radius:6px">
+      <p style="font-size:11px;margin-bottom:6px">Actual: <strong>${s.gender_label}</strong></p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button onclick="_applyTargetingOp('gender','all')" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">Todos</button>
+        <button onclick="_applyTargetingOp('gender','male')" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">Hombres</button>
+        <button onclick="_applyTargetingOp('gender','female')" style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">Mujeres</button>
+      </div>
+    </div>`;
+  }
+  if (active === 'cities') {
+    return `
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:6px">${cities.length} ciudad${cities.length === 1 ? '' : 'es'} actuales:</p>
+      ${cities.map((c) => `<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:.5px dashed var(--border-3);font-size:11px">
+        <span style="flex:1">${(c.name||'').replace(/[<>]/g,'')}${c.region ? ' <span style="color:var(--text-2)">('+c.region+')</span>' : ''}${c.radius ? ' · ' + c.radius + ' ' + (c.distance_unit === 'mile' ? 'mi' : 'km') : ''}</span>
+        <button onclick="_applyTargetingOp('city-remove','${c.key}')" style="padding:2px 6px;font-size:10px;color:#dc2626;background:transparent;border:.5px solid #dc2626;border-radius:3px;cursor:pointer">Quitar</button>
+      </div>`).join('') || '<p style="font-size:11px;color:var(--text-2)">No hay ciudades específicas en el targeting.</p>'}
+      <div style="margin-top:10px;padding:8px;background:var(--bg-secondary);border-radius:6px">
+        <p style="font-size:11px;font-weight:500;margin-bottom:4px">Agregar ciudad</p>
+        <input type="text" id="_targ-city-search" placeholder="Empezá a escribir (ej. Madrid)…" oninput="_searchGeo(this.value, 'city', '_targ-city-results')" style="width:100%;padding:5px;border:.5px solid var(--border-2);border-radius:3px;background:var(--bg);color:var(--text);font-size:11px">
+        <div id="_targ-city-results" style="max-height:140px;overflow:auto;margin-top:4px"></div>
+      </div>`;
+  }
+  if (active === 'regions') {
+    return `
+      <p style="font-size:11px;color:var(--text-2);margin-bottom:6px">${regions.length} región/es actuales:</p>
+      ${regions.map((r, i) => `<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:.5px dashed var(--border-3);font-size:11px">
+        <span style="flex:1">${(r||'').replace(/[<>]/g,'')}</span>
+        <button onclick="_applyTargetingOp('region-remove-by-name', ${i})" style="padding:2px 6px;font-size:10px;color:#dc2626;background:transparent;border:.5px solid #dc2626;border-radius:3px;cursor:pointer">Quitar</button>
+      </div>`).join('') || '<p style="font-size:11px;color:var(--text-2)">No hay regiones específicas.</p>'}
+      <div style="margin-top:10px;padding:8px;background:var(--bg-secondary);border-radius:6px">
+        <p style="font-size:11px;font-weight:500;margin-bottom:4px">Agregar región</p>
+        <input type="text" id="_targ-region-search" placeholder="Empezá a escribir (ej. Cataluña)…" oninput="_searchGeo(this.value, 'region', '_targ-region-results')" style="width:100%;padding:5px;border:.5px solid var(--border-2);border-radius:3px;background:var(--bg);color:var(--text);font-size:11px">
+        <div id="_targ-region-results" style="max-height:140px;overflow:auto;margin-top:4px"></div>
+      </div>`;
+  }
+  return '';
+}
+
+let _geoSearchTimer = null;
+async function _searchGeo(q, type, containerId) {
+  clearTimeout(_geoSearchTimer);
+  if (!q || q.length < 2) { document.getElementById(containerId).innerHTML = ''; return; }
+  _geoSearchTimer = setTimeout(async () => {
+    try {
+      const r = await api(`/api/v1/meta/geo-search?q=${encodeURIComponent(q)}&type=${type}`);
+      if (!r.ok) { document.getElementById(containerId).innerHTML = `<p style="font-size:11px;color:#dc2626">${r.error || 'sin resultados'}</p>`; return; }
+      const list = (r.results || []).slice(0, 8);
+      document.getElementById(containerId).innerHTML = list.length ? list.map((x) => {
+        const label = (x.name || '') + (x.region ? ' (' + x.region + ')' : '') + (x.country_code ? ' · ' + x.country_code : '');
+        const op = type === 'city' ? 'city-add' : 'region-add';
+        return `<button onclick="_applyTargetingOp('${op}', '${x.key}', '${(x.name||'').replace(/'/g,'')}', '${(x.region||'').replace(/'/g,'')}', '${x.country_code||'ES'}')" style="display:block;width:100%;text-align:left;padding:4px 8px;font-size:11px;border:.5px solid var(--border-3);background:transparent;color:var(--text);border-radius:3px;margin-bottom:2px;cursor:pointer">${label}</button>`;
+      }).join('') : '<p style="font-size:11px;color:var(--text-2)">Sin resultados.</p>';
+    } catch (e) { document.getElementById(containerId).innerHTML = `<p style="font-size:11px;color:#dc2626">Error: ${e.message}</p>`; }
+  }, 280);
+}
+
+async function _applyTargetingOp(op, ...args) {
+  const m = state._targEditor;
+  if (!m) return;
+  const adsetId = m.adsetId;
+  const resEl = document.getElementById('_targ-result');
+  let url, body, preview;
+  if (op === 'radius') {
+    const idx = args[0];
+    const newKm = Number(document.getElementById('_targ-radius-' + idx).value);
+    preview = `Cambiar radio del punto #${idx + 1} a ${newKm} km`;
+    url = `/api/v1/meta/adset/${adsetId}/targeting/radius`;
+    body = { index: idx, radius_km: newKm };
+  } else if (op === 'age') {
+    const ageMin = Number(document.getElementById('_targ-age-min').value);
+    const ageMax = Number(document.getElementById('_targ-age-max').value);
+    preview = `Cambiar edad a ${ageMin}–${ageMax}`;
+    url = `/api/v1/meta/adset/${adsetId}/targeting/age`;
+    body = { age_min: ageMin, age_max: ageMax };
+  } else if (op === 'gender') {
+    const kind = args[0];
+    preview = `Cambiar género a ${{ all: 'Todos', male: 'Hombres', female: 'Mujeres' }[kind]}`;
+    url = `/api/v1/meta/adset/${adsetId}/targeting/genders`;
+    body = { kind };
+  } else if (op === 'city-add') {
+    const [key, name, region, country] = args;
+    preview = `Agregar ciudad: ${name} (${region}, ${country})`;
+    url = `/api/v1/meta/adset/${adsetId}/targeting/city/add`;
+    body = { key, name, region, country };
+  } else if (op === 'city-remove') {
+    const key = args[0];
+    const city = (m.summary.location?.cities || []).find((c) => String(c.key) === String(key));
+    preview = `Quitar ciudad: ${city?.name || key}`;
+    url = `/api/v1/meta/adset/${adsetId}/targeting/city/remove`;
+    body = { key };
+  } else if (op === 'region-add') {
+    const [key, name, , country] = args;
+    preview = `Agregar región: ${name} (${country})`;
+    url = `/api/v1/meta/adset/${adsetId}/targeting/region/add`;
+    body = { key, name, country };
+  } else if (op === 'region-remove-by-name') {
+    resEl.textContent = 'Para quitar una región por nombre necesitamos su `key`. Editá esta acción en Meta Ads Manager.';
+    return;
+  } else {
+    return;
+  }
+  if (!confirm(`Confirmar: ${preview}.\n\n⚠ Esto reinicia la fase de aprendizaje del adset.`)) return;
+  resEl.textContent = 'Aplicando…';
+  try {
+    const r = await api(url, { method: 'POST', body: JSON.stringify(body) });
+    if (!r.ok) { resEl.textContent = '✗ ' + (r.error || r.message || 'Falló'); resEl.style.color = '#dc2626'; return; }
+    resEl.textContent = '✓ Aplicado. Recargá el adset para ver el cambio.';
+    resEl.style.color = '#16a34a';
+    toast(preview + ' ✓', 'ok');
+    // Invalidar dataset.loaded del bloque targeting para refrescar al cerrar.
+    const t = document.getElementById('targ-' + adsetId);
+    if (t) { t.dataset.loaded = ''; t.innerHTML = '<p style="font-size:11px;color:var(--text-2)">Refrescando…</p>'; loadAdsetTargeting(adsetId); }
+  } catch (e) {
+    resEl.textContent = '✗ ' + e.message; resEl.style.color = '#dc2626';
   }
 }
 
@@ -1255,6 +1468,11 @@ window.loadDailySpend = loadDailySpend;
 window.loadAdsetTargeting = loadAdsetTargeting;
 window.loadRegionPerf = loadRegionPerf;
 window.loadSegAi = loadSegAi;
+window.openTargetingEditor = openTargetingEditor;
+window.closeTargModal = closeTargModal;
+window._setTargTab = _setTargTab;
+window._applyTargetingOp = _applyTargetingOp;
+window._searchGeo = _searchGeo;
 window.onActionClick = onActionClick;
 window.openBudgetModal = openBudgetModal;
 window.closeBudgetModal = closeBudgetModal;
