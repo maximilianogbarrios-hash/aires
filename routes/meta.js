@@ -500,6 +500,26 @@ function _makeDailySpendEndpoint(level) {
     }
   };
 }
+// Rendimiento por región del adset — Parte 3.
+// ?days=7|14|30|60|90 ?dim=region|country|dma
+function _makeRegionPerfEndpoint(level) {
+  return async (req, res) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      if (!/^[0-9_a-zA-Z]+$/.test(id)) return res.status(400).json({ ok: false, error: 'id inválido' });
+      const days = Math.max(7, Math.min(parseInt(req.query.days, 10) || 30, 90));
+      const dim = String(req.query.dim || 'region').trim();
+      const data = await targetingMod.fetchInsightsByRegion(id, { days, level, dim });
+      res.json(data);
+    } catch (e) {
+      console.error('[meta.' + level + '.region-perf]', e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  };
+}
+router.get('/adset/:id/region-perf',    _makeRegionPerfEndpoint('adset'));
+router.get('/campaign/:id/region-perf', _makeRegionPerfEndpoint('campaign'));
+
 // Targeting (read-only) del adset — Parte 2.
 router.get('/adset/:id/targeting', async (req, res) => {
   try {

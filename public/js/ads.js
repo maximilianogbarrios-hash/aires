@@ -815,7 +815,66 @@ async function loadAdsetTargeting(adsetId) {
       return;
     }
     wrap.dataset.loaded = '1';
-    wrap.innerHTML = _renderTargetingSummary(r.summary);
+    wrap.innerHTML = _renderTargetingSummary(r.summary) +
+      `<div style="margin-top:10px;padding-top:8px;border-top:.5px dashed var(--border-3)">
+        <details onclick="if(this.open) loadRegionPerf('${adsetId}')">
+          <summary style="cursor:pointer;font-size:11px;font-weight:500;color:#185FA5;list-style:none">📊 Rendimiento por región/provincia</summary>
+          <div id="rgn-${adsetId}" style="margin-top:6px"><p style="font-size:11px;color:var(--text-2)">Click para cargar</p></div>
+        </details>
+      </div>`;
+  } catch (e) {
+    wrap.innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  }
+}
+
+// Parte 3: rendimiento por región
+async function loadRegionPerf(adsetId, days) {
+  const wrap = document.getElementById('rgn-' + adsetId);
+  if (!wrap) return;
+  if (wrap.dataset.loadedDays === String(days || 30)) return;
+  wrap.innerHTML = '<p style="color:var(--text-2);font-size:11px;font-style:italic">Cargando…</p>';
+  try {
+    const r = await api(`/api/v1/meta/adset/${adsetId}/region-perf?days=${days || 30}`);
+    if (!r.ok) {
+      wrap.innerHTML = `<p style="color:var(--text-2);font-size:11px">No se pudo: ${r.error || r.status || 'sin datos'}</p>`;
+      return;
+    }
+    wrap.dataset.loadedDays = String(days || 30);
+    if (!r.rows?.length) {
+      wrap.innerHTML = `<p style="color:var(--text-2);font-size:11px">Sin datos por región en los últimos ${r.days}d (el adset no entregó o Meta no expone el desglose).</p>
+        <p style="font-size:10px;color:var(--text-2);font-style:italic;margin-top:4px">${r.disclaimer}</p>`;
+      return;
+    }
+    const avgCtr = r.averages?.ctr || 0;
+    const avgCpc = r.averages?.cpc || 0;
+    const colorCtr = (v) => v == null ? 'var(--text-2)' : (v > avgCtr * 1.3 ? '#16a34a' : v < avgCtr * 0.5 ? '#dc2626' : 'var(--text)');
+    const colorCpc = (v) => v == null ? 'var(--text-2)' : (avgCpc > 0 && v < avgCpc * 0.8 ? '#16a34a' : avgCpc > 0 && v > avgCpc * 1.3 ? '#dc2626' : 'var(--text)');
+    const head = `<tr style="font-size:10px;color:var(--text-2);text-transform:uppercase;border-bottom:.5px solid var(--border-3)">
+      <th style="text-align:left;padding:4px">Región</th>
+      <th style="text-align:right;padding:4px">Gasto</th>
+      <th style="text-align:right;padding:4px">CTR</th>
+      <th style="text-align:right;padding:4px">CPC</th>
+      <th style="text-align:right;padding:4px">Resultados</th>
+    </tr>`;
+    const rows = r.rows.map((x) => `<tr style="font-size:11px;border-bottom:.5px dashed var(--border-3)">
+      <td style="padding:4px">${(x.region||'—').replace(/[<>]/g,'')}</td>
+      <td style="padding:4px;text-align:right">${eurFmt(x.spend)}</td>
+      <td style="padding:4px;text-align:right;color:${colorCtr(x.ctr)}">${x.ctr != null ? (x.ctr*100).toFixed(2)+'%' : '—'}</td>
+      <td style="padding:4px;text-align:right;color:${colorCpc(x.cpc)}">${x.cpc != null ? '€'+x.cpc.toFixed(2) : '—'}</td>
+      <td style="padding:4px;text-align:right">${x.results || 0}${x.result_type ? ' <span style="color:var(--text-2);font-size:9px">'+x.result_type+'</span>' : ''}</td>
+    </tr>`).join('');
+    wrap.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-size:10px;color:var(--text-2)">${r.n_regions} regiones · total €${r.total_spend.toFixed(2)}</span>
+        <select onchange="loadRegionPerf('${adsetId}', this.value)" style="font-size:10px;padding:1px 4px;background:transparent;color:var(--text);border:.5px solid var(--border-3);border-radius:3px">
+          <option value="14">14d</option>
+          <option value="30" selected>30d</option>
+          <option value="60">60d</option>
+          <option value="90">90d</option>
+        </select>
+      </div>
+      <table style="width:100%;border-collapse:collapse"><thead>${head}</thead><tbody>${rows}</tbody></table>
+      <p style="font-size:10px;color:#d97706;font-style:italic;margin-top:6px;line-height:1.4">⚠ ${r.disclaimer}</p>`;
   } catch (e) {
     wrap.innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
   }
@@ -1161,6 +1220,7 @@ window.setAdsStatusTab = setAdsStatusTab;
 window.scrollToCampaign = scrollToCampaign;
 window.loadDailySpend = loadDailySpend;
 window.loadAdsetTargeting = loadAdsetTargeting;
+window.loadRegionPerf = loadRegionPerf;
 window.onActionClick = onActionClick;
 window.openBudgetModal = openBudgetModal;
 window.closeBudgetModal = closeBudgetModal;
