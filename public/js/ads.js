@@ -173,6 +173,7 @@ async function boot() {
   } catch (e) { console.warn('glossary:', e.message); }
   await loadConfigStatus();
   await loadHealth();
+  initSpendChartsObserver();
 }
 
 async function loadConfigStatus() {
@@ -538,6 +539,65 @@ function renderAdsRecommendations(d) {
   $('ads-bottom-list').innerHTML = bot.length ? bot.map(renderRow).join('') : `<p style="font-size:11px;color:var(--text-2);padding:1rem">Sin campañas para pausar/optimizar entre las activas. 👍</p>`;
 }
 
+// ─── Parte 1: gasto por día (mini chart) ─────────────────────────────
+// Loadea al expandirse el <details>; el listener está en initSpendChartsObserver().
+async function loadDailySpend(campaignId, days, force) {
+  const wrap = document.getElementById('spend-chart-' + campaignId);
+  if (!wrap) return;
+  if (!force && wrap.dataset.loadedDays === String(days)) return;
+  wrap.innerHTML = '<p style="color:var(--text-2);font-size:10px;font-style:italic">Cargando…</p>';
+  try {
+    const r = await api(`/api/v1/meta/campaign/${campaignId}/daily-spend?days=${days || 30}`);
+    if (!r.ok) {
+      wrap.innerHTML = `<p style="color:var(--text-2);font-size:10px">No se pudo: ${r.error || r.status || 'sin datos'}</p>`;
+      return;
+    }
+    wrap.dataset.loadedDays = String(days || 30);
+    renderSpendChart(wrap, r);
+  } catch (e) {
+    wrap.innerHTML = `<p style="color:#dc2626;font-size:10px">Error: ${e.message}</p>`;
+  }
+}
+
+function renderSpendChart(wrap, data) {
+  const rows = data.rows || [];
+  if (!rows.length) {
+    wrap.innerHTML = `<p style="color:var(--text-2);font-size:10px;font-style:italic">Sin gasto en los últimos ${data.days}d.</p>`;
+    return;
+  }
+  const max = Math.max(...rows.map((r) => r.spend), 0.01);
+  const W = 360, H = 50, barW = Math.max(2, (W - 4) / rows.length - 1);
+  // Bars: verde si spend>0, gris si día sin entrega.
+  const bars = rows.map((r, i) => {
+    const x = 2 + i * (barW + 1);
+    const h = r.spend > 0 ? Math.max(1.5, (r.spend / max) * (H - 12)) : 1.5;
+    const y = H - h - 2;
+    const fill = r.spend > 0 ? '#16a34a' : '#d4d4d4';
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${fill}"><title>${r.date}: €${r.spend.toFixed(2)} · ${r.impressions} imp · ${r.clicks} clics</title></rect>`;
+  }).join('');
+  const firstDate = rows[0].date;
+  const lastDate = rows[rows.length - 1].date;
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:50px;display:block">${bars}</svg>
+    <p style="color:var(--text-2);font-size:9px;display:flex;justify-content:space-between;margin-top:2px">
+      <span>${firstDate}</span>
+      <span>Total ${data.days}d: <strong style="color:var(--text)">€${data.total_spend.toFixed(2)}</strong> · ${data.days_with_spend}/${rows.length} días con entrega${data.days_zero > 0 ? ' · '+data.days_zero+' sin gasto' : ''}</span>
+      <span>${lastDate}</span>
+    </p>`;
+}
+
+// Observer: cuando el user expande <details> de campaña, carga el chart.
+function initSpendChartsObserver() {
+  document.addEventListener('toggle', (ev) => {
+    const det = ev.target;
+    if (!det || det.tagName !== 'DETAILS') return;
+    if (!det.open) return;
+    const id = det.id && det.id.startsWith('camp-') ? det.id.slice(5) : null;
+    if (!id) return;
+    loadDailySpend(id, 30);
+  }, true);
+}
+
 // Click en una recomendación → scrollea + abre el <details> de la campaña.
 function scrollToCampaign(id) {
   // Asegurar que estamos en la sub-pestaña que contiene la campaña.
@@ -664,6 +724,27 @@ function renderCampaignCard(c, avg) {
         <div><span style="color:var(--text-2)">Resultados:</span> ${i.results || 0}</div>
         <div style="color:${cpaColor}"><span style="color:var(--text-2)">CPA:</span> ${i.cost_per_result != null ? '€'+i.cost_per_result.toFixed(2) : '—'}</div>
         ${i.roas != null ? `<div><span style="color:var(--text-2)">ROAS:</span> ${i.roas.toFixed(2)}×</div>` : ''}
+      </div>
+      <!-- Agenda + mini gráfico de gasto por día (Parte 1) -->
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;padding:8px 10px;background:rgba(0,0,0,.02);border-radius:var(--r-md);margin-bottom:10px;font-size:11px">
+        <div style="min-width:130px">
+          <p style="color:var(--text-2);margin-bottom:2px">📅 Agenda</p>
+          <p><span style="color:var(--text-2)">Inicio:</span> ${c.start_time ? fmtDate(c.start_time) : '—'}</p>
+          <p><span style="color:var(--text-2)">Fin:</span> ${c.stop_time ? fmtDate(c.stop_time) : '<em style="color:var(--text-2)">en curso</em>'}</p>
+          <p><span style="color:var(--text-2)">Tipo:</span> ${eb?.kind === 'daily' ? 'Diario' : eb?.kind === 'lifetime' ? 'Total (lifetime)' : (eb?.kind === 'mixed' ? 'Mixto' : '—')}</p>
+        </div>
+        <div data-spend-chart="${c.id}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+            <p style="color:var(--text-2)">📈 Gasto por día</p>
+            <select onchange="loadDailySpend('${c.id}', this.value)" style="font-size:10px;padding:1px 4px;background:transparent;color:var(--text);border:.5px solid var(--border-3);border-radius:3px">
+              <option value="14">Últimos 14d</option>
+              <option value="30" selected>Últimos 30d</option>
+              <option value="60">Últimos 60d</option>
+              <option value="90">Últimos 90d</option>
+            </select>
+          </div>
+          <div id="spend-chart-${c.id}" style="min-height:50px"><p style="color:var(--text-2);font-size:10px;font-style:italic">Cargando…</p></div>
+        </div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
         <button data-act="toggle-camp" data-id="${c.id}" data-newstatus="${c.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}" onclick="onActionClick(event)" style="padding:4px 12px;font-size:11px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)">${c.status === 'ACTIVE' ? '⏸ Pausar' : '▶ Activar'} campaña</button>
@@ -1024,6 +1105,7 @@ window.setIgPeriod = setIgPeriod;
 window.setIgSort = setIgSort;
 window.setAdsStatusTab = setAdsStatusTab;
 window.scrollToCampaign = scrollToCampaign;
+window.loadDailySpend = loadDailySpend;
 window.onActionClick = onActionClick;
 window.openBudgetModal = openBudgetModal;
 window.closeBudgetModal = closeBudgetModal;

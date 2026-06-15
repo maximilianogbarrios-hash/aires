@@ -17,8 +17,8 @@ const {
 const { getToken, putToken, clearToken, tokenStatus } = require('../lib/meta/tokens');
 const { buildInstagramDashboard, invalidateCache } = require('../lib/meta/instagram');
 const {
-  buildAdsDashboard, buildCampaignDetail, setEntityStatus, setEntityBudget,
-  invalidateAdsCache,
+  buildAdsDashboard, buildCampaignDetail, buildDailySpend,
+  setEntityStatus, setEntityBudget, invalidateAdsCache,
 } = require('../lib/meta/ads');
 const aiMod = require('../lib/meta/ai');
 const backupMod = require('../lib/meta/backup');
@@ -483,6 +483,25 @@ router.get('/ads', async (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+
+// Gasto por día (time_increment=1). ?days=7|14|30|60|90
+function _makeDailySpendEndpoint(level) {
+  return async (req, res) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      if (!/^[0-9_a-zA-Z]+$/.test(id)) return res.status(400).json({ ok: false, error: 'id inválido' });
+      const days = Math.max(7, Math.min(parseInt(req.query.days, 10) || 30, 90));
+      const data = await buildDailySpend(id, { days, level });
+      res.json(data);
+    } catch (e) {
+      console.error('[meta.' + level + '.daily-spend]', e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  };
+}
+router.get('/campaign/:id/daily-spend', _makeDailySpendEndpoint('campaign'));
+router.get('/adset/:id/daily-spend',    _makeDailySpendEndpoint('adset'));
+router.get('/ad/:id/daily-spend',       _makeDailySpendEndpoint('ad'));
 
 router.get('/campaign/:id', async (req, res) => {
   try {
