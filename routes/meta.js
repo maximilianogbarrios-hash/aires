@@ -500,6 +500,51 @@ function _makeDailySpendEndpoint(level) {
     }
   };
 }
+// IA — Análisis de segmentación por adset — Parte 4.
+router.get('/adset/:id/ai-segmentation', async (req, res) => {
+  try {
+    if (!aiMod.isEnabled()) {
+      return res.json({ ok: false, status: 'disabled',
+        message: 'Activá ANTHROPIC_API_KEY para el análisis con IA.' });
+    }
+    const id = String(req.params.id || '').trim();
+    if (!/^[0-9_a-zA-Z]+$/.test(id)) return res.status(400).json({ ok: false, error: 'id inválido' });
+    const refresh = String(req.query.force || '') === '1';
+    // Recolectar targeting + rendimiento por región + insights del adset.
+    const [targeting, regionPerf] = await Promise.all([
+      targetingMod.fetchAdsetTargeting(id),
+      targetingMod.fetchInsightsByRegion(id, { days: 30, level: 'adset' }),
+    ]);
+    if (!targeting.ok) {
+      return res.json({ ok: false, status: 'no_targeting', message: targeting.error || 'sin targeting' });
+    }
+    // Insights del adset: traer rápido los 30d (si la cache del dashboard
+    // tiene el adset adentro, lo extraemos; sino, query rápida).
+    let adsetInsights = null;
+    try {
+      const dash = await require('../lib/meta/ads').buildAdsDashboard({ refresh: false });
+      if (dash.ok) {
+        for (const c of dash.campaigns || []) {
+          const s = (c.adsets || []).find((x) => String(x.id) === id);
+          if (s) { adsetInsights = s.insights; break; }
+        }
+      }
+    } catch {}
+    const result = await aiMod.analyzeSegmentation({
+      adsetId: id,
+      adsetName: targeting.name,
+      targeting,
+      regionPerf,
+      adsetInsights,
+      refresh,
+    });
+    res.json(result);
+  } catch (e) {
+    console.error('[meta.adset.ai-segmentation]', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Rendimiento por región del adset — Parte 3.
 // ?days=7|14|30|60|90 ?dim=region|country|dma
 function _makeRegionPerfEndpoint(level) {

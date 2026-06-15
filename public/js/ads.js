@@ -815,15 +815,48 @@ async function loadAdsetTargeting(adsetId) {
       return;
     }
     wrap.dataset.loaded = '1';
+    const aiEnabled = state.config?.ai_enabled;
     wrap.innerHTML = _renderTargetingSummary(r.summary) +
       `<div style="margin-top:10px;padding-top:8px;border-top:.5px dashed var(--border-3)">
         <details onclick="if(this.open) loadRegionPerf('${adsetId}')">
           <summary style="cursor:pointer;font-size:11px;font-weight:500;color:#185FA5;list-style:none">📊 Rendimiento por región/provincia</summary>
           <div id="rgn-${adsetId}" style="margin-top:6px"><p style="font-size:11px;color:var(--text-2)">Click para cargar</p></div>
         </details>
+      </div>
+      <div style="margin-top:10px;padding-top:8px;border-top:.5px dashed var(--border-3)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <p style="font-size:11px;font-weight:500">🤖 Análisis IA de segmentación</p>
+          <button onclick="loadSegAi('${adsetId}', this)" ${!aiEnabled ? 'disabled title="Falta ANTHROPIC_API_KEY"' : ''} style="padding:3px 10px;font-size:10px;border-radius:4px;cursor:${aiEnabled ? 'pointer' : 'not-allowed'};border:.5px solid ${aiEnabled ? '#185FA5' : 'var(--border-3)'};background:${aiEnabled ? 'rgba(24,95,165,.08)' : 'transparent'};color:${aiEnabled ? '#185FA5' : 'var(--text-2)'}">${aiEnabled ? 'Generar análisis' : 'Sin ANTHROPIC_API_KEY'}</button>
+        </div>
+        <div id="segai-${adsetId}" style="margin-top:6px"></div>
       </div>`;
   } catch (e) {
     wrap.innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  }
+}
+
+// Parte 4: IA segmentación
+async function loadSegAi(adsetId, btn) {
+  if (state.config && !state.config.ai_enabled) {
+    toast('Activá ANTHROPIC_API_KEY en Railway para el análisis IA.', 'err', 6000);
+    return;
+  }
+  const wrap = document.getElementById('segai-' + adsetId);
+  if (!wrap) return;
+  setBtnLoading(btn, true, 'Generando…');
+  wrap.innerHTML = '<p style="color:var(--text-2);font-size:11px;font-style:italic">La IA está pensando…</p>';
+  try {
+    const r = await api(`/api/v1/meta/adset/${adsetId}/ai-segmentation`);
+    if (!r.ok) {
+      wrap.innerHTML = `<p style="color:var(--text-2);font-size:11px">${r.message || r.error || 'No se pudo.'}</p>`;
+      return;
+    }
+    wrap.innerHTML = `<div style="font-size:12px;line-height:1.55;color:var(--text)">${renderMarkdownLight(r.analysis || '')}</div>
+      <p style="font-size:9px;color:var(--text-2);margin-top:6px">— ${r.model} · ${r.input_tokens}→${r.output_tokens} tokens${r.cached ? ' (cache)' : ''}</p>`;
+  } catch (e) {
+    wrap.innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  } finally {
+    setBtnLoading(btn, false);
   }
 }
 
@@ -1221,6 +1254,7 @@ window.scrollToCampaign = scrollToCampaign;
 window.loadDailySpend = loadDailySpend;
 window.loadAdsetTargeting = loadAdsetTargeting;
 window.loadRegionPerf = loadRegionPerf;
+window.loadSegAi = loadSegAi;
 window.onActionClick = onActionClick;
 window.openBudgetModal = openBudgetModal;
 window.closeBudgetModal = closeBudgetModal;
