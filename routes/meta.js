@@ -21,6 +21,7 @@ const {
   setEntityStatus, setEntityBudget, invalidateAdsCache,
 } = require('../lib/meta/ads');
 const aiMod = require('../lib/meta/ai');
+const targetingMod = require('../lib/meta/targeting');
 const backupMod = require('../lib/meta/backup');
 const glossary = require('../lib/meta/glossary');
 const metaCache = require('../lib/meta/cache');
@@ -499,6 +500,19 @@ function _makeDailySpendEndpoint(level) {
     }
   };
 }
+// Targeting (read-only) del adset — Parte 2.
+router.get('/adset/:id/targeting', async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!/^[0-9_a-zA-Z]+$/.test(id)) return res.status(400).json({ ok: false, error: 'id inválido' });
+    const data = await targetingMod.fetchAdsetTargeting(id);
+    res.json(data);
+  } catch (e) {
+    console.error('[meta.adset.targeting]', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.get('/campaign/:id/daily-spend', _makeDailySpendEndpoint('campaign'));
 router.get('/adset/:id/daily-spend',    _makeDailySpendEndpoint('adset'));
 router.get('/ad/:id/daily-spend',       _makeDailySpendEndpoint('ad'));

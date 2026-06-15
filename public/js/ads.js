@@ -772,6 +772,55 @@ function renderCampaignCard(c, avg) {
   </details>`;
 }
 
+// ─── Parte 2: targeting read-only ───────────────────────────────────
+function _renderTargetingSummary(t) {
+  if (!t) return '<p style="color:var(--text-2);font-size:11px">Sin datos.</p>';
+  const loc = t.location || {};
+  const cities = (loc.cities || []).map((c) => c.name + (c.region ? ' (' + c.region + ')' : '') + (c.radius ? ' · ' + c.radius + ' ' + (c.distance_unit === 'mile' ? 'mi' : 'km') : ''));
+  const customs = (loc.custom_locations || []).map((c) => `Radio de ${c.radius} ${c.unit === 'mile' ? 'mi' : 'km'} alrededor de ${c.name}`);
+  const interests = (t.interests_specs || []).flatMap((b) => Object.entries(b).flatMap(([k, vals]) => vals.map((v) => v + (k !== 'interests' ? ' (' + k + ')' : ''))));
+  const placements = t.placements?.all ? 'Automático' : (t.placements?.list || []).map((p) => p.label + (p.positions ? ': ' + p.positions.join(', ') : '')).join(' · ');
+  return `
+    <div style="font-size:11px;line-height:1.5">
+      <p><strong style="color:var(--text)">📍 Ubicación</strong></p>
+      ${loc.countries?.length ? `<p>Países: ${loc.countries.join(', ')}</p>` : ''}
+      ${loc.regions?.length ? `<p>Regiones/provincias: ${loc.regions.join(', ')}</p>` : ''}
+      ${cities.length ? `<p>Ciudades: ${cities.join(' · ')}</p>` : ''}
+      ${customs.length ? `<p>${customs.join(' · ')}</p>` : ''}
+      ${loc.zips?.length ? `<p>ZIPs: ${loc.zips.join(', ')}</p>` : ''}
+      ${(!loc.countries?.length && !loc.regions?.length && !cities.length && !customs.length) ? '<p style="color:var(--text-2)">Sin restricción geográfica explícita.</p>' : ''}
+
+      <p style="margin-top:8px"><strong style="color:var(--text)">👥 Demografía</strong></p>
+      <p>Edad: ${t.age_min || '—'}${t.age_max ? '–' + t.age_max : (t.age_min ? '+' : '')} · Género: ${t.gender_label}</p>
+
+      ${interests.length ? `<p style="margin-top:8px"><strong style="color:var(--text)">🎯 Intereses</strong></p><p>${interests.slice(0, 12).join(', ')}${interests.length > 12 ? '…' : ''}</p>` : ''}
+
+      <p style="margin-top:8px"><strong style="color:var(--text)">📱 Dónde se muestra</strong></p>
+      <p>${placements || 'Automático'}</p>
+
+      <p style="margin-top:8px;color:var(--text-2);font-size:10px">
+        Optimización: ${t.optimization_goal || '—'}${t.billing_event ? ' · Cobro: ' + t.billing_event : ''}
+      </p>
+    </div>`;
+}
+
+async function loadAdsetTargeting(adsetId) {
+  const wrap = document.getElementById('targ-' + adsetId);
+  if (!wrap || wrap.dataset.loaded === '1') return;
+  wrap.innerHTML = '<p style="color:var(--text-2);font-size:11px;font-style:italic">Cargando segmentación…</p>';
+  try {
+    const r = await api(`/api/v1/meta/adset/${adsetId}/targeting`);
+    if (!r.ok) {
+      wrap.innerHTML = `<p style="color:var(--text-2);font-size:11px">No se pudo: ${r.error || r.status || 'sin datos'}</p>`;
+      return;
+    }
+    wrap.dataset.loaded = '1';
+    wrap.innerHTML = _renderTargetingSummary(r.summary);
+  } catch (e) {
+    wrap.innerHTML = `<p style="color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  }
+}
+
 function renderAdsetBlock(s) {
   const si = s.insights || {};
   const sv = s.verdict || {};
@@ -791,6 +840,11 @@ function renderAdsetBlock(s) {
       <button data-act="toggle-adset" data-id="${s.id}" data-newstatus="${s.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'}" onclick="onActionClick(event)" style="padding:2px 8px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid var(--border-2);background:transparent;color:var(--text)" title="${s.status === 'ACTIVE' ? 'Pausar' : 'Activar'} adset">${s.status === 'ACTIVE' ? '⏸' : '▶'}</button>
       ${s.budget?.kind ? `<button onclick="openBudgetModal('adset','${s.id}','${s.budget.kind}',${s.budget.monto},${si.spend||0},'${(s.name||'').replace(/'/g,'')}')" style="padding:2px 8px;font-size:10px;border-radius:4px;cursor:pointer;border:.5px solid #185FA5;background:transparent;color:#185FA5" title="Cambiar presupuesto del adset">💰</button>` : ''}
     </div>
+    <!-- Parte 2: bloque colapsable de Segmentación (lazy-load). -->
+    <details onclick="if(this.open) loadAdsetTargeting('${s.id}')" style="margin-left:1.2rem;margin-bottom:4px;border:.5px dashed var(--border-3);border-radius:4px;padding:4px 8px;background:rgba(24,95,165,.04)">
+      <summary style="cursor:pointer;font-size:11px;font-weight:500;color:#185FA5;list-style:none">🎯 Ver segmentación de este adset</summary>
+      <div id="targ-${s.id}" style="margin-top:6px"><p style="color:var(--text-2);font-size:11px">Click para cargar</p></div>
+    </details>
     ${s.ads.length ? `<div style="margin-left:1.2rem">${s.ads.map(renderAdRow).join('')}</div>` : ''}
   </div>`;
 }
@@ -1106,6 +1160,7 @@ window.setIgSort = setIgSort;
 window.setAdsStatusTab = setAdsStatusTab;
 window.scrollToCampaign = scrollToCampaign;
 window.loadDailySpend = loadDailySpend;
+window.loadAdsetTargeting = loadAdsetTargeting;
 window.onActionClick = onActionClick;
 window.openBudgetModal = openBudgetModal;
 window.closeBudgetModal = closeBudgetModal;
