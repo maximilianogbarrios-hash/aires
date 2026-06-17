@@ -80,17 +80,34 @@ async function loadUsers() {
     <td style="font-size:11px;color:var(--text-2)">${new Date(u.created_at).toLocaleString('es-ES')}</td>
     <td style="text-align:right">
       <button onclick="changePass(${u.id})" style="padding:3px 8px;font-size:11px;border:.5px solid var(--border-2);border-radius:4px;background:transparent;cursor:pointer">Cambiar pass</button>
-      ${u.totp_enabled ? `<button onclick="resetTotp(${u.id})" style="padding:3px 8px;font-size:11px;border:.5px solid var(--border-2);border-radius:4px;background:transparent;cursor:pointer;color:#BA7517">Reset 2FA</button>` : ''}
+      ${u.totp_enabled
+        ? `<button onclick="resetTotp(${u.id})" style="padding:3px 8px;font-size:11px;border:.5px solid var(--border-2);border-radius:4px;background:transparent;cursor:pointer;color:#BA7517" title="Limpiar el 2FA actual para que reconfigure en el próximo login">Reset 2FA</button>`
+        : `<button onclick="forceTotp(${u.id}, '${u.email.replace(/'/g,'')}')" style="padding:3px 8px;font-size:11px;border:.5px solid #dc2626;border-radius:4px;background:rgba(220,38,38,.08);cursor:pointer;color:#dc2626;font-weight:500" title="Forzar al usuario a configurar 2FA en el próximo request">🔒 Forzar 2FA</button>`}
       <button onclick="delUser(${u.id})" style="padding:3px 8px;font-size:11px;border:.5px solid var(--border-2);border-radius:4px;background:transparent;cursor:pointer;color:#dc2626">Borrar</button>
     </td>
   </tr>`).join('');
 }
 
 async function resetTotp(id) {
-  if (!confirm('¿Desactivar 2FA de este usuario? Va a tener que reactivarlo desde /account.')) return;
+  if (!confirm('¿Desactivar 2FA de este usuario? Va a tener que reactivarlo desde /account en el próximo request.')) return;
   const r = await fetch(`/api/v1/users/${id}/2fa`, { method: 'DELETE', credentials: 'same-origin' });
   if (!r.ok) alert((await r.json()).error || 'Error');
   else { Api.pill('2FA reseteado'); loadUsers(); }
+}
+
+// "Forzar 2FA": el user ya está sin 2FA en DB. El backend YA lo redirige
+// a /account?msg=2fa-required en cualquier request gracias a requireAuth.
+// Este botón es informativo + invalida cache (con el DELETE igualmente
+// funciona porque deja totp_enabled=false). Para garantía total expulsamos
+// también su sesión actual (en próxima iteración si hace falta).
+async function forceTotp(id, email) {
+  if (!confirm(`Forzar 2FA para ${email}?\n\nEn el próximo click va a ser redirigido a /account para configurar 2FA y NO podrá usar nada hasta confirmar un código.`)) return;
+  // El user ya tiene totp_enabled=false. Igualmente DELETE para refrescar
+  // cache (en backend invalidamos el cache 60s).
+  const r = await fetch(`/api/v1/users/${id}/2fa`, { method: 'DELETE', credentials: 'same-origin' });
+  if (!r.ok) { alert((await r.json()).error || 'Error'); return; }
+  Api.pill('2FA forzado — el user va a ser redirigido al próximo request');
+  loadUsers();
 }
 
 document.getElementById('create-form').addEventListener('submit', async (ev) => {
