@@ -518,8 +518,8 @@ function renderAdsRecommendations(d) {
     const displayName = (c.display_name || c.name || '').replace(/[<>]/g, '');
     // Indicador delivery real (entregando vs solo "marcada activa").
     const deliveryBadge = c.is_delivering
-      ? '<span style="padding:1px 6px;border-radius:6px;font-size:9px;background:rgba(99,153,34,.15);color:#16a34a;font-weight:500">entregando</span>'
-      : '<span style="padding:1px 6px;border-radius:6px;font-size:9px;background:rgba(217,119,6,.15);color:#d97706;font-weight:500">no entrega</span>';
+      ? `<span title="Gasto últimos 3d: €${(c.recent_spend_3d||0).toFixed(2)}" style="padding:1px 6px;border-radius:6px;font-size:9px;background:rgba(99,153,34,.15);color:#16a34a;font-weight:500">entregando</span>`
+      : `<span title="${(c.not_delivering_reason||'No entrega').replace(/"/g,'&quot;')}" style="padding:1px 6px;border-radius:6px;font-size:9px;background:rgba(217,119,6,.15);color:#d97706;font-weight:500">no entrega</span>`;
     const shortId = String(c.id).slice(-6);
     return `<div onclick="scrollToCampaign('${c.id}')" style="display:flex;gap:8px;padding:8px 0;border-bottom:.5px dashed var(--border-3);cursor:pointer;align-items:flex-start" title="Click para abrir esta campaña en la lista">
       ${thumbHtml}
@@ -692,13 +692,16 @@ function renderCampaignCard(c, avg) {
       ${thumbHtml}
       <div style="flex:1;min-width:200px">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px">
-          <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${statusBg};color:${statusColor};font-weight:500">${c.effective_status}</span>
+          ${c.is_delivering
+            ? `<span title="Gasto últimos 3d: €${(c.recent_spend_3d||0).toFixed(2)}" style="padding:2px 8px;border-radius:10px;font-size:10px;background:rgba(99,153,34,.18);color:#16a34a;font-weight:600">▶ ENTREGANDO</span>`
+            : `<span title="${(c.not_delivering_reason||'No entrega').replace(/"/g,'&quot;')}" style="padding:2px 8px;border-radius:10px;font-size:10px;background:rgba(217,119,6,.18);color:#d97706;font-weight:500">○ NO ENTREGA</span>`}
           <span style="padding:2px 8px;border-radius:10px;font-size:10px;background:${v.color || '#9ca3af'}33;color:${v.color || '#9ca3af'};font-weight:600">${v.label || '—'}</span>
           <span title="${obj.hint.replace(/"/g,'&quot;')}" style="padding:2px 8px;border-radius:10px;font-size:10px;background:rgba(24,95,165,.12);color:#185FA5;font-weight:500;cursor:help">${obj.label}</span>
           <span style="font-size:10px;color:var(--text-2)">${c.n_ads || 0} ${(c.n_ads === 1) ? 'anuncio' : 'anuncios'}</span>
         </div>
         <!-- displayName SIN truncar (wrap libre) — el dueño necesita identificar la campaña. -->
         <strong style="font-size:13px;display:block;line-height:1.3;word-break:break-word">${(displayName||'').replace(/[<>]/g,'')}</strong>
+        ${!c.is_delivering && c.not_delivering_reason ? `<p style="font-size:10px;color:#d97706;font-style:italic;margin-top:2px">${c.not_delivering_reason.replace(/[<>]/g,'')}</p>` : ''}
         ${previewCopy ? `<p style="font-size:11px;color:var(--text-2);margin-top:2px;line-height:1.3" title="${(previewCopy||'').replace(/"/g,'&quot;')}">${(previewCopy||'').replace(/[<>]/g,'').slice(0,140)}${previewCopy.length>140?'…':''}</p>` : ''}
         <!-- Escape-hatch SIEMPRE visibles: el dueño nunca queda atrapado. -->
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;font-size:10px">

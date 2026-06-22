@@ -222,7 +222,7 @@
 
     <!-- Sub-pestañas por estado -->
     <div style="display:flex;gap:6px;margin-bottom:.5rem;border-bottom:.5px solid var(--border-3)">
-      <button class="tab on" id="ads-st-active" onclick="setAdsStatusTab('active')">Activas <span id="ads-st-active-n" style="color:var(--text-2);font-weight:400">(0)</span></button>
+      <button class="tab on" id="ads-st-active" onclick="setAdsStatusTab('active')" title="Campañas que están entregando ahora — toggle prendido + gasto reciente + presupuesto disponible">Entregando <span id="ads-st-active-n" style="color:var(--text-2);font-weight:400">(0)</span></button>
       <button class="tab"    id="ads-st-paused" onclick="setAdsStatusTab('paused')">Pausadas <span id="ads-st-paused-n" style="color:var(--text-2);font-weight:400">(0)</span></button>
       <button class="tab"    id="ads-st-otros" onclick="setAdsStatusTab('otros')">Otras <span id="ads-st-otros-n" style="color:var(--text-2);font-weight:400">(0)</span></button>
     </div>
@@ -279,6 +279,6 @@
   </details>
 </div>
 
-<script src="/js/ads.js?v=10"></script>
+<script src="/js/ads.js?v=11"></script>
 </body>
 </html>

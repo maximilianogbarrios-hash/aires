@@ -182,6 +182,30 @@ router.get('/_debug/served', async (req, res) => {
         top: dash.recommendations?.top?.length || 0,
         bottom: dash.recommendations?.bottom?.length || 0,
       },
+      // Verificación post-fix v7: listar TODAS las marcadas delivering
+      // con su gasto reciente para que el user confirme contra Meta.
+      delivering_list: delivering.map((c) => ({
+        id: c.id,
+        display_name: c.display_name,
+        recent_spend_3d: c.recent_spend_3d,
+        spend_30d: c.insights?.spend,
+        budget: c.effective_budget?.monto || null,
+        budget_kind: c.effective_budget?.kind || null,
+      })),
+      not_delivering_examples: camps
+        .filter((c) => !c.is_delivering && c.effective_status === 'ACTIVE')
+        .slice(0, 5)
+        .map((c) => ({
+          id: c.id,
+          display_name: c.display_name,
+          effective_status: c.effective_status,
+          recent_spend_3d: c.recent_spend_3d || 0,
+          spend_30d: c.insights?.spend,
+          budget: c.effective_budget?.monto || null,
+          budget_exhausted: c.budget_exhausted,
+          out_of_schedule: c.out_of_schedule,
+          reason: c.not_delivering_reason,
+        })),
     });
   } catch (e) {
     console.error('[meta._debug/served]', e);
