@@ -591,6 +591,173 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
   }
 });
 
+// ─── Drill-down del Flujo Total ──────────────────────────────────────
+// Objetivo: el user apreta "Glovo" en la tabla de Ingresos por origen
+// y ve TODOS los movimientos individuales que suman ese monto — para
+// verificar composición (ej: si una entrada excepcional está o no).
+// Aplica los MISMOS filtros y exclusiones que /flujo-total para que la
+// suma coincida al céntimo. Marcado tagDetail (movimientos individuales).
+router.get('/flujo-total/movs-origen', tagDetail, async (req, res) => {
+  try {
+    await loadMapeos();
+    const origen = String(req.query.origen || '').trim();
+    if (!origen) return res.status(400).json({ error: 'origen requerido' });
+
+    // CAJA con buildFilters (mismo patrón que /flujo-total).
+    const reqCaja = Object.assign({}, req, {
+      query: Object.assign({}, req.query, { tipo: 'ingreso' }),
+    });
+    const { sql: sqlC, vals: valsC } = buildFilters(reqCaja);
+    const cajaRows = await many(
+      `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
+              monto::float8 AS monto, observaciones
+         FROM ab_caja_movimientos ${sqlC}`,
+      valsC
+    );
+
+    // BANCO — mismos filtros que /flujo-total (excluye INTRAGRUPO + floor rol).
+    const sociedadParam = req.query.sociedad_id || null;
+    const desde = req.query.desde || null;
+    const hasta = req.query.hasta || null;
+    const whereB = [`categoria <> 'INTRAGRUPO'`, `importe > 0`];
+    const valsB = [];
+    if (sociedadParam) {
+      if (sociedadParam === 'sin_elche')       { whereB.push(`sociedad_id <> $${valsB.length+1}`); valsB.push('hostelero'); }
+      else if (sociedadParam === 'solo_elche') { whereB.push(`sociedad_id  = $${valsB.length+1}`); valsB.push('hostelero'); }
+      else                                     { whereB.push(`sociedad_id  = $${valsB.length+1}`); valsB.push(sociedadParam); }
+    }
+    if (desde) { whereB.push(`fecha >= $${valsB.length+1}`); valsB.push(desde); }
+    if (hasta) { whereB.push(`fecha <= $${valsB.length+1}`); valsB.push(hasta); }
+    if (!esAdminLike(req)) { whereB.push(`fecha >= $${valsB.length+1}`); valsB.push(PERIODO_FLOOR_NO_ADMIN); }
+    const bancoRows = await many(
+      `SELECT id, fecha::text, sociedad_id, banco, concepto, categoria,
+              importe::float8 AS importe
+         FROM ab_movimientos WHERE ${whereB.join(' AND ')}`,
+      valsB
+    );
+
+    const movsBanco = [];
+    for (const r of bancoRows) {
+      if (esTraspasoInternoBanco(r.concepto)) continue;
+      if (esIntraGrupo(r.concepto)) continue;
+      if (origenIngresoBanco(r.concepto) !== origen) continue;
+      movsBanco.push({
+        id: r.id, fecha: r.fecha, sociedad_id: r.sociedad_id,
+        banco: r.banco, concepto: r.concepto, categoria: r.categoria,
+        importe: r.importe, fuente: 'banco',
+      });
+    }
+    const movsCaja = [];
+    for (const r of cajaRows) {
+      if ((r.tipo || '').toLowerCase() !== 'ingreso') continue;
+      if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
+      if (origenIngresoCaja(r.subtipo) !== origen) continue;
+      movsCaja.push({
+        id: r.id, fecha: r.fecha, sociedad_id: r.sociedad_id,
+        sucursal: r.sucursal, subtipo: r.subtipo,
+        importe: r.monto, observaciones: r.observaciones, fuente: 'caja',
+      });
+    }
+    const movimientos = [...movsBanco, ...movsCaja].sort((a, b) => b.fecha.localeCompare(a.fecha));
+    const total_banco = movsBanco.reduce((s, x) => s + x.importe, 0);
+    const total_caja  = movsCaja.reduce((s, x) => s + x.importe, 0);
+    res.json({
+      origen,
+      n_banco: movsBanco.length, n_caja: movsCaja.length,
+      total_banco: Math.round(total_banco * 100) / 100,
+      total_caja:  Math.round(total_caja * 100) / 100,
+      total:       Math.round((total_banco + total_caja) * 100) / 100,
+      movimientos,
+    });
+  } catch (e) {
+    console.error('[caja.flujo-total.movs-origen]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Egresos por categoría — drill-down.
+router.get('/flujo-total/movs-categoria', tagDetail, async (req, res) => {
+  try {
+    await loadMapeos();
+    const categoria = String(req.query.categoria || '').trim();
+    if (!categoria) return res.status(400).json({ error: 'categoria requerido' });
+
+    // BANCO — mismos filtros que /flujo-total (excluye INTRAGRUPO + floor rol),
+    // importe < 0 (egresos).
+    const sociedadParam = req.query.sociedad_id || null;
+    const desde = req.query.desde || null;
+    const hasta = req.query.hasta || null;
+    const whereB = [`categoria <> 'INTRAGRUPO'`, `importe < 0`];
+    const valsB = [];
+    if (sociedadParam) {
+      if (sociedadParam === 'sin_elche')       { whereB.push(`sociedad_id <> $${valsB.length+1}`); valsB.push('hostelero'); }
+      else if (sociedadParam === 'solo_elche') { whereB.push(`sociedad_id  = $${valsB.length+1}`); valsB.push('hostelero'); }
+      else                                     { whereB.push(`sociedad_id  = $${valsB.length+1}`); valsB.push(sociedadParam); }
+    }
+    if (desde) { whereB.push(`fecha >= $${valsB.length+1}`); valsB.push(desde); }
+    if (hasta) { whereB.push(`fecha <= $${valsB.length+1}`); valsB.push(hasta); }
+    if (!esAdminLike(req)) { whereB.push(`fecha >= $${valsB.length+1}`); valsB.push(PERIODO_FLOOR_NO_ADMIN); }
+    whereB.push(`COALESCE(categoria, 'SIN_CATEGORIA') = $${valsB.length+1}`);
+    valsB.push(categoria);
+    const bancoRows = await many(
+      `SELECT id, fecha::text, sociedad_id, banco, concepto, categoria,
+              importe::float8 AS importe, proveedor_normalizado
+         FROM ab_movimientos WHERE ${whereB.join(' AND ')}
+         ORDER BY fecha DESC, id DESC`,
+      valsB
+    );
+    const movsBanco = [];
+    for (const r of bancoRows) {
+      if (esTraspasoInternoBanco(r.concepto)) continue;
+      if (esIntraGrupo(r.concepto)) continue;
+      movsBanco.push({
+        id: r.id, fecha: r.fecha, sociedad_id: r.sociedad_id,
+        banco: r.banco, concepto: r.concepto, categoria: r.categoria,
+        proveedor: r.proveedor_normalizado,
+        importe: r.importe, fuente: 'banco',
+      });
+    }
+
+    // CAJA — egresos con subtipo cuya categoría (via categoriaDeSubtipoCaja) matchea.
+    const reqCaja = Object.assign({}, req, {
+      query: Object.assign({}, req.query, { tipo: 'egreso' }),
+    });
+    const { sql: sqlC, vals: valsC } = buildFilters(reqCaja);
+    const cajaRows = await many(
+      `SELECT id, fecha::text, sucursal, sociedad_id, tipo, subtipo,
+              monto::float8 AS monto, observaciones
+         FROM ab_caja_movimientos ${sqlC}`,
+      valsC
+    );
+    const movsCaja = [];
+    for (const r of cajaRows) {
+      if ((r.tipo || '').toLowerCase() !== 'egreso') continue;
+      if (esTraspasoInternoCaja(r.subtipo, r.observaciones)) continue;
+      const cat = categoriaDeSubtipoCaja(r.subtipo);
+      if (cat !== categoria) continue;
+      movsCaja.push({
+        id: r.id, fecha: r.fecha, sociedad_id: r.sociedad_id,
+        sucursal: r.sucursal, subtipo: r.subtipo,
+        importe: -Math.abs(r.monto), observaciones: r.observaciones, fuente: 'caja',
+      });
+    }
+    const movimientos = [...movsBanco, ...movsCaja].sort((a, b) => b.fecha.localeCompare(a.fecha));
+    const total_banco = movsBanco.reduce((s, x) => s + Math.abs(x.importe), 0);
+    const total_caja  = movsCaja.reduce((s, x) => s + Math.abs(x.importe), 0);
+    res.json({
+      categoria,
+      n_banco: movsBanco.length, n_caja: movsCaja.length,
+      total_banco: Math.round(total_banco * 100) / 100,
+      total_caja:  Math.round(total_caja * 100) / 100,
+      total:       Math.round((total_banco + total_caja) * 100) / 100,
+      movimientos,
+    });
+  } catch (e) {
+    console.error('[caja.flujo-total.movs-categoria]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // ─── Helpers compartidos para los 3 endpoints del donut combinado ─────
 // Construye el WHERE de banco siguiendo el patrón de /proveedores:
 // sociedad, período, importe<0 (gastos). INTRAGRUPO se filtra en runtime.

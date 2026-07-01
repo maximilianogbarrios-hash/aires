@@ -1583,8 +1583,10 @@ function renderFlujoTotal() {
   } else {
     const total = d.kpis.ingresos_total;
     const rows = d.ingresos_por_origen.map((r) => {
-      const main = `<tr style="border-bottom:.5px solid var(--border-3)">
-        <td style="padding:7px 6px;font-weight:500">${r.origen}</td>
+      // Click → drill-down: sidebar con TODOS los movimientos que suman este monto.
+      const origenJs = String(r.origen).replace(/'/g, "\\'");
+      const main = `<tr style="border-bottom:.5px solid var(--border-3);cursor:pointer" onclick="openFtIngresoDrill('${origenJs}')" onmouseover="this.style.background='var(--bg-secondary)'" onmouseout="this.style.background=''" title="Ver los movimientos que componen este monto">
+        <td style="padding:7px 6px;font-weight:500">${r.origen} <span style="font-size:9px;color:var(--text-2)">▸</span></td>
         <td style="padding:7px 6px;text-align:right">${r.banco > 0 ? eur(r.banco) : '<span style="color:var(--text-2)">—</span>'}</td>
         <td style="padding:7px 6px;text-align:right">${r.efectivo > 0 ? eur(r.efectivo) : '<span style="color:var(--text-2)">—</span>'}</td>
         <td style="padding:7px 6px;text-align:right;font-weight:500;color:#16a34a">${eur(r.total)}</td>
@@ -1617,8 +1619,14 @@ function renderFlujoTotal() {
       // (🔒 no-admin, 🔓 admin/socio). El sanitizer ya vació top_banco/
       // top_caja para no-admin → no se renderiza sub-ítems debajo.
       const labelHtml = lockedLabel(r.nombre_display, r.categoria || r.codigo);
-      const main = `<tr style="border-bottom:.5px solid var(--border-3)">
-        <td style="padding:7px 6px;font-weight:500">${labelHtml}</td>
+      const catCodigo = r.categoria || r.codigo || '';
+      const isSensible = esCatSensibleFront(catCodigo);
+      const drillAttrs = isSensible
+        ? ''  // no drill si el rol no puede ver detalle sensible
+        : ` style="border-bottom:.5px solid var(--border-3);cursor:pointer" onclick="openFtEgresoDrill('${catCodigo.replace(/'/g,"\\'")}')" onmouseover="this.style.background='var(--bg-secondary)'" onmouseout="this.style.background=''" title="Ver los movimientos que componen esta categoría"`;
+      const arrow = isSensible ? '' : ' <span style="font-size:9px;color:var(--text-2)">▸</span>';
+      const main = `<tr${drillAttrs || ' style="border-bottom:.5px solid var(--border-3)"'}>
+        <td style="padding:7px 6px;font-weight:500">${labelHtml}${arrow}</td>
         <td style="padding:7px 6px;text-align:right">${r.banco > 0 ? eur(r.banco) : '<span style="color:var(--text-2)">—</span>'}</td>
         <td style="padding:7px 6px;text-align:right">${r.efectivo > 0 ? eur(r.efectivo) : '<span style="color:var(--text-2)">—</span>'}</td>
         <td style="padding:7px 6px;text-align:right;font-weight:500">${eur(r.total)}</td>
@@ -4600,7 +4608,124 @@ async function uploadCajaFile(file) {
   }
 }
 
+// ─── Drill-down desde Flujo Total (filas clickeables) ───────────────
+// Al hacer click en una fila de "Ingresos por origen" (ej. Glovo) o
+// "Egresos por categoría", abre el sidebar existente con la lista de
+// TODOS los movimientos individuales que sumaron ese monto. Aplica
+// los mismos filtros que /flujo-total: sociedad + período + exclusión
+// de INTRAGRUPO + traspasos internos.
+function _ftPeriodoParams(params) {
+  const soc = $('ft-sociedad')?.value || '';
+  if (soc) params.set('sociedad_id', soc);
+  const p = getPeriodoActivo();
+  if (p.modo === 'rango') {
+    if (p.desde) params.set('desde', p.desde + '-01');
+    if (p.hasta) { const [y,m]=p.hasta.split('-').map(Number); params.set('hasta', p.hasta + '-' + String(new Date(y,m,0).getDate()).padStart(2,'0')); }
+  } else if (p.periodo) {
+    const [y,m]=p.periodo.split('-').map(Number);
+    params.set('desde', p.periodo + '-01');
+    params.set('hasta', p.periodo + '-' + String(new Date(y,m,0).getDate()).padStart(2,'0'));
+  }
+}
+
+async function openFtIngresoDrill(origen) {
+  $('prov-sb-title').textContent = 'Ingreso · ' + origen;
+  $('prov-sb-meta').textContent = 'Cargando…';
+  $('prov-sb-body').innerHTML = '<p style="padding:10px;color:var(--text-2);font-size:11px">Cargando…</p>';
+  document.body.classList.add('sidebar-open');
+  try {
+    const params = new URLSearchParams();
+    params.set('origen', origen);
+    _ftPeriodoParams(params);
+    const j = await api('/api/v1/caja/flujo-total/movs-origen?' + params.toString());
+    const movs = j.movimientos || [];
+    $('prov-sb-meta').textContent = `${j.n_banco} banco + ${j.n_caja} efectivo · Total €${(j.total||0).toLocaleString('es-ES',{minimumFractionDigits:2})}`;
+    state._ftDrill = { kind: 'ingreso', target: origen, movs, total: j.total, q: '' };
+    if (!movs.length) { $('prov-sb-body').innerHTML = '<p style="padding:20px;text-align:center;color:var(--text-2);font-size:12px">Sin movimientos.</p>'; return; }
+    $('prov-sb-body').innerHTML = `
+      ${renderSearchBox({ id: 'ft-drill-search', placeholder: 'Buscar concepto / sociedad / banco…', oninput: 'onFtDrillFilter' })}
+      <p id="ft-drill-counter" style="font-size:11px;color:var(--text-2);margin-bottom:8px">${movs.length} movimientos.</p>
+      <div id="ft-drill-list"></div>`;
+    _renderFtDrillList();
+  } catch (e) {
+    $('prov-sb-body').innerHTML = `<p style="padding:10px;color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  }
+}
+
+async function openFtEgresoDrill(categoria) {
+  $('prov-sb-title').textContent = 'Egreso · ' + categoria;
+  $('prov-sb-meta').textContent = 'Cargando…';
+  $('prov-sb-body').innerHTML = '<p style="padding:10px;color:var(--text-2);font-size:11px">Cargando…</p>';
+  document.body.classList.add('sidebar-open');
+  try {
+    const params = new URLSearchParams();
+    params.set('categoria', categoria);
+    _ftPeriodoParams(params);
+    const j = await api('/api/v1/caja/flujo-total/movs-categoria?' + params.toString());
+    if (j.error === '2fa_required') { $('prov-sb-body').innerHTML = renderAccesoRestringidoHTML ? renderAccesoRestringidoHTML(j) : '<p style="padding:10px;color:#dc2626">Acceso restringido</p>'; return; }
+    const movs = j.movimientos || [];
+    $('prov-sb-meta').textContent = `${j.n_banco} banco + ${j.n_caja} efectivo · Total €${(j.total||0).toLocaleString('es-ES',{minimumFractionDigits:2})}`;
+    state._ftDrill = { kind: 'egreso', target: categoria, movs, total: j.total, q: '' };
+    if (!movs.length) { $('prov-sb-body').innerHTML = '<p style="padding:20px;text-align:center;color:var(--text-2);font-size:12px">Sin movimientos.</p>'; return; }
+    $('prov-sb-body').innerHTML = `
+      ${renderSearchBox({ id: 'ft-drill-search', placeholder: 'Buscar concepto / sociedad / banco…', oninput: 'onFtDrillFilter' })}
+      <p id="ft-drill-counter" style="font-size:11px;color:var(--text-2);margin-bottom:8px">${movs.length} movimientos.</p>
+      <div id="ft-drill-list"></div>`;
+    _renderFtDrillList();
+  } catch (e) {
+    if (e.status === 403) { $('prov-sb-body').innerHTML = renderAccesoRestringidoHTML ? renderAccesoRestringidoHTML(e.json||{}) : '<p style="padding:10px;color:#dc2626">Acceso restringido</p>'; return; }
+    $('prov-sb-body').innerHTML = `<p style="padding:10px;color:#dc2626;font-size:11px">Error: ${e.message}</p>`;
+  }
+}
+
+function onFtDrillFilter(val) {
+  if (!state._ftDrill) return;
+  state._ftDrill.q = val || '';
+  _renderFtDrillList();
+}
+
+function _renderFtDrillList() {
+  const ctx = state._ftDrill;
+  if (!ctx) return;
+  const list = $('ft-drill-list');
+  if (!list) return;
+  const q = normalizeForSearch(ctx.q);
+  const all = ctx.movs;
+  const view = q
+    ? all.filter((m) => {
+        const hay = normalizeForSearch(m.concepto || m.subtipo || m.observaciones || '') + ' ' +
+                    normalizeForSearch(m.sociedad_id || '') + ' ' +
+                    normalizeForSearch(m.banco || m.sucursal || '');
+        return hay.includes(q);
+      })
+    : all;
+  const cnt = $('ft-drill-counter');
+  if (cnt) {
+    const subtotal = view.reduce((s, x) => s + Math.abs(x.importe || 0), 0);
+    cnt.innerHTML = `${view.length}/${all.length} movs · <strong style="color:${ctx.kind === 'ingreso' ? '#16a34a' : '#dc2626'}">€${subtotal.toLocaleString('es-ES',{minimumFractionDigits:2})}</strong> visibles`;
+  }
+  if (!view.length) { list.innerHTML = '<p style="padding:14px;text-align:center;color:var(--text-2);font-size:11px">Sin coincidencias.</p>'; return; }
+  list.innerHTML = view.map((m) => {
+    const fuente = m.fuente === 'banco'
+      ? `<span style="font-size:9px;padding:1px 5px;border-radius:6px;background:rgba(24,95,165,.15);color:#185FA5">banco</span>`
+      : `<span style="font-size:9px;padding:1px 5px;border-radius:6px;background:rgba(167,139,250,.18);color:#7C3AED">efectivo</span>`;
+    const label = m.fuente === 'banco'
+      ? (m.concepto || '')
+      : (m.subtipo || '') + (m.observaciones ? ' · ' + m.observaciones : '');
+    const bancoLabel = m.fuente === 'banco' ? (m.banco || '') : (m.sucursal || '');
+    const impColor = (m.importe || 0) >= 0 ? '#16a34a' : '#dc2626';
+    return `<div style="display:flex;align-items:center;gap:6px;padding:6px 4px;border-bottom:.5px solid var(--border-3);font-size:11px">
+      <div style="flex-shrink:0;color:var(--text-2);min-width:76px">${m.fecha || ''}</div>
+      <div style="flex-shrink:0">${fuente}</div>
+      <div style="flex-shrink:0;color:var(--text-2);min-width:82px">${(m.sociedad_id||'').padEnd(8)} · ${bancoLabel}</div>
+      <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(label||'').replace(/"/g,'&quot;')}">${label}</div>
+      <div style="flex-shrink:0;font-weight:500;color:${impColor};min-width:88px;text-align:right">€${(m.importe||0).toLocaleString('es-ES',{minimumFractionDigits:2})}</div>
+    </div>`;
+  }).join('');
+}
+
 Object.assign(window, {
+  openFtIngresoDrill, openFtEgresoDrill, onFtDrillFilter,
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
   // Selector global de período (Mes único / Rango)
   setFiltroModo,
