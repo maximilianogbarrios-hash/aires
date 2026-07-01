@@ -1569,13 +1569,22 @@ async function loadFlujoTotal() {
 function renderFlujoTotal() {
   const d = state.flujoTotal?.data;
   if (!d) return;
-  // KPIs
-  $('ft-kpi-ing').textContent = eur2(d.kpis.ingresos_total);
-  $('ft-kpi-egr').textContent = eur2(d.kpis.egresos_total);
+  // Toggle "Incluir extraordinarios": default = FALSE (mostrar OPERATIVO).
+  state.flujoTotal.showExtra = state.flujoTotal.showExtra || false;
+  const showExtra = !!state.flujoTotal.showExtra;
+  // KPIs — respetan el toggle. Operativo (default) vs Total con extraordinarios.
+  const ing = showExtra ? d.kpis.ingresos_total_conExtra : d.kpis.ingresos_operativo;
+  const egr = showExtra ? d.kpis.egresos_total_conExtra  : d.kpis.egresos_operativo;
+  const neto = showExtra ? d.kpis.neto_total_conExtra    : d.kpis.neto_operativo;
+  $('ft-kpi-ing').textContent = eur2(ing);
+  $('ft-kpi-egr').textContent = eur2(egr);
   const elN = $('ft-kpi-neto');
-  elN.textContent = (d.kpis.neto >= 0 ? '+' : '') + eur2(d.kpis.neto);
-  elN.style.color = d.kpis.neto >= 0 ? '#16a34a' : '#dc2626';
+  elN.textContent = (neto >= 0 ? '+' : '') + eur2(neto);
+  elN.style.color = neto >= 0 ? '#16a34a' : '#dc2626';
   $('ft-kpi-cob').textContent = d.kpis.cobertura_efectivo.toFixed(1) + '%';
+
+  // Panel de extraordinarios + toggle.
+  _renderFtExtraordinariosPanel(d);
 
   // Ingresos
   if (!d.ingresos_por_origen.length) {
@@ -4608,6 +4617,87 @@ async function uploadCajaFile(file) {
   }
 }
 
+// ─── Panel de INGRESOS/EGRESOS EXTRAORDINARIOS ──────────────────────
+// Muestra los movs marcados como extraordinarios en el período, con
+// motivo. Toggle "Incluir extraordinarios en el neto" cambia el KPI
+// de arriba (default OFF = resultado OPERATIVO real). Botón por mov
+// para desmarcar.
+function _renderFtExtraordinariosPanel(d) {
+  const el = $('ft-extra-panel');
+  if (!el) return;
+  const extras = d?.extraordinarios;
+  if (!extras || !extras.n) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = '';
+  const isAdmin = esAdminLikeFront ? esAdminLikeFront() : true;
+  const showExtra = !!state.flujoTotal?.showExtra;
+  const totalIng = extras.total_ingresos || 0;
+  const totalEgr = extras.total_egresos || 0;
+  el.innerHTML = `
+    <div class="card" style="border-left:3px solid #d97706">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+        <div>
+          <p style="font-size:12px;font-weight:600;color:#d97706">⭐ Extraordinarios excluidos del operativo</p>
+          <p style="font-size:11px;color:var(--text-2);margin-top:2px">
+            ${extras.n} movimiento${extras.n === 1 ? '' : 's'}
+            ${totalIng > 0 ? ` · Ingresos €${totalIng.toLocaleString('es-ES',{minimumFractionDigits:2})}` : ''}
+            ${totalEgr > 0 ? ` · Egresos €${totalEgr.toLocaleString('es-ES',{minimumFractionDigits:2})}` : ''}
+          </p>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text)">
+          <input type="checkbox" ${showExtra ? 'checked' : ''} onchange="toggleFtShowExtra(this.checked)">
+          Incluir extraordinarios en el neto
+        </label>
+      </div>
+      <div style="border-top:.5px solid var(--border-3);padding-top:6px">
+        ${extras.movs.slice(0, 20).map((m) => {
+          const impColor = (m.importe||0) >= 0 ? '#16a34a' : '#dc2626';
+          return `<div style="display:flex;align-items:center;gap:6px;padding:5px 4px;font-size:11px;border-bottom:.5px dashed var(--border-3)">
+            <span style="color:var(--text-2);min-width:80px">${m.fecha}</span>
+            <span style="color:var(--text-2);min-width:70px">${m.sociedad_id||''}</span>
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(m.concepto||'').replace(/"/g,'&quot;')}">${(m.concepto||'').slice(0,90)}</span>
+            <span style="font-weight:500;color:${impColor};min-width:90px;text-align:right">€${(m.importe||0).toLocaleString('es-ES',{minimumFractionDigits:2})}</span>
+            ${isAdmin ? `<button onclick="unmarkExtraordinario(${m.id})" style="font-size:9px;padding:2px 6px;border:.5px solid var(--border-2);background:transparent;color:var(--text-2);border-radius:3px;cursor:pointer" title="Quitar la marca de extraordinario">✕</button>` : ''}
+          </div>
+          ${m.motivo ? `<p style="font-size:10px;color:var(--text-2);font-style:italic;padding:2px 4px 6px">→ ${(m.motivo||'').replace(/[<>]/g,'')}</p>` : ''}`;
+        }).join('')}
+      </div>
+    </div>`;
+}
+
+function toggleFtShowExtra(on) {
+  state.flujoTotal = state.flujoTotal || {};
+  state.flujoTotal.showExtra = !!on;
+  renderFlujoTotal();
+}
+
+async function markExtraordinario(movId, motivo) {
+  if (!movId) return;
+  try {
+    const r = await api(`/api/v1/bancos/movimientos/${movId}/extraordinario`, {
+      method: 'POST',
+      body: JSON.stringify({ es_extraordinario: true, motivo: motivo || null }),
+    });
+    if (r.ok) {
+      Api.pill && Api.pill('Marcado como extraordinario');
+      loadFlujoTotal();
+      // Refresh del sidebar si está abierto en el mismo origen.
+      if (state._ftDrill?.kind === 'ingreso' && state._ftDrill.target) openFtIngresoDrill(state._ftDrill.target);
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function unmarkExtraordinario(movId) {
+  if (!movId) return;
+  if (!confirm('Quitar la marca de extraordinario? Este ingreso volverá al operativo.')) return;
+  try {
+    const r = await api(`/api/v1/bancos/movimientos/${movId}/extraordinario`, {
+      method: 'POST',
+      body: JSON.stringify({ es_extraordinario: false }),
+    });
+    if (r.ok) { Api.pill && Api.pill('Marca quitada'); loadFlujoTotal(); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 // ─── Drill-down desde Flujo Total (filas clickeables) ───────────────
 // Al hacer click en una fila de "Ingresos por origen" (ej. Glovo) o
 // "Egresos por categoría", abre el sidebar existente con la lista de
@@ -4705,6 +4795,8 @@ function _renderFtDrillList() {
     cnt.innerHTML = `${view.length}/${all.length} movs · <strong style="color:${ctx.kind === 'ingreso' ? '#16a34a' : '#dc2626'}">€${subtotal.toLocaleString('es-ES',{minimumFractionDigits:2})}</strong> visibles`;
   }
   if (!view.length) { list.innerHTML = '<p style="padding:14px;text-align:center;color:var(--text-2);font-size:11px">Sin coincidencias.</p>'; return; }
+  const isAdmin = esAdminLikeFront ? esAdminLikeFront() : true;
+  const kind = ctx.kind;
   list.innerHTML = view.map((m) => {
     const fuente = m.fuente === 'banco'
       ? `<span style="font-size:9px;padding:1px 5px;border-radius:6px;background:rgba(24,95,165,.15);color:#185FA5">banco</span>`
@@ -4714,18 +4806,32 @@ function _renderFtDrillList() {
       : (m.subtipo || '') + (m.observaciones ? ' · ' + m.observaciones : '');
     const bancoLabel = m.fuente === 'banco' ? (m.banco || '') : (m.sucursal || '');
     const impColor = (m.importe || 0) >= 0 ? '#16a34a' : '#dc2626';
+    // Botón "⭐" para marcar como extraordinario (solo ingresos de banco, admin only).
+    // Si ya es extraordinario, mostrar badge en vez del botón.
+    const canMark = isAdmin && m.fuente === 'banco' && kind === 'ingreso';
+    const markCell = m.es_extraordinario
+      ? `<span title="Extraordinario · ${(m.extraordinario_motivo||'').replace(/"/g,'&quot;')}" style="font-size:9px;padding:1px 5px;border-radius:6px;background:rgba(217,119,6,.18);color:#d97706;flex-shrink:0">⭐ extra</span>`
+      : (canMark ? `<button onclick="_promptMarkExtra(${m.id})" title="Marcar este ingreso como extraordinario (se excluye del operativo)" style="flex-shrink:0;font-size:9px;padding:1px 5px;border-radius:4px;border:.5px solid var(--border-3);background:transparent;color:var(--text-2);cursor:pointer">⭐</button>` : '');
     return `<div style="display:flex;align-items:center;gap:6px;padding:6px 4px;border-bottom:.5px solid var(--border-3);font-size:11px">
       <div style="flex-shrink:0;color:var(--text-2);min-width:76px">${m.fecha || ''}</div>
       <div style="flex-shrink:0">${fuente}</div>
       <div style="flex-shrink:0;color:var(--text-2);min-width:82px">${(m.sociedad_id||'').padEnd(8)} · ${bancoLabel}</div>
       <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(label||'').replace(/"/g,'&quot;')}">${label}</div>
       <div style="flex-shrink:0;font-weight:500;color:${impColor};min-width:88px;text-align:right">€${(m.importe||0).toLocaleString('es-ES',{minimumFractionDigits:2})}</div>
+      ${markCell}
     </div>`;
   }).join('');
 }
 
+function _promptMarkExtra(movId) {
+  const motivo = prompt('Motivo (opcional): ej. "Factura Glovo abril, cobrada atrasada" / "Venta de activo" / "Indemnización"');
+  if (motivo === null) return;  // cancel
+  markExtraordinario(movId, motivo.trim() || null);
+}
+
 Object.assign(window, {
   openFtIngresoDrill, openFtEgresoDrill, onFtDrillFilter,
+  toggleFtShowExtra, markExtraordinario, unmarkExtraordinario, _promptMarkExtra,
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
   // Selector global de período (Mes único / Rango)
   setFiltroModo,

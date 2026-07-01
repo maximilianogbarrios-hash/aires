@@ -410,7 +410,9 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
     if (!esAdminLike(req)) { whereB.push(`fecha >= $${valsB.length+1}`); valsB.push(PERIODO_FLOOR_NO_ADMIN); }
     const bancoRows = await many(
       `SELECT id, fecha::text, sociedad_id, concepto, categoria, importe::float8 AS importe,
-              proveedor_normalizado
+              proveedor_normalizado,
+              COALESCE(es_extraordinario, FALSE) AS es_extraordinario,
+              extraordinario_motivo
          FROM ab_movimientos WHERE ${whereB.join(' AND ')}`,
       valsB
     );
@@ -431,13 +433,28 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
     // bancarias, etc.) siguen contando como gasto/ingreso real. Solo
     // se descartan los movs heurísticamente intragrupo o traspasos.
     let ingB = 0, gasB = 0, ingC = 0, gasC = 0;
+    let ingB_extra = 0, gasB_extra = 0;   // extraordinarios (aparte del operativo)
     let banco_traspaso_kpi = 0, caja_traspaso_kpi = 0;
+    const extraordinariosList = [];
     for (const r of bancoRows) {
       if (esTraspasoInternoBanco(r.concepto)) {
         banco_traspaso_kpi += Math.abs(r.importe);
         continue;
       }
       if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+      if (r.es_extraordinario) {
+        // Los extraordinarios NO cuentan en el operativo. Los guardamos
+        // en un pool aparte y en la lista para reportarlos con transparencia.
+        if (r.importe > 0) ingB_extra += r.importe;
+        else gasB_extra += Math.abs(r.importe);
+        extraordinariosList.push({
+          id: r.id, fecha: r.fecha, sociedad_id: r.sociedad_id,
+          concepto: r.concepto, categoria: r.categoria,
+          importe: r.importe, motivo: r.extraordinario_motivo || null,
+          fuente: 'banco',
+        });
+        continue;
+      }
       if (r.importe > 0) ingB += r.importe;
       else gasB += Math.abs(r.importe);
     }
@@ -450,8 +467,10 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
       if (t === 'ingreso') ingC += r.monto;
       else if (t === 'egreso') gasC += r.monto;
     }
-    const ingTot = ingB + ingC;
+    const ingTot = ingB + ingC;          // OPERATIVO (sin extraordinarios ni intragrupo)
     const gasTot = gasB + gasC;
+    const ingTotal_conExtra = ingTot + ingB_extra;  // con extraordinarios
+    const gasTotal_conExtra = gasTot + gasB_extra;
     const flujoBruto = ingTot + gasTot;
     const cobertura_efectivo = flujoBruto > 0 ? (ingC + gasC) / flujoBruto * 100 : 0;
 
@@ -467,9 +486,10 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
     }
     for (const r of bancoRows) {
       if (r.importe <= 0) continue;
-      // Misma base que los KPIs: descartar intragrupo + traspasos.
+      // Misma base que los KPIs: descartar intragrupo + traspasos + extraordinarios.
       if (esTraspasoInternoBanco(r.concepto)) continue;
       if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+      if (r.es_extraordinario) continue;  // los extraordinarios se reportan aparte
       const o = origenIngresoBanco(r.concepto);
       ensureIng(o, 'banco').banco += r.importe;
     }
@@ -504,9 +524,10 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
     }
     for (const r of bancoRows) {
       if (r.importe >= 0) continue;
-      // Misma base que los KPIs: descartar intragrupo + traspasos.
+      // Misma base que los KPIs: descartar intragrupo + traspasos + extraordinarios.
       if (esTraspasoInternoBanco(r.concepto)) continue;
       if (esIntraGrupo(r.concepto) || r.categoria === 'INTRAGRUPO') continue;
+      if (r.es_extraordinario) continue;  // extraordinarios aparte
       const cat = r.categoria || 'OTROS';
       const ent = ensureEgr(cat);
       const abs = Math.abs(r.importe);
@@ -563,19 +584,35 @@ router.get('/flujo-total', tagAggregate, async (req, res) => {
                  incluir_especiales: req.query.incluir_especiales === 'true',
                  incluir_prorrateo: req.query.incluir_prorrateo !== 'false' },
       kpis: {
+        // ingresos_total / egresos_total / neto SON OPERATIVOS —
+        // sin extraordinarios ni intragrupo ni traspasos.
         ingresos_total: Math.round(ingTot * 100) / 100,
         egresos_total:  Math.round(gasTot * 100) / 100,
         neto:           Math.round((ingTot - gasTot) * 100) / 100,
+        // Compat: alias operativos explícitos.
+        ingresos_operativo: Math.round(ingTot * 100) / 100,
+        egresos_operativo:  Math.round(gasTot * 100) / 100,
+        neto_operativo:     Math.round((ingTot - gasTot) * 100) / 100,
+        // Extraordinarios reportados aparte (transparencia).
+        ingresos_extraordinarios: Math.round(ingB_extra * 100) / 100,
+        egresos_extraordinarios:  Math.round(gasB_extra * 100) / 100,
+        // Total con extraordinarios (los datos "brutos" tal como venían antes).
+        ingresos_total_conExtra: Math.round(ingTotal_conExtra * 100) / 100,
+        egresos_total_conExtra:  Math.round(gasTotal_conExtra * 100) / 100,
+        neto_total_conExtra:     Math.round((ingTotal_conExtra - gasTotal_conExtra) * 100) / 100,
         cobertura_efectivo: Math.round(cobertura_efectivo * 10) / 10,
         banco_ingresos: Math.round(ingB * 100) / 100,
         banco_egresos:  Math.round(gasB * 100) / 100,
         caja_ingresos:  Math.round(ingC * 100) / 100,
         caja_egresos:   Math.round(gasC * 100) / 100,
-        // Traspasos internos / intragrupo neutralizados — informativos
-        // para que el frontend pueda mostrar "ignorados: €X" si quisiera.
-        // Misma definición que el donut combinado.
         traspasos_internos_banco: Math.round(banco_traspaso_kpi * 100) / 100,
         traspasos_internos_caja:  Math.round(caja_traspaso_kpi * 100) / 100,
+      },
+      extraordinarios: {
+        n: extraordinariosList.length,
+        total_ingresos: Math.round(ingB_extra * 100) / 100,
+        total_egresos:  Math.round(gasB_extra * 100) / 100,
+        movs: extraordinariosList.sort((a, b) => b.fecha.localeCompare(a.fecha)),
       },
       ingresos_por_origen,
       egresos_por_categoria,
@@ -631,7 +668,9 @@ router.get('/flujo-total/movs-origen', tagDetail, async (req, res) => {
     if (!esAdminLike(req)) { whereB.push(`fecha >= $${valsB.length+1}`); valsB.push(PERIODO_FLOOR_NO_ADMIN); }
     const bancoRows = await many(
       `SELECT id, fecha::text, sociedad_id, banco, concepto, categoria,
-              importe::float8 AS importe
+              importe::float8 AS importe,
+              COALESCE(es_extraordinario, FALSE) AS es_extraordinario,
+              extraordinario_motivo
          FROM ab_movimientos WHERE ${whereB.join(' AND ')}`,
       valsB
     );
@@ -645,6 +684,8 @@ router.get('/flujo-total/movs-origen', tagDetail, async (req, res) => {
         id: r.id, fecha: r.fecha, sociedad_id: r.sociedad_id,
         banco: r.banco, concepto: r.concepto, categoria: r.categoria,
         importe: r.importe, fuente: 'banco',
+        es_extraordinario: r.es_extraordinario,
+        extraordinario_motivo: r.extraordinario_motivo,
       });
     }
     const movsCaja = [];

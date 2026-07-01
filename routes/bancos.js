@@ -503,6 +503,31 @@ router.get('/movimientos', tagDetail, async (req, res) => {
   }
 });
 
+// Marca / desmarca un movimiento como INGRESO/EGRESO EXTRAORDINARIO.
+// Body: { es_extraordinario: true|false, motivo?: string }
+// Admin/socio only (bancos_reglas_admin).
+router.post('/movimientos/:id/extraordinario', express.json(), requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'id inválido' });
+    const flag = !!req.body?.es_extraordinario;
+    const motivo = flag ? String(req.body?.motivo || '').trim().slice(0, 500) || null : null;
+    const r = await one(
+      `UPDATE ab_movimientos
+          SET es_extraordinario = $1, extraordinario_motivo = $2
+        WHERE id = $3
+        RETURNING id, fecha::text, sociedad_id, concepto, importe::float8 AS importe,
+                  es_extraordinario, extraordinario_motivo`,
+      [flag, motivo, id]
+    );
+    if (!r) return res.status(404).json({ error: 'movimiento no encontrado' });
+    res.json({ ok: true, mov: r });
+  } catch (e) {
+    console.error('[bancos.movimientos.extraordinario]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // Resumen mensual por sociedad (todos los períodos disponibles).
 router.get('/resumen', tagAggregate, async (req, res) => {
   try {
