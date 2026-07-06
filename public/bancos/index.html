@@ -103,6 +103,7 @@
   <button class="tab"    data-tab="flujo"     onclick="showTab('flujo',this)">Flujo Anual</button>
   <button class="tab"    data-tab="efectivo"  onclick="showTab('efectivo',this)">Efectivo</button>
   <button class="tab"    data-tab="flujototal" onclick="showTab('flujototal',this)">Flujo Total</button>
+  <button class="tab"    data-tab="simlocal"  onclick="showTab('simlocal',this)">Simulador de local</button>
 </div>
 
 <!-- RESUMEN -->
@@ -857,6 +858,75 @@
 #rp-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:90}
 #rp-modal{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:640px;max-width:96vw;max-height:80vh;overflow-y:auto;background:var(--bg-primary);border:.5px solid var(--border-2);border-radius:10px;z-index:91;padding:18px 22px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
 </style>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SIMULADOR DE RENTABILIDAD Y CIERRE DE LOCAL
+     ═══════════════════════════════════════════════════════════════════ -->
+<div id="sect-simlocal" class="sect">
+  <div class="topbar-sub" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:.75rem">
+    <div>
+      <label style="display:block;font-size:11px;color:var(--text-2)">Sociedad</label>
+      <select id="sim-sociedad" onchange="loadSimLocal()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px"></select>
+    </div>
+    <div>
+      <label style="display:block;font-size:11px;color:var(--text-2)">Período</label>
+      <input type="month" id="sim-mes" onchange="loadSimLocal()" style="padding:5px 8px;border:.5px solid var(--border-2);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:12px">
+    </div>
+    <button onclick="loadSimLocal()" style="padding:5px 12px;font-size:11px;border:.5px solid var(--border-2);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;margin-top:14px">↻ Refrescar</button>
+    <p style="margin-left:auto;font-size:10px;color:var(--text-2);max-width:340px;text-align:right">Los valores editables se guardan automáticamente al cambiar de campo.</p>
+  </div>
+
+  <!-- Aviso de honestidad -->
+  <div style="background:rgba(217,119,6,.10);border-left:3px solid #d97706;padding:10px 14px;border-radius:6px;margin-bottom:1rem;font-size:11px;line-height:1.5">
+    <p style="font-weight:600;color:#d97706;margin-bottom:4px">⚠ Cálculo aproximado</p>
+    <p>Asume que los gastos marcados <em>desaparecen</em> al cerrar el local. Los <strong>costos de estructura</strong> (producción, gerencia, oficina, nave, admin) NO se incluyen porque no desaparecen. Si el personal o la cocina se comparten con otro local, ajustá el <strong>% personal evitable</strong> de esa fila.</p>
+    <p style="margin-top:4px">MP estimada = <strong>% MP × facturación</strong> — aproximada, no exacta. Default 38% (editable por fila).</p>
+  </div>
+
+  <!-- Panel de resultado -->
+  <div class="g4" style="margin-bottom:1rem">
+    <div class="surf">
+      <p style="font-size:11px;color:var(--text-2)">Neto OPERATIVO actual</p>
+      <p style="font-size:19px;font-weight:500" id="sim-neto-actual">—</p>
+    </div>
+    <div class="surf">
+      <p style="font-size:11px;color:var(--text-2)">Locales a cerrar</p>
+      <p style="font-size:19px;font-weight:500" id="sim-n-cerrar">0</p>
+    </div>
+    <div class="surf">
+      <p style="font-size:11px;color:var(--text-2)">Δ Neto</p>
+      <p style="font-size:19px;font-weight:500" id="sim-delta">—</p>
+    </div>
+    <div class="surf">
+      <p style="font-size:11px;color:var(--text-2)">Neto simulado</p>
+      <p style="font-size:19px;font-weight:600" id="sim-neto-simulado">—</p>
+    </div>
+  </div>
+
+  <!-- Tabla editable -->
+  <div class="card" style="overflow-x:auto">
+    <table id="sim-tabla" style="width:100%;border-collapse:collapse;min-width:900px;font-size:11px">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border-2);color:var(--text-2);text-transform:uppercase;letter-spacing:.5px;font-size:10px">
+          <th style="padding:8px 4px;text-align:left;width:38px" title="Marcar para simular el cierre de este local">Cerrar</th>
+          <th style="padding:8px 4px;text-align:left">Local</th>
+          <th style="padding:8px 4px;text-align:right" title="Facturación real del período (SUM TPV). Editable para probar escenarios.">Facturación €</th>
+          <th style="padding:8px 4px;text-align:right" title="Personal + Seguridad Social del local">Personal+SS €</th>
+          <th style="padding:8px 4px;text-align:right">Alquiler €</th>
+          <th style="padding:8px 4px;text-align:right">Suministros €</th>
+          <th style="padding:8px 4px;text-align:right;width:60px">% MP</th>
+          <th style="padding:8px 4px;text-align:right;width:60px" title="% del personal que se ahorra al cerrar. 100 = todo el personal se va. 50 = mitad se reasigna a otro local.">% Pers. evitable</th>
+          <th style="padding:8px 4px;text-align:right" title="MP = facturación × % MP">MP est. €</th>
+          <th style="padding:8px 4px;text-align:right" title="Total evitable = MP + Personal×% + Alquiler + Suministros">Total evitable €</th>
+          <th style="padding:8px 4px;text-align:right" title="Aporte = Facturación - Total evitable. Positivo = ayuda a pagar estructura.">Aporte €</th>
+        </tr>
+      </thead>
+      <tbody id="sim-tbody">
+        <tr><td colspan="11" style="padding:20px;text-align:center;color:var(--text-2)">Cargando…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 
 <div id="sect-reglas-prov" class="sect">
   <div class="rp-head">

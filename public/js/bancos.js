@@ -1205,6 +1205,9 @@ function showTab(name, btn) {
     initFlujoTotalFiltros();
     if (!state.flujoTotal?.loaded) loadFlujoTotal();
   }
+  if (name === 'simlocal') {
+    if (!state.simLocal?.loaded) loadSimLocal();
+  }
 }
 
 // ─── Caja / Efectivo ──────────────────────────────────────────────────
@@ -4617,6 +4620,220 @@ async function uploadCajaFile(file) {
   }
 }
 
+// ─── Simulador de rentabilidad y cierre de local ────────────────────
+// Estado: locales[] con params persistidos + facturación auto.
+// Campos editables por fila: facturacion_override, personal_ss,
+// alquiler, suministros, pct_mp, pct_personal_evitable. Cerrar = flag
+// en memoria (no se persiste, es solo para simulación).
+// Cálculo en vivo con recalcSimRow — corre en cada input change.
+
+function _simSociedadOpts() {
+  const sel = $('sim-sociedad');
+  if (!sel || sel.options.length) return;
+  _cloneSociedadOptions(sel);
+  sel.value = 'sin_elche';
+}
+
+function _simMesDefault() {
+  const el = $('sim-mes');
+  if (!el || el.value) return;
+  const d = new Date();
+  el.value = d.toISOString().slice(0, 7);
+}
+
+async function loadSimLocal() {
+  state.simLocal = state.simLocal || { closedSet: new Set(), rows: [] };
+  _simSociedadOpts();
+  _simMesDefault();
+  const sociedad = $('sim-sociedad')?.value || '';
+  const mes = $('sim-mes')?.value || '';
+  const params = new URLSearchParams();
+  if (sociedad) params.set('sociedad_id', sociedad);
+  if (mes) {
+    const [y, m] = mes.split('-').map(Number);
+    params.set('desde', mes + '-01');
+    params.set('hasta', mes + '-' + String(new Date(y, m, 0).getDate()).padStart(2, '0'));
+  }
+  try {
+    const j = await api('/api/v1/bancos/simulador-local?' + params.toString());
+    state.simLocal.rows = j.locales || [];
+    state.simLocal.neto_operativo = j.neto_operativo || 0;
+    state.simLocal.loaded = true;
+    // Preservar closedSet del render anterior si los locales aún están.
+    const validIds = new Set(state.simLocal.rows.map((l) => l.local_id));
+    for (const id of state.simLocal.closedSet) if (!validIds.has(id)) state.simLocal.closedSet.delete(id);
+    renderSimLocal();
+  } catch (e) {
+    $('sim-tbody').innerHTML = `<tr><td colspan="11" style="padding:20px;text-align:center;color:#dc2626">Error: ${e.message}</td></tr>`;
+  }
+}
+
+// Calcula MP/evitable/aporte usando los VALORES EDITADOS EN VIVO
+// (leídos del input directo). Esto permite recalcular sin refetch.
+function _simComputeRow(row) {
+  const inputVal = (id, fallback) => {
+    const el = document.getElementById(id);
+    if (!el) return fallback;
+    const v = Number(el.value);
+    return Number.isFinite(v) ? v : fallback;
+  };
+  const fid = 'sim-' + row.local_id;
+  const fac = inputVal(fid + '-fac', row.facturacion_override != null ? row.facturacion_override : row.facturacion_auto);
+  const pers = inputVal(fid + '-pers', row.personal_ss || 0);
+  const alq = inputVal(fid + '-alq', row.alquiler || 0);
+  const sum = inputVal(fid + '-sum', row.suministros || 0);
+  const pctMp = inputVal(fid + '-pmp', row.pct_mp);
+  const pctPersEv = inputVal(fid + '-ppe', row.pct_personal_evitable);
+  const mp = fac * (pctMp / 100);
+  const persEvit = pers * (pctPersEv / 100);
+  const totalEvit = mp + persEvit + alq + sum;
+  const aporte = fac - totalEvit;
+  return { fac, pers, alq, sum, pctMp, pctPersEv, mp, persEvit, totalEvit, aporte };
+}
+
+function renderSimLocal() {
+  const s = state.simLocal;
+  if (!s?.rows) return;
+  const tbody = $('sim-tbody');
+  if (!s.rows.length) { tbody.innerHTML = '<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--text-2)">Sin locales en este filtro.</td></tr>'; return; }
+  const num = (v) => v == null ? '' : Number(v);
+  tbody.innerHTML = s.rows.map((r) => {
+    const fid = 'sim-' + r.local_id;
+    const isClosed = s.closedSet.has(r.local_id);
+    const facVal = r.facturacion_override != null ? r.facturacion_override : r.facturacion_auto;
+    return `<tr data-lid="${r.local_id}" style="border-bottom:.5px solid var(--border-3);${isClosed ? 'background:rgba(220,38,38,.06)' : ''}">
+      <td style="padding:5px 4px;text-align:center">
+        <input type="checkbox" id="${fid}-close" ${isClosed ? 'checked' : ''} onchange="onSimToggleClose('${r.local_id}', this.checked)">
+      </td>
+      <td style="padding:5px 4px">
+        <div style="font-weight:500">${r.nombre_display}</div>
+        <div style="font-size:9px;color:var(--text-2)">${r.sociedad_id}${r.n_cierres_tpv ? ' · ' + r.n_cierres_tpv + ' cierres TPV' : ''}</div>
+      </td>
+      <td style="padding:5px 4px;text-align:right">
+        <input type="number" id="${fid}-fac" step="1" value="${num(facVal)}" onchange="onSimEdit('${r.local_id}','facturacion_override', this.value)" oninput="_recalcSimRow('${r.local_id}')" style="width:90px;padding:3px 5px;border:.5px solid var(--border-3);border-radius:3px;background:var(--bg);color:var(--text);text-align:right;font-size:11px" title="Auto TPV: €${(r.facturacion_auto||0).toFixed(2)}">
+        <div id="${fid}-fac-hint" style="font-size:9px;color:var(--text-2)">auto: €${(r.facturacion_auto||0).toFixed(0)}</div>
+      </td>
+      <td style="padding:5px 4px;text-align:right">
+        <input type="number" id="${fid}-pers" step="1" value="${num(r.personal_ss)}" onchange="onSimEdit('${r.local_id}','personal_ss', this.value)" oninput="_recalcSimRow('${r.local_id}')" style="width:80px;padding:3px 5px;border:.5px solid var(--border-3);border-radius:3px;background:var(--bg);color:var(--text);text-align:right;font-size:11px" placeholder="—">
+      </td>
+      <td style="padding:5px 4px;text-align:right">
+        <input type="number" id="${fid}-alq" step="1" value="${num(r.alquiler)}" onchange="onSimEdit('${r.local_id}','alquiler', this.value)" oninput="_recalcSimRow('${r.local_id}')" style="width:70px;padding:3px 5px;border:.5px solid var(--border-3);border-radius:3px;background:var(--bg);color:var(--text);text-align:right;font-size:11px" placeholder="—">
+      </td>
+      <td style="padding:5px 4px;text-align:right">
+        <input type="number" id="${fid}-sum" step="1" value="${num(r.suministros)}" onchange="onSimEdit('${r.local_id}','suministros', this.value)" oninput="_recalcSimRow('${r.local_id}')" style="width:70px;padding:3px 5px;border:.5px solid var(--border-3);border-radius:3px;background:var(--bg);color:var(--text);text-align:right;font-size:11px" placeholder="—">
+      </td>
+      <td style="padding:5px 4px;text-align:right">
+        <input type="number" id="${fid}-pmp" step="0.5" min="0" max="100" value="${r.pct_mp}" onchange="onSimEdit('${r.local_id}','pct_mp', this.value)" oninput="_recalcSimRow('${r.local_id}')" style="width:52px;padding:3px 5px;border:.5px solid var(--border-3);border-radius:3px;background:var(--bg);color:var(--text);text-align:right;font-size:11px">
+      </td>
+      <td style="padding:5px 4px;text-align:right">
+        <input type="number" id="${fid}-ppe" step="5" min="0" max="100" value="${r.pct_personal_evitable}" onchange="onSimEdit('${r.local_id}','pct_personal_evitable', this.value)" oninput="_recalcSimRow('${r.local_id}')" style="width:52px;padding:3px 5px;border:.5px solid var(--border-3);border-radius:3px;background:var(--bg);color:var(--text);text-align:right;font-size:11px">
+      </td>
+      <td id="${fid}-mp" style="padding:5px 4px;text-align:right;color:var(--text-2)">—</td>
+      <td id="${fid}-tot" style="padding:5px 4px;text-align:right;color:var(--text-2)">—</td>
+      <td id="${fid}-aporte" style="padding:5px 4px;text-align:right;font-weight:600">—</td>
+    </tr>`;
+  }).join('');
+  // Primer render de todos los cálculos.
+  for (const r of s.rows) _recalcSimRow(r.local_id);
+  _recalcSimTotales();
+}
+
+function _recalcSimRow(localId) {
+  const s = state.simLocal;
+  if (!s?.rows) return;
+  const row = s.rows.find((x) => x.local_id === localId);
+  if (!row) return;
+  const c = _simComputeRow(row);
+  const eur = (v) => '€' + (v || 0).toLocaleString('es-ES', { maximumFractionDigits: 0 });
+  const fid = 'sim-' + localId;
+  const el = (id) => document.getElementById(id);
+  if (el(fid + '-mp'))     el(fid + '-mp').textContent = eur(c.mp);
+  if (el(fid + '-tot'))    el(fid + '-tot').textContent = eur(c.totalEvit);
+  const apEl = el(fid + '-aporte');
+  if (apEl) {
+    apEl.textContent = (c.aporte >= 0 ? '+' : '') + eur(c.aporte).replace('€', '') + ' €';
+    apEl.style.color = c.aporte >= 0 ? '#16a34a' : '#dc2626';
+  }
+  _recalcSimTotales();
+}
+
+function _recalcSimTotales() {
+  const s = state.simLocal;
+  if (!s) return;
+  const netoActual = s.neto_operativo || 0;
+  let deltaCerrar = 0;
+  let nCerrar = 0;
+  for (const r of s.rows) {
+    if (!s.closedSet.has(r.local_id)) continue;
+    nCerrar++;
+    const c = _simComputeRow(r);
+    // Cerrar un local le suma su aporte al neto CON SIGNO INVERTIDO.
+    // Si aporte=+X, cerrar quita X del neto (empeora). Si aporte=-X,
+    // cerrar suma X al neto (mejora).
+    deltaCerrar -= c.aporte;
+  }
+  const netoSim = netoActual + deltaCerrar;
+  const eur2 = (v) => (v >= 0 ? '+' : '') + '€' + Math.abs(v).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const na = $('sim-neto-actual');
+  if (na) {
+    na.textContent = eur2(netoActual);
+    na.style.color = netoActual >= 0 ? '#16a34a' : '#dc2626';
+  }
+  const nc = $('sim-n-cerrar'); if (nc) nc.textContent = nCerrar;
+  const dl = $('sim-delta');
+  if (dl) {
+    dl.textContent = nCerrar === 0 ? '—' : eur2(deltaCerrar);
+    dl.style.color = deltaCerrar > 0 ? '#16a34a' : deltaCerrar < 0 ? '#dc2626' : 'var(--text-2)';
+  }
+  const ns = $('sim-neto-simulado');
+  if (ns) {
+    ns.textContent = eur2(netoSim);
+    ns.style.color = netoSim >= 0 ? '#16a34a' : '#dc2626';
+  }
+}
+
+function onSimToggleClose(localId, isClosed) {
+  state.simLocal = state.simLocal || { closedSet: new Set() };
+  if (isClosed) state.simLocal.closedSet.add(localId);
+  else state.simLocal.closedSet.delete(localId);
+  // Sombrear la fila.
+  const tr = document.querySelector('#sim-tbody tr[data-lid="' + localId + '"]');
+  if (tr) tr.style.background = isClosed ? 'rgba(220,38,38,.06)' : '';
+  _recalcSimTotales();
+}
+
+// Save debounced por local × campo — cada 800ms tras el último cambio.
+const _simSaveTimers = new Map();
+function onSimEdit(localId, field, value) {
+  const key = localId + ':' + field;
+  clearTimeout(_simSaveTimers.get(key));
+  const t = setTimeout(async () => {
+    try {
+      const body = {};
+      body[field] = value === '' ? null : Number(value);
+      const r = await api(`/api/v1/bancos/simulador-local/${localId}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      });
+      if (r.ok && r.row) {
+        // Actualizar el state local para reflejar el valor persistido.
+        const row = state.simLocal?.rows.find((x) => x.local_id === localId);
+        if (row) {
+          const numFields = new Set(['facturacion_override','personal_ss','alquiler','suministros','pct_mp','pct_personal_evitable']);
+          if (numFields.has(field)) {
+            row[field] = r.row[field] != null ? Number(r.row[field]) : null;
+          } else row[field] = r.row[field];
+        }
+        Api.pill && Api.pill('Guardado ' + localId, { ms: 900 });
+      }
+    } catch (e) {
+      console.error('save simulador-local', e);
+      Api.pill && Api.pill('Error al guardar: ' + e.message, { kind: 'error' });
+    }
+  }, 800);
+  _simSaveTimers.set(key, t);
+}
+
 // ─── Panel de INGRESOS/EGRESOS EXTRAORDINARIOS ──────────────────────
 // Muestra los movs marcados como extraordinarios en el período, con
 // motivo. Toggle "Incluir extraordinarios en el neto" cambia el KPI
@@ -4832,6 +5049,7 @@ function _promptMarkExtra(movId) {
 Object.assign(window, {
   openFtIngresoDrill, openFtEgresoDrill, onFtDrillFilter,
   toggleFtShowExtra, markExtraordinario, unmarkExtraordinario, _promptMarkExtra,
+  loadSimLocal, renderSimLocal, onSimToggleClose, onSimEdit, _recalcSimRow,
   reload, showTab, toggleUpload, uploadCierres, loadMovs, changePage, exportCsv, logout,
   // Selector global de período (Mes único / Rango)
   setFiltroModo,

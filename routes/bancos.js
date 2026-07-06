@@ -503,6 +503,60 @@ router.get('/movimientos', tagDetail, async (req, res) => {
   }
 });
 
+// ─── Simulador de rentabilidad y cierre de local ─────────────────────
+// Trae params persistidos por local + facturación auto TPV del período
+// + neto operativo total del período. El cálculo del "aporte" queda en
+// el frontend (recalculo en vivo al editar % MP o % personal evitable).
+const simuladorLocalMod = require('../lib/bank/simulador-local');
+
+router.get('/simulador-local', tagAggregate, async (req, res) => {
+  try {
+    const desde = req.query.desde || null;
+    const hasta = req.query.hasta || null;
+    const sociedad_id = req.query.sociedad_id || null;
+    const [locales, facturacionMap, kpis] = await Promise.all([
+      simuladorLocalMod.fetchSimuladorParams(),
+      simuladorLocalMod.fetchFacturacionAuto({ desde, hasta }),
+      simuladorLocalMod.fetchNetoOperativo({ sociedad_id, desde, hasta }),
+    ]);
+    // Enriquecer con facturación auto por local + filtrar por sociedad si aplica.
+    let out = locales.map((l) => {
+      const f = facturacionMap.get(l.local_id);
+      return {
+        ...l,
+        facturacion_auto: f ? Math.round(f.facturacion * 100) / 100 : 0,
+        n_cierres_tpv: f ? f.n_cierres : 0,
+      };
+    });
+    if (sociedad_id === 'sin_elche')       out = out.filter((l) => l.sociedad_id !== 'hostelero');
+    else if (sociedad_id === 'solo_elche') out = out.filter((l) => l.sociedad_id === 'hostelero');
+    else if (sociedad_id && sociedad_id !== 'todas') out = out.filter((l) => l.sociedad_id === sociedad_id);
+    res.json({
+      filtros: { sociedad_id, desde, hasta },
+      neto_operativo: kpis.neto_operativo,
+      ingresos_operativo: kpis.ingresos_operativo,
+      egresos_operativo: kpis.egresos_operativo,
+      locales: out,
+    });
+  } catch (e) {
+    console.error('[bancos.simulador-local.get]', e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+router.put('/simulador-local/:local_id', express.json(), requirePerm('bancos_reglas_admin'), async (req, res) => {
+  try {
+    const localId = String(req.params.local_id || '').trim();
+    if (!/^[A-Z_]{3,30}$/.test(localId)) return res.status(400).json({ error: 'local_id inválido' });
+    const email = req.session?.user?.email || null;
+    const row = await simuladorLocalMod.upsertParams(localId, req.body || {}, email);
+    res.json({ ok: true, row });
+  } catch (e) {
+    console.error('[bancos.simulador-local.put]', e);
+    res.status(400).json({ error: e.message || 'error' });
+  }
+});
+
 // Marca / desmarca un movimiento como INGRESO/EGRESO EXTRAORDINARIO.
 // Body: { es_extraordinario: true|false, motivo?: string }
 // Admin/socio only (bancos_reglas_admin).
